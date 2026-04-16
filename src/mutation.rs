@@ -12,8 +12,8 @@ pub type MutateFn<T, P> =
 /// Rollback context returned from `on_mutate` to revert optimistic updates on error.
 pub type RollbackContext = Box<dyn FnOnce(&QueryClient) + Send + Sync>;
 
-/// Callback type for optimistic updates.
-pub type OnMutateFn<T, P> =
+/// Callback type for optimistic updates (no longer parameterized over T).
+pub type OnMutateFn<P> =
     Arc<dyn Fn(&QueryClient, &P) -> Result<RollbackContext, QueryError> + Send + Sync>;
 
 /// Mutation state
@@ -92,7 +92,7 @@ where
 {
     pub mutate_fn: MutateFn<T, P>,
     pub invalidate_keys: Vec<QueryKey>,
-    pub on_mutate: Option<OnMutateFn<T, P>>,
+    pub on_mutate: Option<OnMutateFn<P>>,
 }
 
 impl<T, P> Mutation<T, P>

@@ -10,12 +10,12 @@ mod options;
 mod query;
 mod state;
 
-pub use client::{QueryClient, QueryStateUpdate};
+pub use client::QueryClient;
 pub use error::QueryError;
 pub use executor::{spawn_mutation, spawn_query};
 pub use key::QueryKey;
 pub use mutation::{Mutation, MutationState, RollbackContext};
-pub use observer::{QueryObserver, QueryStateVariant};
+pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};
 pub use options::{QueryOptions, RefetchOnMount, RetryConfig};
 pub use query::Query;
 pub use state::QueryState;

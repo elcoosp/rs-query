@@ -108,7 +108,7 @@ pub fn spawn_mutation<T, P, V>(
     let invalidate_keys = mutation.invalidate_keys.clone();
     let on_mutate = mutation.on_mutate.clone();
     let client = client.clone();
-    let params_for_rollback = params.clone();
+    let _params_for_rollback = params.clone(); // Unused but kept for potential future use
 
     tracing::debug!(
         target: "rs_query",

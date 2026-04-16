@@ -1,6 +1,7 @@
 //! QueryClient - central cache and query manager
 
-use crate::{observer::QueryStateVariant, QueryKey, QueryOptions};
+use crate::observer::{QueryStateUpdate, QueryStateVariant};
+use crate::{QueryKey, QueryOptions};
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
@@ -15,13 +16,6 @@ struct CacheEntry {
     last_accessed: Instant,
     options: QueryOptions,
     is_stale: bool,
-}
-
-/// Update message sent to observers when a query's state changes.
-#[derive(Debug, Clone)]
-pub struct QueryStateUpdate {
-    pub key: String,
-    pub state_variant: QueryStateVariant,
 }
 
 /// Central query client managing cache and query execution.
