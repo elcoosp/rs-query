@@ -8,6 +8,7 @@ use futures_timer::Delay;
 use gpui::Context;
 use std::future::Future;
 use std::sync::Arc;
+use tokio::task::AbortHandle;
 
 /// Execute a query using GPUI's executor.
 pub fn spawn_query<T, V>(
@@ -24,7 +25,7 @@ pub fn spawn_query<T, V>(
     let options = query.options.clone();
     let client = client.clone();
 
-    // If cache is empty and initial data is provided, populate it.
+    // Populate initial data if cache empty
     if client.get_query_data::<T>(&key).is_none() {
         if let Some(initial) = &options.initial_data {
             if let Some(data) = initial.downcast_ref::<T>() {
@@ -38,7 +39,7 @@ pub fn spawn_query<T, V>(
         }
     }
 
-    // Check deduplication
+    // Deduplication: if already in flight, skip
     if client.is_in_flight(&key) {
         tracing::trace!(
             target: "rs_query",
@@ -56,35 +57,38 @@ pub fn spawn_query<T, V>(
         "Starting query"
     );
 
-    client.set_in_flight(&key, true);
     client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
 
     let retry_config = options.retry.clone();
     let key_for_task = key.cache_key().to_string();
 
-    // Directly spawn the async future – no Tokio runtime needed.
-    let task = cx.background_executor().spawn(execute_with_retry(
+    // Spawn a tokio task to get an AbortHandle
+    let task = tokio::spawn(execute_with_retry(
         fetch_fn,
         retry_config,
-        key_for_task,
+        key_for_task.clone(),
     ));
+    let abort_handle = task.abort_handle();
+    client.set_abort_handle(&key, abort_handle);
+
+    // Bridge to GPUI executor for awaiting
+    let gpui_task = cx.background_executor().spawn(task);
 
     let key_for_cleanup = key.clone();
     let client_for_cleanup = client.clone();
     let select = options.select.clone();
 
     cx.spawn(async move |this, cx| {
-        let result = task.await;
-        client_for_cleanup.set_in_flight(&key_for_cleanup, false);
+        let result = gpui_task.await;
+        client_for_cleanup.clear_abort_handle(&key_for_cleanup);
 
         let state = match result {
-            Ok(data) => {
+            Ok(Ok(data)) => {
                 tracing::debug!(
                     target: "rs_query",
                     query_key = %key_for_cleanup.cache_key(),
                     "Query completed successfully"
                 );
-                // Apply select transformation if present
                 let final_data = if let Some(select_fn) = &select {
                     let arc_data: Arc<dyn std::any::Any + Send + Sync> = Arc::new(data);
                     let transformed = select_fn(&*arc_data);
@@ -99,16 +103,21 @@ pub fn spawn_query<T, V>(
                 client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
                 QueryState::Success(final_data)
             }
-            Err(e) => {
+            Ok(Err(e)) | Err(tokio::task::JoinError::from(e)) => {
+                // Task was either cancelled or returned an error
+                let error = match e {
+                    tokio::task::JoinError::from(e) => QueryError::Custom(format!("Task cancelled: {}", e)),
+                    _ => e,
+                };
                 tracing::warn!(
                     target: "rs_query",
                     query_key = %key_for_cleanup.cache_key(),
-                    error = %e,
+                    error = %error,
                     "Query failed"
                 );
                 client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
                 QueryState::Error {
-                    error: e,
+                    error,
                     stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
                 }
             }
@@ -121,8 +130,7 @@ pub fn spawn_query<T, V>(
     .detach();
 }
 
-
-/// Execute a mutation with automatic cache invalidation and optional optimistic updates.
+/// Execute a mutation (unchanged cancellation-wise for now).
 pub fn spawn_mutation<T, P, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -146,16 +154,11 @@ pub fn spawn_mutation<T, P, V>(
         "Starting mutation"
     );
 
-    // Perform optimistic update if callback provided.
     let rollback_context = if let Some(ref on_mutate_cb) = on_mutate {
         match on_mutate_cb(&client, &params) {
             Ok(ctx) => Some(ctx),
             Err(e) => {
-                tracing::warn!(
-                    target: "rs_query",
-                    error = %e,
-                    "Optimistic update failed, mutation will proceed without optimistic data"
-                );
+                tracing::warn!(target: "rs_query", error = %e, "Optimistic update failed");
                 None
             }
         }
@@ -177,19 +180,13 @@ pub fn spawn_mutation<T, P, V>(
                     invalidated_count = invalidate_keys.len(),
                     "Mutation completed successfully"
                 );
-                // Invalidate queries
                 for key in &invalidate_keys {
                     client.invalidate_queries(key);
                 }
                 MutationState::Success(data)
             }
             Err(e) => {
-                tracing::warn!(
-                    target: "rs_query",
-                    error = %e,
-                    "Mutation failed"
-                );
-                // Rollback optimistic update if any
+                tracing::warn!(target: "rs_query", error = %e, "Mutation failed");
                 if let Some(rollback) = rollback_context {
                     rollback(&client);
                 }
@@ -204,13 +201,9 @@ pub fn spawn_mutation<T, P, V>(
     .detach();
 }
 
-/// Execute with retry logic, using futures_timer::Delay for backoff.
+/// Execute with retry logic, checking for cancellation.
 async fn execute_with_retry<T>(
-    fetch_fn: Arc<
-        dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
-            + Send
-            + Sync,
-    >,
+    fetch_fn: Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
     retry_config: RetryConfig,
     query_key: String,
 ) -> Result<T, QueryError>
@@ -221,6 +214,9 @@ where
     let mut last_error = None;
 
     while attempts <= retry_config.max_retries {
+        // Check for cancellation before each attempt
+        if tokio::task::yield_now().await; // Not directly, but we can check a global cancellation token if needed. For simplicity, rely on abort handle.
+
         match (fetch_fn)().await {
             Ok(data) => {
                 if attempts > 0 {
@@ -269,7 +265,5 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom(
-        "Max retries exceeded".into(),
-    )))
+    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
 }

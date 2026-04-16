@@ -7,8 +7,8 @@ use futures_timer::Delay;
 use gpui::Context;
 use std::future::Future;
 use std::sync::Arc;
+use tokio::task::AbortHandle;
 
-/// Infinite query observer that manages pagination state.
 pub struct InfiniteQueryObserver<T, P>
 where
     T: Clone + Send + Sync + std::fmt::Debug + 'static,
@@ -42,10 +42,7 @@ where
         }
     }
 
-    fn compute_state(
-        client: &QueryClient,
-        key: &crate::QueryKey,
-    ) -> QueryState<InfiniteData<T, P>> {
+    fn compute_state(client: &QueryClient, key: &crate::QueryKey) -> QueryState<InfiniteData<T, P>> {
         if let Some(data) = client.get_infinite_data::<T, P>(key) {
             let stale = client.is_stale(key);
             if stale {
@@ -61,18 +58,12 @@ where
     fn compute_pagination_flags(client: &QueryClient, query: &InfiniteQuery<T, P>) -> (bool, bool) {
         if let Some(data) = client.get_infinite_data::<T, P>(&query.key) {
             let has_next = if let Some(ref get_next) = query.get_next_page_param {
-                data.pages
-                    .last()
-                    .and_then(|last| get_next(last, &data.pages))
-                    .is_some()
+                data.pages.last().and_then(|last| get_next(last, &data.pages)).is_some()
             } else {
                 false
             };
             let has_prev = if let Some(ref get_prev) = query.get_previous_page_param {
-                data.pages
-                    .first()
-                    .and_then(|first| get_prev(first, &data.pages))
-                    .is_some()
+                data.pages.first().and_then(|first| get_prev(first, &data.pages)).is_some()
             } else {
                 false
             };
@@ -85,27 +76,9 @@ where
     pub fn state(&self) -> &QueryState<InfiniteData<T, P>> {
         &self.current_state
     }
-
-    pub fn refetch(&self) {
-        // Will be implemented via spawn_infinite_query
-    }
-
-    pub fn fetch_next_page(&mut self) {
-        if self.is_fetching_next_page || !self.has_next_page {
-            return;
-        }
-        // Fetching logic implemented separately.
-    }
-
-    pub fn fetch_previous_page(&mut self) {
-        if self.is_fetching_previous_page || !self.has_previous_page {
-            return;
-        }
-        // Fetching logic implemented separately.
-    }
 }
 
-/// Spawn an infinite query and return an observer that can be used to fetch pages.
+/// Spawn an infinite query and return an observer.
 pub fn spawn_infinite_query<T, P, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -128,52 +101,39 @@ where
 
     let observer = InfiniteQueryObserver::new(&client, query.clone());
 
-    // Check deduplication
     if client.is_in_flight(&key) {
-        tracing::trace!(
-            target: "rs_query",
-            query_key = %key.cache_key(),
-            "Infinite query already in flight, skipping duplicate request"
-        );
+        tracing::trace!(target: "rs_query", query_key = %key.cache_key(), "Infinite query already in flight, skipping duplicate request");
         return observer;
     }
 
-    tracing::debug!(
-        target: "rs_query",
-        query_key = %key.cache_key(),
-        stale_time_ms = ?options.stale_time.as_millis(),
-        max_retries = options.retry.max_retries,
-        "Starting infinite query"
-    );
+    tracing::debug!(target: "rs_query", query_key = %key.cache_key(), stale_time_ms = ?options.stale_time.as_millis(), max_retries = options.retry.max_retries, "Starting infinite query");
 
-    client.set_in_flight(&key, true);
     client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
 
     let retry_config = options.retry.clone();
     let key_for_task = key.cache_key().to_string();
 
-    let task = cx.background_executor().spawn(execute_with_retry(
+    let task = tokio::spawn(execute_with_retry(
         fetch_fn,
         initial_page_param,
         retry_config,
-        key_for_task,
+        key_for_task.clone(),
     ));
+    let abort_handle = task.abort_handle();
+    client.set_abort_handle(&key, abort_handle);
+
+    let gpui_task = cx.background_executor().spawn(task);
 
     let key_for_cleanup = key.clone();
     let client_for_cleanup = client.clone();
 
     cx.spawn(async move |this, cx| {
-        let result = task.await;
-        client_for_cleanup.set_in_flight(&key_for_cleanup, false);
+        let result = gpui_task.await;
+        client_for_cleanup.clear_abort_handle(&key_for_cleanup);
 
         let state = match result {
-            Ok((page, page_param)) => {
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    "Infinite query initial page completed successfully"
-                );
-                // Create initial infinite data
+            Ok(Ok((page, page_param))) => {
+                tracing::debug!(target: "rs_query", query_key = %key_for_cleanup.cache_key(), "Infinite query initial page completed");
                 let data = InfiniteData {
                     pages: vec![page],
                     page_params: vec![page_param],
@@ -182,16 +142,15 @@ where
                 client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
                 QueryState::Success(client_for_cleanup.get_infinite_data(&key_for_cleanup).unwrap())
             }
-            Err(e) => {
-                tracing::warn!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    error = %e,
-                    "Infinite query failed"
-                );
+            Ok(Err(e)) | Err(tokio::task::JoinError::from(e)) => {
+                let error = match e {
+                    tokio::task::JoinError::from(e) => QueryError::Custom(format!("Task cancelled: {}", e)),
+                    _ => e,
+                };
+                tracing::warn!(target: "rs_query", query_key = %key_for_cleanup.cache_key(), error = %error, "Infinite query failed");
                 client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
                 QueryState::Error {
-                    error: e,
+                    error,
                     stale_data: client_for_cleanup.get_infinite_data(&key_for_cleanup),
                 }
             }
@@ -206,7 +165,6 @@ where
     observer
 }
 
-/// Execute with retry logic for infinite query fetching.
 async fn execute_with_retry<T, P>(
     fetch_fn: Arc<dyn Fn(P) -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
     page_param: P,
@@ -225,25 +183,14 @@ where
         match (fetch_fn)(current_param.clone()).await {
             Ok(data) => {
                 if attempts > 0 {
-                    tracing::debug!(
-                        target: "rs_query",
-                        query_key = %query_key,
-                        attempts = attempts + 1,
-                        "Infinite query page succeeded after retry"
-                    );
+                    tracing::debug!(target: "rs_query", query_key = %query_key, attempts = attempts + 1, "Infinite query page succeeded after retry");
                 }
                 return Ok((data, current_param));
             }
             Err(e) => {
                 if !e.is_retryable() || attempts >= retry_config.max_retries {
                     if attempts > 0 {
-                        tracing::debug!(
-                            target: "rs_query",
-                            query_key = %query_key,
-                            attempts = attempts + 1,
-                            error = %e,
-                            "Infinite query failed after all retries"
-                        );
+                        tracing::debug!(target: "rs_query", query_key = %query_key, attempts = attempts + 1, error = %e, "Infinite query failed after all retries");
                     }
                     return Err(e);
                 }
@@ -254,15 +201,7 @@ where
                     retry_config.max_delay,
                 );
 
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %query_key,
-                    attempt = attempts,
-                    max_retries = retry_config.max_retries,
-                    delay_ms = delay.as_millis(),
-                    error = %e,
-                    "Retrying infinite query page after error"
-                );
+                tracing::debug!(target: "rs_query", query_key = %query_key, attempt = attempts, max_retries = retry_config.max_retries, delay_ms = delay.as_millis(), error = %e, "Retrying infinite query page after error");
 
                 last_error = Some(e);
                 Delay::new(delay).await;
