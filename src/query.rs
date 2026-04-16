@@ -1,6 +1,6 @@
 //! Query definition
 
-use crate::{QueryError, QueryKey, QueryOptions, RetryConfig};
+use crate::{InitialData, PlaceholderData, QueryError, QueryKey, QueryOptions, RetryConfig};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
 
     /// Provide initial data (value)
     pub fn initial_data(mut self, data: T) -> Self {
-        self.options.initial_data = Some(Arc::new(data));
+        self.options.initial_data = Some(Box::new(data));
         self
     }
 
@@ -65,7 +65,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        self.options.initial_data_fn = Some(Arc::new(move || Arc::new(f())));
+        self.options.initial_data_fn = Some(Arc::new(move || Box::new(f())));
         self
     }
 
@@ -77,7 +77,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
 
     /// Provide placeholder data (value)
     pub fn placeholder_data(mut self, data: T) -> Self {
-        self.options.placeholder_data = Some(Arc::new(data));
+        self.options.placeholder_data = Some(Box::new(data));
         self
     }
 
@@ -87,10 +87,9 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
         F: Fn(Option<T>) -> T + Send + Sync + 'static,
     {
         self.options.placeholder_data_fn = Some(Arc::new(
-            move |prev: Option<Arc<dyn std::any::Any + Send + Sync>>| {
-                let prev_typed =
-                    prev.and_then(|b| b.downcast::<T>().ok().map(|arc| (*arc).clone()));
-                Arc::new(f(prev_typed))
+            move |prev: Option<Box<dyn std::any::Any + Send + Sync>>| {
+                let prev_typed = prev.and_then(|b| b.downcast::<T>().ok()).map(|b| *b);
+                Box::new(f(prev_typed))
             },
         ));
         self
@@ -106,7 +105,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
             let typed = data
                 .downcast_ref::<T>()
                 .expect("select called on wrong type");
-            Arc::new(f(typed))
+            Box::new(f(typed))
         }));
         self
     }
@@ -114,6 +113,24 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     /// Set structural sharing (default: true)
     pub fn structural_sharing(mut self, enabled: bool) -> Self {
         self.options.structural_sharing = enabled;
+        self
+    }
+
+    /// Set the refetch interval duration
+    pub fn refetch_interval(mut self, interval: std::time::Duration) -> Self {
+        self.options.refetch_interval = Some(interval);
+        self
+    }
+
+    /// Enable or disable refetch interval when app is in background
+    pub fn refetch_interval_in_background(mut self, enabled: bool) -> Self {
+        self.options.refetch_interval_in_background = enabled;
+        self
+    }
+
+    /// Enable or disable refetch on window focus when stale
+    pub fn refetch_on_window_focus(mut self, enabled: bool) -> Self {
+        self.options.refetch_on_window_focus = enabled;
         self
     }
 }

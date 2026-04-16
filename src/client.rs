@@ -1,5 +1,6 @@
 //! QueryClient - central cache and query manager
 
+use crate::focus_manager::FocusManager;
 use crate::infinite::InfiniteData;
 use crate::observer::{QueryStateUpdate, QueryStateVariant};
 use crate::{QueryKey, QueryOptions};
@@ -25,6 +26,8 @@ pub struct QueryClient {
     in_flight: Arc<DashMap<String, ()>>,
     // Broadcast channels for state updates, one per key.
     subscribers: Arc<DashMap<String, broadcast::Sender<QueryStateUpdate>>>,
+    /// Focus manager for window focus refetching
+    pub focus_manager: FocusManager,
 }
 
 impl QueryClient {
@@ -33,6 +36,7 @@ impl QueryClient {
             cache: Arc::new(DashMap::new()),
             in_flight: Arc::new(DashMap::new()),
             subscribers: Arc::new(DashMap::new()),
+            focus_manager: FocusManager::new(),
         };
         // Spawn background garbage collection thread.
         let cache = Arc::clone(&client.cache);
@@ -261,6 +265,27 @@ impl QueryClient {
             age < entry.options.gc_time
         });
     }
+
+    /// Trigger refetch of all active stale queries (e.g., on window focus).
+    pub fn refetch_all_stale(&self) {
+        let keys: Vec<String> = self.cache.iter().map(|entry| entry.key().clone()).collect();
+        for key in keys {
+            if let Some(entry) = self.cache.get(&key) {
+                let age = entry.fetched_at.elapsed();
+                let is_stale = age > entry.options.stale_time || entry.is_stale;
+                if is_stale && entry.options.refetch_on_window_focus {
+                    // Mark as in flight and notify loading, but actual refetch
+                    // would be triggered by a query observer.
+                    // We'll just mark as stale and notify to cause a refetch.
+                    drop(entry);
+                    if let Some(mut entry_mut) = self.cache.get_mut(&key) {
+                        entry_mut.is_stale = true;
+                    }
+                    self.notify_subscribers(&key, QueryStateVariant::Stale);
+                }
+            }
+        }
+    }
 }
 
 impl Default for QueryClient {
@@ -275,6 +300,7 @@ impl Clone for QueryClient {
             cache: Arc::clone(&self.cache),
             in_flight: Arc::clone(&self.in_flight),
             subscribers: Arc::clone(&self.subscribers),
+            focus_manager: self.focus_manager.clone(),
         }
     }
 }

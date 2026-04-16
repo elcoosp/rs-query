@@ -2,7 +2,11 @@
 
 use crate::{QueryClient, QueryKey, QueryState};
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use tokio::time;
 
 /// Update message sent to observers when a query's state changes.
 #[derive(Debug, Clone)]
@@ -28,6 +32,7 @@ pub struct QueryObserver<T: Clone + Send + Sync + 'static> {
     client: QueryClient,
     current_state: QueryState<T>,
     rx: broadcast::Receiver<QueryStateUpdate>,
+    interval_handle: Option<JoinHandle<()>>,
 }
 
 impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
@@ -35,12 +40,22 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
         let cache_key = key.cache_key().to_string();
         let rx = client.subscribe(&cache_key);
         let current_state = Self::compute_initial_state(client, &key);
-        Self {
+        let options = client
+            .cache
+            .get(&cache_key)
+            .map(|entry| entry.options.clone())
+            .unwrap_or_default();
+
+        let mut observer = Self {
             key,
             client: client.clone(),
             current_state,
             rx,
-        }
+            interval_handle: None,
+        };
+
+        observer.maybe_start_interval(options);
+        observer
     }
 
     fn compute_initial_state(client: &QueryClient, key: &QueryKey) -> QueryState<T> {
@@ -53,6 +68,27 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
             }
         } else {
             QueryState::Idle
+        }
+    }
+
+    fn maybe_start_interval(&mut self, options: QueryOptions) {
+        if let Some(interval) = options.refetch_interval {
+            let client = self.client.clone();
+            let key = self.key.clone();
+            let in_background = options.refetch_interval_in_background;
+            let handle = tokio::spawn(async move {
+                let mut ticker = time::interval(interval);
+                loop {
+                    ticker.tick().await;
+                    if !in_background && !client.focus_manager.is_focused() {
+                        continue;
+                    }
+                    // Trigger a refetch by marking as stale and notifying
+                    client.invalidate_queries(&key);
+                    // The invalidation will cause any active observer to refetch
+                }
+            });
+            self.interval_handle = Some(handle);
         }
     }
 
@@ -70,6 +106,14 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
     }
 
     pub fn refetch(&self) {
-        // Will be implemented in executor integration
+        self.client.invalidate_queries(&self.key);
+    }
+}
+
+impl<T: Clone + Send + Sync + Debug + 'static> Drop for QueryObserver<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.interval_handle.take() {
+            handle.abort();
+        }
     }
 }

@@ -3,6 +3,7 @@
 mod client;
 mod error;
 mod executor;
+mod focus_manager;
 mod infinite;
 mod infinite_executor;
 mod key;
@@ -15,6 +16,7 @@ mod state;
 pub use client::QueryClient;
 pub use error::QueryError;
 pub use executor::{spawn_mutation, spawn_query};
+pub use focus_manager::FocusManager;
 pub use infinite::{InfiniteData, InfiniteQuery};
 pub use infinite_executor::{spawn_infinite_query, InfiniteQueryObserver};
 pub use key::QueryKey;
