@@ -120,11 +120,10 @@ impl QueryClient {
     ) {
         let cache_key = key.cache_key().to_string();
         let new_data_arc = Arc::new(data);
-
         let final_data = if options.structural_sharing {
             if let Some(old_entry) = self.cache.get(&cache_key) {
                 if old_entry.type_id == TypeId::of::<T>() {
-                    replace_equal_deep_any(&*old_entry.data, &*new_data_arc)
+                    replace_equal_deep_any(old_entry.data.clone(), new_data_arc.clone())
                 } else {
                     new_data_arc
                 }

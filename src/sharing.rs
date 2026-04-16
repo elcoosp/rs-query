@@ -4,15 +4,18 @@ use std::any::Any;
 use std::sync::Arc;
 
 /// Replace old data with new data while attempting to preserve references.
-/// Currently returns the new data as an Arc; a more sophisticated implementation
-/// can be added later.
+/// Currently returns the new data if types differ; otherwise returns new.
+/// A more sophisticated deep equality check can be added later.
 pub fn replace_equal_deep_any(
-    _old: &(dyn Any + Send + Sync),
-    new: &(dyn Any + Send + Sync),
+    old: Arc<dyn Any + Send + Sync>,
+    new: Arc<dyn Any + Send + Sync>,
 ) -> Arc<dyn Any + Send + Sync> {
-    // For now, just return the new data as an Arc.
-    // Future enhancement: compare and return old Arc if equal.
-    Arc::from(new)
+    // If types differ, we cannot compare; return the new data.
+    if old.type_id() != new.type_id() {
+        return new;
+    }
+    // For now, simply return the new data. Future enhancement: compare and return old if equal.
+    new
 }
 
 /// A version for concrete types that implement `Clone + PartialEq`.
