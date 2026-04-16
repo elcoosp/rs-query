@@ -1,0 +1,31 @@
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+thiserror = "2"
+tokio ={version ="1",features = ["rt-multi-thread", "time"]}
+tracing = "0.1"
+
+[features]
+default = []
+
+[lib]
+name = "rs_query"
+path = "src/lib.rs"
+
+[package]
+authors = ["elcoosp"]
+autobenches = false
+autobins = false
+autoexamples = false
+autolib = false
+autotests = false
+build = false
+categories = ["asynchronous", "caching", "gui"]
+description = "TanStack Query-inspired async state management for GPUI"
+documentation = "https://docs.rs/rs-query"
+edition = "2021"
+exclude = ["docs/*", ".github/*", ".DS_Store"]
+keywords = ["gpui", "query", "async", "cache", "tanstack"]
+license = "MIT"
+name = "rs-query"
+readme = "README.md"
+version = "0.0.1"

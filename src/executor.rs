@@ -1,0 +1,253 @@
+//! GPUI async execution helpers
+
+use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig};
+use gpui::Context;
+use std::future::Future;
+
+/// Execute a query using GPUI's executor.
+///
+/// This is the main entry point for running queries. It:
+/// - Deduplicates in-flight requests
+/// - Handles retries with exponential backoff
+/// - Caches results automatically
+/// - Calls your callback with the result
+///
+/// # Example
+///
+/// ```rust,ignore
+/// spawn_query(cx, &self.query_client, &users_query, |this, state, cx| {
+///     match state {
+///         QueryState::Success(users) => {
+///             this.users = users;
+///         }
+///         QueryState::Error { error, stale_data } => {
+///             this.error = Some(error.to_string());
+///             // Can still show stale_data if available
+///         }
+///         _ => {}
+///     }
+///     cx.notify();
+/// });
+/// ```
+pub fn spawn_query<T, V>(
+    cx: &mut Context<V>,
+    client: &QueryClient,
+    query: &Query<T>,
+    on_complete: impl FnOnce(&mut V, QueryState<T>, &mut Context<V>) + 'static,
+) where
+    T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    V: 'static,
+{
+    let key = query.key.clone();
+    let fetch_fn = query.fetch_fn.clone();
+    let options = query.options.clone();
+    let client = client.clone();
+
+    // Check deduplication
+    if client.is_in_flight(&key) {
+        tracing::trace!(
+            target: "rs_query",
+            query_key = %key.cache_key(),
+            "Query already in flight, skipping duplicate request"
+        );
+        return;
+    }
+
+    tracing::debug!(
+        target: "rs_query",
+        query_key = %key.cache_key(),
+        stale_time_ms = ?options.stale_time.as_millis(),
+        max_retries = options.retry.max_retries,
+        "Starting query"
+    );
+
+    client.set_in_flight(&key, true);
+
+    let retry_config = options.retry.clone();
+    let key_for_task = key.cache_key();
+
+    let task = cx.background_executor().spawn(async move {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async { execute_with_retry(&*fetch_fn, &retry_config, &key_for_task).await })
+    });
+
+    let key_for_cleanup = key.clone();
+    let client_for_cleanup = client.clone();
+
+    cx.spawn(async move |this, cx| {
+        let result = task.await;
+        client_for_cleanup.set_in_flight(&key_for_cleanup, false);
+
+        let state = match result {
+            Ok(data) => {
+                tracing::debug!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    "Query completed successfully"
+                );
+                client_for_cleanup.set_query_data(&key_for_cleanup, data.clone(), options);
+                QueryState::Success(data)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    error = %e,
+                    "Query failed"
+                );
+                QueryState::Error {
+                    error: e,
+                    stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
+                }
+            }
+        };
+
+        let _ = this.update(cx, |this, cx| {
+            on_complete(this, state, cx);
+        });
+    })
+    .detach();
+}
+
+/// Execute a mutation with automatic cache invalidation.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// spawn_mutation(cx, &self.query_client, &create_user_mutation, params, |this, state, cx| {
+///     match state {
+///         MutationState::Success(user) => {
+///             this.show_success("User created!");
+///         }
+///         MutationState::Error(e) => {
+///             this.show_error(e.to_string());
+///         }
+///         _ => {}
+///     }
+///     cx.notify();
+/// });
+/// ```
+pub fn spawn_mutation<T, P, V>(
+    cx: &mut Context<V>,
+    client: &QueryClient,
+    mutation: &Mutation<T, P>,
+    params: P,
+    on_complete: impl FnOnce(&mut V, MutationState<T>, &mut Context<V>) + 'static,
+) where
+    T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    P: Clone + Send + std::fmt::Debug + 'static,
+    V: 'static,
+{
+    let mutate_fn = mutation.mutate_fn.clone();
+    let invalidate_keys = mutation.invalidate_keys.clone();
+    let client = client.clone();
+
+    tracing::debug!(
+        target: "rs_query",
+        invalidate_keys = ?invalidate_keys.iter().map(|k| k.cache_key()).collect::<Vec<_>>(),
+        "Starting mutation"
+    );
+
+    let task = cx
+        .background_executor()
+        .spawn(async move {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            rt.block_on(async { (mutate_fn)(params).await })
+        });
+
+    cx.spawn(async move |this, cx| {
+        let result = task.await;
+
+        let state = match result {
+            Ok(data) => {
+                tracing::debug!(
+                    target: "rs_query",
+                    invalidated_count = invalidate_keys.len(),
+                    "Mutation completed successfully"
+                );
+                // Invalidate queries
+                for key in &invalidate_keys {
+                    client.invalidate_queries(key);
+                }
+                MutationState::Success(data)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "rs_query",
+                    error = %e,
+                    "Mutation failed"
+                );
+                MutationState::Error(e)
+            }
+        };
+
+        let _ = this.update(cx, |this, cx| {
+            on_complete(this, state, cx);
+        });
+    })
+    .detach();
+}
+
+/// Execute with retry logic
+async fn execute_with_retry<T, F>(
+    fetch_fn: &F,
+    retry_config: &RetryConfig,
+    query_key: &str,
+) -> Result<T, QueryError>
+where
+    F: Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + ?Sized,
+{
+    let mut attempts = 0;
+    let mut last_error = None;
+
+    while attempts <= retry_config.max_retries {
+        match fetch_fn().await {
+            Ok(data) => {
+                if attempts > 0 {
+                    tracing::debug!(
+                        target: "rs_query",
+                        query_key = %query_key,
+                        attempts = attempts + 1,
+                        "Query succeeded after retry"
+                    );
+                }
+                return Ok(data);
+            }
+            Err(e) => {
+                if !e.is_retryable() || attempts >= retry_config.max_retries {
+                    if attempts > 0 {
+                        tracing::debug!(
+                            target: "rs_query",
+                            query_key = %query_key,
+                            attempts = attempts + 1,
+                            error = %e,
+                            "Query failed after all retries"
+                        );
+                    }
+                    return Err(e);
+                }
+
+                attempts += 1;
+                let delay = std::cmp::min(
+                    retry_config.base_delay * 2u32.pow(attempts - 1),
+                    retry_config.max_delay,
+                );
+
+                tracing::debug!(
+                    target: "rs_query",
+                    query_key = %query_key,
+                    attempt = attempts,
+                    max_retries = retry_config.max_retries,
+                    delay_ms = delay.as_millis(),
+                    error = %e,
+                    "Retrying query after error"
+                );
+
+                last_error = Some(e);
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+}
