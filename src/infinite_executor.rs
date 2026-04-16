@@ -3,16 +3,17 @@
 
 use crate::infinite::{InfiniteData, InfiniteQuery};
 use crate::observer::{QueryObserver, QueryStateVariant};
-use crate::{QueryClient, QueryOptions, QueryState};
-use tokio::sync::oneshot;
+use crate::{QueryClient, QueryState};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Observer for an infinite query with fetch-next/previous capabilities.
 pub struct InfiniteQueryObserver<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
 {
     pub observer: QueryObserver<InfiniteData<T, P>>,
-    query: std::sync::Arc<InfiniteQuery<T, P>>,
-    next_page_tx: oneshot::Sender<()>,
-    prev_page_tx: Option<oneshot::Sender<()>>,
+    query: Arc<InfiniteQuery<T, P>>,
+    next_page_tx: mpsc::Sender<()>,
+    prev_page_tx: mpsc::Sender<()>,
 }
 
 impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
@@ -43,6 +44,18 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
         }
         false
     }
+
+    /// Request fetching the next page.
+    /// If a fetch is already in progress or the channel is full, the request is ignored.
+    pub fn fetch_next_page(&self) {
+        let _ = self.next_page_tx.try_send(());
+    }
+
+    /// Request fetching the previous page.
+    /// If a fetch is already in progress or the channel is full, the request is ignored.
+    pub fn fetch_previous_page(&self) {
+        let _ = self.prev_page_tx.try_send(());
+    }
 }
 
 /// Execute an infinite query.
@@ -54,23 +67,25 @@ pub fn spawn_infinite_query<
     _cx: &mut gpui::Context<V>,
     client: &QueryClient,
     query: &InfiniteQuery<T, P>,
-    callback: impl FnOnce(&mut V, QueryState<InfiniteData<T, P>>, &mut gpui::Context<V>)
+    _callback: impl FnOnce(&mut V, QueryState<InfiniteData<T, P>>, &mut gpui::Context<V>)
         + Send
         + 'static,
 ) -> InfiniteQueryObserver<T, P> {
     let key = query.key.clone();
     let options = query.options.clone();
     let initial_param = query.initial_page_param.clone();
-    let fetch_fn = query.fetch_fn.clone();
+    let fetch_fn = Arc::clone(&query.fetch_fn);
     let get_next_fn = query.get_next_page_param.clone();
     let get_prev_fn = query.get_previous_page_param.clone();
     let max_pages = query.max_pages;
     let client = client.clone();
 
-    let mut observer = QueryObserver::with_options(&client, key.clone(), options.clone());
+    let observer = QueryObserver::with_options(&client, key.clone(), options.clone());
+    let mut observer_thread = observer.clone();
 
-    let (next_page_tx, mut next_page_rx) = oneshot::channel::<()>();
-    let (prev_page_tx, mut prev_page_rx) = oneshot::channel::<()>();
+    // Use mpsc channels to allow multiple page fetch requests
+    let (next_page_tx, mut next_page_rx) = mpsc::channel::<()>(1);
+    let (prev_page_tx, mut prev_page_rx) = mpsc::channel::<()>(1);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -79,7 +94,7 @@ pub fn spawn_infinite_query<
             .unwrap();
 
         rt.block_on(async move {
-            observer.set_loading();
+            observer_thread.set_loading();
             let result = fetch_fn(initial_param.clone()).await;
             match result {
                 Ok(page) => {
@@ -91,11 +106,11 @@ pub fn spawn_infinite_query<
                     client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
                 }
             }
-            observer.update();
+            observer_thread.update();
 
             loop {
                 tokio::select! {
-                    _ = &mut next_page_rx => {
+                    _ = next_page_rx.recv() => {
                         if client.is_in_flight(&key) { continue; }
                         let current_data = client.get_infinite_data::<T, P>(&key);
                         if let Some(data) = current_data {
@@ -107,7 +122,7 @@ pub fn spawn_infinite_query<
                                         match fetch_fn(next_param.clone()).await {
                                             Ok(page) => {
                                                 client.append_infinite_page(&key, page, next_param, max_pages);
-                                                observer.update();
+                                                observer_thread.update();
                                             }
                                             Err(_) => {
                                                 client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
@@ -119,7 +134,7 @@ pub fn spawn_infinite_query<
                             }
                         }
                     }
-                    _ = &mut prev_page_rx => {
+                    _ = prev_page_rx.recv() => {
                         if client.is_in_flight(&key) { continue; }
                         let current_data = client.get_infinite_data::<T, P>(&key);
                         if let Some(data) = current_data {
@@ -131,7 +146,7 @@ pub fn spawn_infinite_query<
                                         match fetch_fn(prev_param.clone()).await {
                                             Ok(page) => {
                                                 client.prepend_infinite_page(&key, page, prev_param, max_pages);
-                                                observer.update();
+                                                observer_thread.update();
                                             }
                                             Err(_) => {
                                                 client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
@@ -151,9 +166,9 @@ pub fn spawn_infinite_query<
 
     InfiniteQueryObserver {
         observer,
-        query: std::sync::Arc::new(query.clone()),
+        query: Arc::new(query.clone()),
         next_page_tx,
-        prev_page_tx: Some(prev_page_tx),
+        prev_page_tx,
     }
 }
 
@@ -184,8 +199,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(infinite_observer.has_next_page());
@@ -212,8 +227,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -241,8 +256,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -266,8 +281,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -295,8 +310,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(infinite_observer.has_previous_page());
@@ -323,8 +338,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -348,8 +363,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -377,8 +392,8 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -401,11 +416,37 @@ mod tests {
         let infinite_observer = InfiniteQueryObserver {
             observer,
             query: std::sync::Arc::new(query),
-            next_page_tx: oneshot::channel().0,
-            prev_page_tx: None,
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
         };
 
         assert!(infinite_observer.state().is_idle());
+    }
+
+    #[test]
+    fn test_fetch_next_page_does_not_panic() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+        };
+
+        // Should not panic even without a background thread listening
+        infinite_observer.fetch_next_page();
+        infinite_observer.fetch_previous_page();
     }
 
     #[test]
@@ -545,19 +586,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oneshot_channel_next_page() {
-        let (tx, rx) = oneshot::channel::<()>();
-        tx.send(()).unwrap();
-        let result = rx.await;
-        assert!(result.is_ok());
+    async fn test_mpsc_channel_send_recv() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+        tx.send(()).await.unwrap();
+        let result = rx.recv().await;
+        assert!(result.is_some());
     }
 
     #[tokio::test]
-    async fn test_oneshot_channel_dropped() {
-        let (tx, rx) = oneshot::channel::<()>();
+    async fn test_mpsc_channel_closed() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
         drop(tx);
-        let result = rx.await;
-        assert!(result.is_err());
+        let result = rx.recv().await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mpsc_try_send() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+        tx.try_send(()).unwrap();
+        // Channel full, should fail
+        assert!(tx.try_send(()).is_err());
+        let result = rx.recv().await;
+        assert!(result.is_some());
     }
 
     #[test]

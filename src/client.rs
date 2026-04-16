@@ -185,10 +185,9 @@ impl QueryClient {
 
         if let Some(data) = entry.data.downcast_ref::<InfiniteData<T, P>>() {
             let mut new_data = data.clone();
-            new_data.pages.push(page);
-            new_data.page_params.push(page_param);
+            new_data.push_page(page, page_param);
             if let Some(max) = max_pages {
-                if new_data.pages.len() > max {
+                while new_data.pages.len() > max {
                     new_data.pages.remove(0);
                     new_data.page_params.remove(0);
                 }
@@ -222,7 +221,7 @@ impl QueryClient {
             new_data.pages.insert(0, page);
             new_data.page_params.insert(0, page_param);
             if let Some(max) = max_pages {
-                if new_data.pages.len() > max {
+                while new_data.pages.len() > max {
                     new_data.pages.pop();
                     new_data.page_params.pop();
                 }

@@ -24,6 +24,18 @@ pub struct Mutation<T, P> {
     pub on_error: Option<Arc<dyn Fn(&QueryError, &P) + Send + Sync>>,
 }
 
+impl<T: Send + Sync + 'static, P: Send + Sync + 'static> Clone for Mutation<T, P> {
+    fn clone(&self) -> Self {
+        Self {
+            mutate_fn: Arc::clone(&self.mutate_fn),
+            invalidates_keys: self.invalidates_keys.clone(),
+            on_mutate: self.on_mutate.clone(),
+            on_success: self.on_success.clone(),
+            on_error: self.on_error.clone(),
+        }
+    }
+}
+
 impl<T: Send + Sync + 'static, P: Send + Sync + 'static> Mutation<T, P> {
     pub fn new<F, Fut>(mutate_fn: F) -> Self
     where
@@ -201,5 +213,16 @@ mod tests {
         assert!(mutation.on_success.is_none());
         assert!(mutation.on_error.is_none());
         assert!(mutation.invalidates_keys.is_empty());
+    }
+
+    #[test]
+    fn test_mutation_clone() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates_key(QueryKey::new("users"));
+
+        let cloned = mutation.clone();
+        assert_eq!(cloned.invalidates_keys.len(), 1);
+        assert_eq!(cloned.invalidates_keys[0].cache_key(), "users");
     }
 }

@@ -1,8 +1,10 @@
 // src/hydration.rs
 //! Hydration and persistence support
 
-use crate::{QueryClient, QueryError, QueryKey, QueryOptions};
+use crate::{QueryClient, QueryKey, QueryOptions};
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A single dehydrated query entry.
@@ -22,10 +24,30 @@ pub struct DehydratedState {
 }
 
 /// Options for hydrating the query cache.
-#[derive(Clone, Debug)]
 pub struct HydrateOptions {
     pub should_overwrite: bool,
-    pub should_hydrate: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    pub should_hydrate: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+}
+
+impl Clone for HydrateOptions {
+    fn clone(&self) -> Self {
+        Self {
+            should_overwrite: self.should_overwrite,
+            should_hydrate: self.should_hydrate.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for HydrateOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HydrateOptions")
+            .field("should_overwrite", &self.should_overwrite)
+            .field(
+                "should_hydrate",
+                &self.should_hydrate.as_ref().map(|_| "[Fn]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for HydrateOptions {
@@ -46,9 +68,9 @@ impl QueryClient {
 
             if let Some(data) = value.data.downcast_ref::<String>() {
                 state.queries.insert(
-                    key,
+                    key.clone(),
                     DehydratedQuery {
-                        key: key.clone(),
+                        key,
                         data: data.clone(),
                         fetched_at_secs: value.fetched_at.elapsed().as_secs(),
                         stale_time_ms: value.options.stale_time.as_millis() as u64,
@@ -252,7 +274,7 @@ mod tests {
 
         let options = HydrateOptions {
             should_overwrite: true,
-            should_hydrate: Some(Box::new(|key| key.starts_with("users"))),
+            should_hydrate: Some(Arc::new(|key| key.starts_with("users"))),
         };
         client.hydrate(state, options);
 
@@ -280,7 +302,7 @@ mod tests {
 
         let options = HydrateOptions {
             should_overwrite: true,
-            should_hydrate: Some(Box::new(|_| false)),
+            should_hydrate: Some(Arc::new(|_| false)),
         };
         client.hydrate(state, options);
 
@@ -340,9 +362,11 @@ mod tests {
     fn test_hydrate_options_clone() {
         let opts = HydrateOptions {
             should_overwrite: false,
-            should_hydrate: Some(Box::new(|_| true)),
+            should_hydrate: Some(Arc::new(|_| true)),
         };
-        let _cloned = opts.clone();
+        let cloned = opts.clone();
+        assert!(!cloned.should_overwrite);
+        assert!(cloned.should_hydrate.is_some());
     }
 
     #[test]

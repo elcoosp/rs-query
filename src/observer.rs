@@ -35,6 +35,22 @@ pub struct QueryObserver<T> {
     _marker: PhantomData<T>,
 }
 
+impl<T: Clone + Send + Sync + 'static> Clone for QueryObserver<T> {
+    fn clone(&self) -> Self {
+        // broadcast::Receiver doesn't implement Clone, so we create a new subscription
+        let receiver = self.client.subscribe(self.key.cache_key());
+        Self {
+            key: self.key.clone(),
+            state: self.state.clone(),
+            client: self.client.clone(),
+            receiver,
+            options: self.options.clone(),
+            fetch_started_at: self.fetch_started_at,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
     pub fn new(client: &QueryClient, key: QueryKey) -> Self {
         let cache_key = key.cache_key().to_string();
@@ -387,6 +403,17 @@ mod tests {
         let key = QueryKey::new("test");
         let observer: QueryObserver<String> = QueryObserver::new(&client, key);
         let _ = observer.client();
+    }
+
+    #[test]
+    fn test_observer_clone() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        let cloned = observer.clone();
+        assert_eq!(cloned.key, key);
+        // Cloned observer has a new receiver
+        assert!(cloned.state().is_idle());
     }
 
     #[test]
