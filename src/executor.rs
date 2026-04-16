@@ -1,14 +1,11 @@
 //! GPUI async execution helpers
 
 use crate::observer::QueryStateVariant;
-use crate::{
-    Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig,
-};
+use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig};
 use futures_timer::Delay;
 use gpui::Context;
 use std::future::Future;
 use std::sync::Arc;
-use tokio::task::AbortHandle;
 
 /// Execute a query using GPUI's executor.
 pub fn spawn_query<T, V>(
@@ -100,22 +97,34 @@ pub fn spawn_query<T, V>(
                     data
                 };
                 client_for_cleanup.set_query_data(&key_for_cleanup, final_data.clone(), options);
-                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
                 QueryState::Success(final_data)
             }
-            Ok(Err(e)) | Err(tokio::task::JoinError::from(e)) => {
-                // Task was either cancelled or returned an error
-                let error = match e {
-                    tokio::task::JoinError::from(e) => QueryError::Custom(format!("Task cancelled: {}", e)),
-                    _ => e,
-                };
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    error = %e,
+                    "Query failed"
+                );
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
+                QueryState::Error {
+                    error: e,
+                    stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
+                }
+            }
+            Err(join_error) => {
+                let error = QueryError::Custom(format!("Task cancelled: {}", join_error));
                 tracing::warn!(
                     target: "rs_query",
                     query_key = %key_for_cleanup.cache_key(),
                     error = %error,
-                    "Query failed"
+                    "Query cancelled"
                 );
-                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
                 QueryState::Error {
                     error,
                     stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
@@ -130,7 +139,7 @@ pub fn spawn_query<T, V>(
     .detach();
 }
 
-/// Execute a mutation (unchanged cancellation-wise for now).
+/// Execute a mutation with automatic cache invalidation and optional optimistic updates.
 pub fn spawn_mutation<T, P, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -201,9 +210,13 @@ pub fn spawn_mutation<T, P, V>(
     .detach();
 }
 
-/// Execute with retry logic, checking for cancellation.
+/// Execute with retry logic, using futures_timer::Delay for backoff.
 async fn execute_with_retry<T>(
-    fetch_fn: Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
+    fetch_fn: Arc<
+        dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
+            + Send
+            + Sync,
+    >,
     retry_config: RetryConfig,
     query_key: String,
 ) -> Result<T, QueryError>
@@ -214,9 +227,6 @@ where
     let mut last_error = None;
 
     while attempts <= retry_config.max_retries {
-        // Check for cancellation before each attempt
-        if tokio::task::yield_now().await; // Not directly, but we can check a global cancellation token if needed. For simplicity, rely on abort handle.
-
         match (fetch_fn)().await {
             Ok(data) => {
                 if attempts > 0 {
@@ -265,5 +275,7 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+    Err(last_error.unwrap_or(QueryError::Custom(
+        "Max retries exceeded".into(),
+    )))
 }

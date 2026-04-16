@@ -7,7 +7,6 @@ use futures_timer::Delay;
 use gpui::Context;
 use std::future::Future;
 use std::sync::Arc;
-use tokio::task::AbortHandle;
 
 pub struct InfiniteQueryObserver<T, P>
 where
@@ -42,7 +41,10 @@ where
         }
     }
 
-    fn compute_state(client: &QueryClient, key: &crate::QueryKey) -> QueryState<InfiniteData<T, P>> {
+    fn compute_state(
+        client: &QueryClient,
+        key: &crate::QueryKey,
+    ) -> QueryState<InfiniteData<T, P>> {
         if let Some(data) = client.get_infinite_data::<T, P>(key) {
             let stale = client.is_stale(key);
             if stale {
@@ -58,12 +60,18 @@ where
     fn compute_pagination_flags(client: &QueryClient, query: &InfiniteQuery<T, P>) -> (bool, bool) {
         if let Some(data) = client.get_infinite_data::<T, P>(&query.key) {
             let has_next = if let Some(ref get_next) = query.get_next_page_param {
-                data.pages.last().and_then(|last| get_next(last, &data.pages)).is_some()
+                data.pages
+                    .last()
+                    .and_then(|last| get_next(last, &data.pages))
+                    .is_some()
             } else {
                 false
             };
             let has_prev = if let Some(ref get_prev) = query.get_previous_page_param {
-                data.pages.first().and_then(|first| get_prev(first, &data.pages)).is_some()
+                data.pages
+                    .first()
+                    .and_then(|first| get_prev(first, &data.pages))
+                    .is_some()
             } else {
                 false
             };
@@ -102,11 +110,21 @@ where
     let observer = InfiniteQueryObserver::new(&client, query.clone());
 
     if client.is_in_flight(&key) {
-        tracing::trace!(target: "rs_query", query_key = %key.cache_key(), "Infinite query already in flight, skipping duplicate request");
+        tracing::trace!(
+            target: "rs_query",
+            query_key = %key.cache_key(),
+            "Infinite query already in flight, skipping duplicate request"
+        );
         return observer;
     }
 
-    tracing::debug!(target: "rs_query", query_key = %key.cache_key(), stale_time_ms = ?options.stale_time.as_millis(), max_retries = options.retry.max_retries, "Starting infinite query");
+    tracing::debug!(
+        target: "rs_query",
+        query_key = %key.cache_key(),
+        stale_time_ms = ?options.stale_time.as_millis(),
+        max_retries = options.retry.max_retries,
+        "Starting infinite query"
+    );
 
     client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
 
@@ -133,22 +151,44 @@ where
 
         let state = match result {
             Ok(Ok((page, page_param))) => {
-                tracing::debug!(target: "rs_query", query_key = %key_for_cleanup.cache_key(), "Infinite query initial page completed");
+                tracing::debug!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    "Infinite query initial page completed"
+                );
                 let data = InfiniteData {
                     pages: vec![page],
                     page_params: vec![page_param],
                 };
                 client_for_cleanup.set_infinite_data(&key_for_cleanup, data, options);
-                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
                 QueryState::Success(client_for_cleanup.get_infinite_data(&key_for_cleanup).unwrap())
             }
-            Ok(Err(e)) | Err(tokio::task::JoinError::from(e)) => {
-                let error = match e {
-                    tokio::task::JoinError::from(e) => QueryError::Custom(format!("Task cancelled: {}", e)),
-                    _ => e,
-                };
-                tracing::warn!(target: "rs_query", query_key = %key_for_cleanup.cache_key(), error = %error, "Infinite query failed");
-                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    error = %e,
+                    "Infinite query failed"
+                );
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
+                QueryState::Error {
+                    error: e,
+                    stale_data: client_for_cleanup.get_infinite_data(&key_for_cleanup),
+                }
+            }
+            Err(join_error) => {
+                let error = QueryError::Custom(format!("Task cancelled: {}", join_error));
+                tracing::warn!(
+                    target: "rs_query",
+                    query_key = %key_for_cleanup.cache_key(),
+                    error = %error,
+                    "Infinite query cancelled"
+                );
+                client_for_cleanup
+                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
                 QueryState::Error {
                     error,
                     stale_data: client_for_cleanup.get_infinite_data(&key_for_cleanup),
@@ -166,7 +206,11 @@ where
 }
 
 async fn execute_with_retry<T, P>(
-    fetch_fn: Arc<dyn Fn(P) -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
+    fetch_fn: Arc<
+        dyn Fn(P) -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
+            + Send
+            + Sync,
+    >,
     page_param: P,
     retry_config: RetryConfig,
     query_key: String,
@@ -183,14 +227,25 @@ where
         match (fetch_fn)(current_param.clone()).await {
             Ok(data) => {
                 if attempts > 0 {
-                    tracing::debug!(target: "rs_query", query_key = %query_key, attempts = attempts + 1, "Infinite query page succeeded after retry");
+                    tracing::debug!(
+                        target: "rs_query",
+                        query_key = %query_key,
+                        attempts = attempts + 1,
+                        "Infinite query page succeeded after retry"
+                    );
                 }
                 return Ok((data, current_param));
             }
             Err(e) => {
                 if !e.is_retryable() || attempts >= retry_config.max_retries {
                     if attempts > 0 {
-                        tracing::debug!(target: "rs_query", query_key = %query_key, attempts = attempts + 1, error = %e, "Infinite query failed after all retries");
+                        tracing::debug!(
+                            target: "rs_query",
+                            query_key = %query_key,
+                            attempts = attempts + 1,
+                            error = %e,
+                            "Infinite query failed after all retries"
+                        );
                     }
                     return Err(e);
                 }
@@ -201,7 +256,15 @@ where
                     retry_config.max_delay,
                 );
 
-                tracing::debug!(target: "rs_query", query_key = %query_key, attempt = attempts, max_retries = retry_config.max_retries, delay_ms = delay.as_millis(), error = %e, "Retrying infinite query page after error");
+                tracing::debug!(
+                    target: "rs_query",
+                    query_key = %query_key,
+                    attempt = attempts,
+                    max_retries = retry_config.max_retries,
+                    delay_ms = delay.as_millis(),
+                    error = %e,
+                    "Retrying infinite query page after error"
+                );
 
                 last_error = Some(e);
                 Delay::new(delay).await;
@@ -209,5 +272,7 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+    Err(last_error.unwrap_or(QueryError::Custom(
+        "Max retries exceeded".into(),
+    )))
 }
