@@ -1,9 +1,41 @@
 //! Query and mutation options
 
-use std::time::Duration;
+use std::any::Any;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Initial data for a query – either a concrete value or a lazy function.
+pub enum InitialData<T: Clone + Send + Sync + 'static> {
+    Value(T),
+    Function(Arc<dyn Fn() -> T + Send + Sync>),
+}
+
+impl<T: Clone + Send + Sync + 'static> Clone for InitialData<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Value(v) => Self::Value(v.clone()),
+            Self::Function(f) => Self::Function(Arc::clone(f)),
+        }
+    }
+}
+
+/// Placeholder data for a query – value or function that receives previous data.
+pub enum PlaceholderData<T: Clone + Send + Sync + 'static> {
+    Value(T),
+    Function(Arc<dyn Fn(Option<T>) -> T + Send + Sync>),
+}
+
+impl<T: Clone + Send + Sync + 'static> Clone for PlaceholderData<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Value(v) => Self::Value(v.clone()),
+            Self::Function(f) => Self::Function(Arc::clone(f)),
+        }
+    }
+}
 
 /// Configuration options for a query
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QueryOptions {
     /// Time after which data is considered stale (default: 0 = immediately)
     pub stale_time: Duration,
@@ -15,27 +47,51 @@ pub struct QueryOptions {
     pub retry: RetryConfig,
     /// Whether query is enabled
     pub enabled: bool,
+    /// Initial data to populate cache if empty
+    pub initial_data: Option<Box<dyn Any + Send + Sync>>,
+    /// Lazy initial data function
+    pub initial_data_fn: Option<Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>>,
+    /// Timestamp when initial data was last updated
+    pub initial_data_updated_at: Option<Instant>,
+    /// Placeholder data shown while fetching
+    pub placeholder_data: Option<Box<dyn Any + Send + Sync>>,
+    /// Placeholder data function (previous_data) -> placeholder
+    pub placeholder_data_fn: Option<
+        Arc<dyn Fn(Option<Box<dyn Any + Send + Sync>>) -> Box<dyn Any + Send + Sync> + Send + Sync>,
+    >,
+    /// Transform function applied to cached data
+    pub select: Option<Arc<dyn Fn(&dyn Any) -> Box<dyn Any + Send + Sync> + Send + Sync>>,
+    /// Whether to use structural sharing (reserved for future)
+    pub structural_sharing: bool,
+}
+
+impl std::fmt::Debug for QueryOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryOptions")
+            .field("stale_time", &self.stale_time)
+            .field("gc_time", &self.gc_time)
+            .field("refetch_on_mount", &self.refetch_on_mount)
+            .field("retry", &self.retry)
+            .field("enabled", &self.enabled)
+            .field("initial_data_updated_at", &self.initial_data_updated_at)
+            .field("structural_sharing", &self.structural_sharing)
+            .finish_non_exhaustive()
+    }
 }
 
 /// When to refetch on mount
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefetchOnMount {
-    /// Always refetch
     Always,
-    /// Only if data is stale
     IfStale,
-    /// Never refetch on mount
     Never,
 }
 
 /// Retry configuration with exponential backoff
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
-    /// Maximum retry attempts
     pub max_retries: u32,
-    /// Base delay for exponential backoff
     pub base_delay: Duration,
-    /// Maximum delay cap
     pub max_delay: Duration,
 }
 
@@ -47,6 +103,13 @@ impl Default for QueryOptions {
             refetch_on_mount: RefetchOnMount::IfStale,
             retry: RetryConfig::default(),
             enabled: true,
+            initial_data: None,
+            initial_data_fn: None,
+            initial_data_updated_at: None,
+            placeholder_data: None,
+            placeholder_data_fn: None,
+            select: None,
+            structural_sharing: true,
         }
     }
 }
@@ -62,7 +125,6 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
-    /// No retries
     pub fn none() -> Self {
         Self {
             max_retries: 0,
@@ -70,7 +132,6 @@ impl RetryConfig {
         }
     }
 
-    /// Custom retry count
     pub fn retries(max_retries: u32) -> Self {
         Self {
             max_retries,

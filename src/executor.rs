@@ -21,6 +21,18 @@ pub fn spawn_query<T, V>(
     let options = query.options.clone();
     let client = client.clone();
 
+    // If cache is empty and initial data is provided, populate it.
+    if client.get_query_data::<T>(&key).is_none() {
+        if let Some(initial) = &options.initial_data {
+            if let Ok(data) = initial.downcast_ref::<T>() {
+                client.set_query_data(&key, data.clone(), options.clone());
+            }
+        } else if let Some(initial_fn) = &options.initial_data_fn {
+            let data: T = *(initial_fn)().downcast::<T>().expect("initial_data_fn returned wrong type");
+            client.set_query_data(&key, data, options.clone());
+        }
+    }
+
     // Check deduplication
     if client.is_in_flight(&key) {
         tracing::trace!(
@@ -54,6 +66,7 @@ pub fn spawn_query<T, V>(
 
     let key_for_cleanup = key.clone();
     let client_for_cleanup = client.clone();
+    let select = options.select.clone();
 
     cx.spawn(async move |this, cx| {
         let result = task.await;
@@ -66,9 +79,17 @@ pub fn spawn_query<T, V>(
                     query_key = %key_for_cleanup.cache_key(),
                     "Query completed successfully"
                 );
-                client_for_cleanup.set_query_data(&key_for_cleanup, data.clone(), options);
+                // Apply select transformation if present
+                let final_data = if let Some(select_fn) = &select {
+                    let boxed: Box<dyn std::any::Any + Send + Sync> = Box::new(data);
+                    let transformed = select_fn(&*boxed);
+                    *transformed.downcast::<T>().expect("select returned wrong type")
+                } else {
+                    data
+                };
+                client_for_cleanup.set_query_data(&key_for_cleanup, final_data.clone(), options);
                 client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
-                QueryState::Success(data)
+                QueryState::Success(final_data)
             }
             Err(e) => {
                 tracing::warn!(
@@ -108,7 +129,7 @@ pub fn spawn_mutation<T, P, V>(
     let invalidate_keys = mutation.invalidate_keys.clone();
     let on_mutate = mutation.on_mutate.clone();
     let client = client.clone();
-    let _params_for_rollback = params.clone(); // Unused but kept for potential future use
+    let _params_for_rollback = params.clone();
 
     tracing::debug!(
         target: "rs_query",

@@ -20,6 +20,6 @@ pub use infinite_executor::{spawn_infinite_query, InfiniteQueryObserver};
 pub use key::QueryKey;
 pub use mutation::{Mutation, MutationState, RollbackContext};
 pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};
-pub use options::{QueryOptions, RefetchOnMount, RetryConfig};
+pub use options::{InitialData, PlaceholderData, QueryOptions, RefetchOnMount, RetryConfig};
 pub use query::Query;
 pub use state::QueryState;
