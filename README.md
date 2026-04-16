@@ -1,6 +1,6 @@
 # rs-query
 
-**rs-query** is a Rust port of the popular [TanStack Query](https://tanstack.com/query) data‑fetching library, built specifically for the [GPUI](https://www.gpui.rs/) framework. It provides declarative, cache‑aware queries and mutations with automatic background refetching, retries, and hierarchical cache invalidation.
+**rs-query** is a Rust port of the popular [TanStack Query](https://tanstack.com/query) data‑fetching library, built specifically for the [GPUI](https://www.gpui.rs/) framework. It provides declarative, cache‑aware queries and mutations with automatic background refetching, retries, hierarchical cache invalidation, and reactive observers.
 
 ## Features
 
@@ -10,8 +10,15 @@
 - **Smart Retries** – Exponential backoff for transient failures, configurable per query.
 - **Request Deduplication** – Identical concurrent queries are coalesced into a single network call.
 - **Hierarchical Invalidation** – Invalidate whole families of queries using key prefix matching.
+- **Reactive Observers** – `QueryObserver` subscribes to cache changes for automatic UI updates.
+- **Optimistic Updates** – Mutations support `on_mutate` with automatic rollback on failure.
+- **Infinite Queries** – Paginated data with `fetch_next_page`, `has_next_page`, and `max_pages`.
+- **Query Options** – `initialData`, `placeholderData`, and `select` transformations.
+- **Background Refetch** – Configurable `refetch_interval` and window focus refetching.
+- **Hydration & Persistence** – `dehydrate` and `hydrate` APIs for SSR and offline storage.
+- **Devtools** – Optional GPUI component for inspecting and debugging the query cache.
 - **Type‑Safe** – Fully generic over your data types with `Send + Sync` bounds for seamless async use.
-- **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`; no external async runtime required.
+- **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`.
 
 ## Installation
 
@@ -20,9 +27,12 @@ Add `rs-query` as a Git dependency in your `Cargo.toml`:
 ```toml
 [dependencies]
 rs-query = { git = "https://github.com/elcoosp/rs-query" }
+
+# Optional: enable devtools
+# rs-query = { git = "...", features = ["devtools"] }
 ```
 
-Make sure your project already depends on `gpui` (rs‑query uses GPUI’s background executor and `futures-timer` for backoff delays).
+Make sure your project already depends on `gpui` and `tokio` (with `rt-multi-thread`, `time`, and `sync` features).
 
 ## Quick Start
 
@@ -60,41 +70,29 @@ let users_query = Query::new(QueryKey::new("users"), fetch_users)
     .stale_time(std::time::Duration::from_secs(60));
 ```
 
-### 3. Execute the Query in a GPUI View
+### 3. Observe and Execute the Query
 
-Use `spawn_query` inside your `render` or an action handler. It automatically updates the cache and invokes your callback when the fetch completes (or fails).
+Use `QueryObserver` to get reactive state updates:
 
 ```rust
-use rs_query::{spawn_query, QueryState};
+use rs_query::{QueryObserver, spawn_query};
 
 fn fetch_users(&mut self, cx: &mut ViewContext<Self>) {
     let client = self.query_client.clone();
     let query = self.users_query.clone();
 
+    let observer = QueryObserver::new(&client, query.key.clone());
     spawn_query(cx, &client, &query, move |this, state, cx| {
-        match state {
-            QueryState::Success(users) => {
-                this.users = users;
-                this.error = None;
-            }
-            QueryState::Error { error, stale_data } => {
-                this.error = Some(error.to_string());
-                // Optionally fall back to stale_data
-                if let Some(stale) = stale_data {
-                    this.users = stale;
-                }
-            }
-            QueryState::Loading => {
-                // Show a loading indicator
-            }
-            _ => {}
-        }
+        // The observer will automatically update its state
         cx.notify();
     });
+
+    // Store the observer to access state later
+    self.users_observer = Some(observer);
 }
 ```
 
-### 4. Perform Mutations with Automatic Invalidation
+### 4. Perform Mutations with Optimistic Updates
 
 ```rust
 use rs_query::{Mutation, spawn_mutation, MutationState};
@@ -102,7 +100,24 @@ use rs_query::{Mutation, spawn_mutation, MutationState};
 let create_user = Mutation::new(|params: CreateUserParams| async move {
     api::create_user(params).await
 })
-.invalidates_key(QueryKey::new("users"));
+.invalidates_key(QueryKey::new("users"))
+.on_mutate(|client, params| {
+    // Optimistically add to cache
+    client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
+        let mut users = old.unwrap_or_default();
+        users.push(User { id: params.id, name: params.name.clone() });
+        users
+    });
+    // Return rollback function
+    Ok(Box::new(move |client| {
+        client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
+            old.map(|mut users| {
+                users.retain(|u| u.id != params.id);
+                users
+            })
+        });
+    }))
+});
 
 fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) {
     let client = self.query_client.clone();
@@ -112,9 +127,9 @@ fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) 
         match state {
             MutationState::Success(user) => {
                 this.show_success("User created");
-                // The "users" query is automatically invalidated and will refetch next time
             }
             MutationState::Error(e) => {
+                // Rollback happens automatically
                 this.show_error(e.to_string());
             }
             _ => {}
@@ -122,6 +137,32 @@ fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) 
         cx.notify();
     });
 }
+```
+
+### 5. Infinite Queries
+
+```rust
+use rs_query::{InfiniteQuery, spawn_infinite_query};
+
+let projects_query = InfiniteQuery::new(
+    QueryKey::new("projects"),
+    |cursor| async move { fetch_projects(cursor).await },
+    0, // initial_page_param
+)
+.get_next_page_param(|last_page, _pages| last_page.next_cursor)
+.max_pages(3);
+
+let observer = spawn_infinite_query(cx, &client, &query, |this, state, cx| {
+    match state {
+        QueryState::Success(data) => {
+            this.projects = data.pages.into_iter().flatten().collect();
+        }
+        _ => {}
+    }
+    cx.notify();
+});
+
+// Later: observer.fetch_next_page();
 ```
 
 ## API Overview
@@ -133,6 +174,9 @@ Central cache and query manager.
 - `get_query_data<T>(key: &QueryKey) -> Option<T>`
 - `set_query_data<T>(key: &QueryKey, data: T, options: QueryOptions)`
 - `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale
+- `refetch_all_stale()` – triggers refetch of all stale queries (e.g., on window focus)
+- `dehydrate() -> DehydratedState` – serializes cache for persistence
+- `hydrate(state: DehydratedState)` – restores cache from dehydrated state
 - `clear()` – empties the entire cache
 - `gc()` – removes entries older than their `gc_time`
 
@@ -145,6 +189,21 @@ Definition of a query.
 - `.gc_time(duration)` – inactive cache lifetime
 - `.retry(config)` – custom retry behaviour
 - `.enabled(bool)` – conditionally disable the query
+- `.initial_data(data)` / `.initial_data_fn(f)` – populate cache if empty
+- `.placeholder_data(data)` / `.placeholder_data_fn(f)` – show while loading
+- `.select(f)` – transform data before returning
+- `.refetch_interval(duration)` – poll at interval
+- `.refetch_on_window_focus(bool)` – refetch when window regains focus
+
+### `InfiniteQuery<T, P>`
+
+Definition of an infinite query.
+
+- `InfiniteQuery::new(key, fetch_fn, initial_page_param)`
+- `.get_next_page_param(f)` – function to extract next cursor
+- `.get_previous_page_param(f)` – function to extract previous cursor
+- `.max_pages(n)` – limit stored pages
+- Supports same options as `Query<T>`
 
 ### `Mutation<T, P>`
 
@@ -152,6 +211,16 @@ Definition of a mutation.
 
 - `Mutation::new(mutate_fn)` – builder start
 - `.invalidates_key(key)` / `.invalidates(keys)` – keys to invalidate on success
+- `.on_mutate(f)` – optimistic update with rollback
+
+### `QueryObserver<T>`
+
+Reactive observer for a query.
+
+- `QueryObserver::new(client, key)`
+- `.state() -> &QueryState<T>` – current state
+- `.update()` – refresh state from cache
+- `.refetch()` – manually trigger refetch
 
 ### `QueryKey`
 
@@ -180,38 +249,59 @@ Enums that carry data alongside the state.
 ### Executors
 
 - `spawn_query(cx, client, query, callback)` – executes a query on GPUI’s background executor.
-- `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation and invalidates relevant queries on success.
+- `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation with optional optimistic updates.
+- `spawn_infinite_query(cx, client, query, callback) -> InfiniteQueryObserver` – executes an infinite query.
+
+### Hydration
+
+- `client.dehydrate() -> DehydratedState` – serializes cache state.
+- `client.hydrate(state, options)` – restores cache from dehydrated state.
+- Enable `serde` feature for JSON serialization support.
+
+### Devtools
+
+Enable the `devtools` feature to use the `QueryDevtools` component:
+
+```rust
+#[cfg(feature = "devtools")]
+let devtools = QueryDevtools::new(client.clone(), cx);
+// Add to your window
+```
+
+The devtools panel shows active queries, a timeline of state changes, and cache inspection.
 
 ## Comparison with TanStack Query
 
-rs‑query aims to provide the core experience of TanStack Query while respecting Rust’s ownership model and GPUI’s async patterns. Below is a summary of what is currently implemented and what remains on the roadmap.
+rs‑query aims to provide the core experience of TanStack Query while respecting Rust’s ownership model and GPUI’s async patterns. Below is a summary of what is currently implemented.
 
-| Feature                                   | Status         |
-|-------------------------------------------|----------------|
-| Query cache & GC                          | ✅ Implemented |
-| Stale‑while‑revalidate                    | ✅ Implemented |
-| Automatic retries (exponential backoff)   | ✅ Implemented |
-| Request deduplication                     | ✅ Implemented |
-| Hierarchical key invalidation             | ✅ Implemented |
-| Query / mutation observers                | ❌ Not yet     |
-| Optimistic updates                        | ❌ Not yet     |
-| Infinite queries / pagination             | ❌ Not yet     |
-| `placeholderData` / `initialData`         | ❌ Not yet     |
-| `select` transformation                   | ❌ Not yet     |
-| `refetchInterval` / window focus refetch  | ❌ Not yet (GPUI lacks focus events) |
-| Hydration / persistence                   | ❌ Not yet     |
-| Devtools                                  | ❌ Not yet     |
-| Suspense integration                      | N/A (GPUI does not use Suspense) |
-| Structural sharing                        | ❌ Not yet     |
-| Query cancellation                        | Partial (tasks can be aborted via GPUI) |
+| Feature                                   | Status          |
+|-------------------------------------------|-----------------|
+| Query cache & GC                          | ✅ Implemented  |
+| Stale‑while‑revalidate                    | ✅ Implemented  |
+| Automatic retries (exponential backoff)   | ✅ Implemented  |
+| Request deduplication                     | ✅ Implemented  |
+| Hierarchical key invalidation             | ✅ Implemented  |
+| Query observers (reactive state)          | ✅ Implemented  |
+| Optimistic updates with rollback          | ✅ Implemented  |
+| Infinite queries / pagination             | ✅ Implemented  |
+| `initialData` / `placeholderData`         | ✅ Implemented  |
+| `select` transformation                   | ✅ Implemented  |
+| `refetchInterval` / window focus refetch  | ✅ Implemented  |
+| Hydration / persistence                   | ✅ Implemented  |
+| Devtools                                  | ✅ Implemented  |
+| Structural sharing                        | ⚠️ Placeholder  |
+| Query cancellation                        | ✅ Implemented  |
+| Suspense integration                      | N/A (GPUI)     |
+| `useIsFetching` / `useIsMutating` helpers | ❌ Not yet     |
+| Full query filters API                    | ❌ Not yet     |
 
 ## Contributing
 
-Contributions are welcome! If you’d like to help implement missing features or improve existing ones, please open an issue or pull request on the [repository](https://github.com/elcoosp/rs-query). Focus areas include:
+Contributions are welcome! If you'd like to help improve rs-query, please open an issue or pull request on the [repository](https://github.com/elcoosp/rs-query). Focus areas include:
 
-- Infinite query support
-- Optimistic mutation updates
-- Cache persistence with `serde`
+- Full structural sharing implementation
+- `useIsFetching` / `useIsMutating` helpers
+- Advanced query filters
 - Framework adapters for other Rust UI libraries (Dioxus, Leptos, etc.)
 
 ## License
