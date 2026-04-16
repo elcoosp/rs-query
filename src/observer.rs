@@ -38,9 +38,7 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
         let cache_key = key.cache_key().to_string();
         let rx = client.subscribe(&cache_key);
         let current_state = Self::compute_initial_state(client, &key);
-        let options = client
-            .get_query_options(&key)
-            .unwrap_or_default();
+        let options = client.get_query_options(&key).unwrap_or_default();
 
         let mut observer = Self {
             key,
@@ -109,5 +107,87 @@ impl<T: Clone + Send + Sync + 'static> Drop for QueryObserver<T> {
         if let Some(handle) = self.interval_handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryClient, QueryKey, QueryOptions};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn test_observer_initial_state() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let observer = QueryObserver::<String>::new(&client, key.clone());
+        assert!(matches!(observer.state(), QueryState::Idle));
+
+        // Set data and create new observer
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+        let observer2 = QueryObserver::<String>::new(&client, key);
+        assert!(matches!(observer2.state(), QueryState::Success(_)));
+    }
+
+    #[tokio::test]
+    async fn test_observer_updates_on_notification() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut observer = QueryObserver::<String>::new(&client, key.clone());
+        assert!(matches!(observer.state(), QueryState::Idle));
+
+        // Set data triggers notification
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        // Wait a tiny bit for notification to propagate
+        sleep(Duration::from_millis(10)).await;
+
+        observer.update();
+        assert!(matches!(observer.state(), QueryState::Success(ref s) if s == "data"));
+    }
+
+    #[tokio::test]
+    async fn test_observer_refetch() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::from_millis(10),
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "old".to_string(), options);
+        sleep(Duration::from_millis(20)).await;
+
+        let observer = QueryObserver::<String>::new(&client, key.clone());
+        // Should be stale
+        assert!(matches!(observer.state(), QueryState::Stale(_)));
+
+        observer.refetch();
+        assert!(client.is_stale(&key));
+    }
+
+    #[tokio::test]
+    async fn test_observer_interval_refetch() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            refetch_interval: Some(Duration::from_millis(50)),
+            refetch_interval_in_background: true,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options.clone());
+
+        let observer = QueryObserver::<String>::new(&client, key.clone());
+
+        // Wait for interval to tick
+        sleep(Duration::from_millis(120)).await;
+
+        // Observer still alive
+        assert!(client.get_query_data::<String>(&key).is_some());
+        drop(observer);
     }
 }

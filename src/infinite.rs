@@ -112,3 +112,33 @@ where
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryError, QueryKey};
+
+    #[test]
+    fn test_infinite_data_default() {
+        let data: InfiniteData<String, i32> = InfiniteData::default();
+        assert!(data.pages.is_empty());
+        assert!(data.page_params.is_empty());
+    }
+
+    #[test]
+    fn test_infinite_query_builder() {
+        let query = InfiniteQuery::<String, i32>::new(
+            QueryKey::new("test"),
+            |page| async move { Ok::<_, QueryError>(format!("page {}", page)) },
+            0,
+        )
+        .get_next_page_param(|last, _pages| Some(last.len() as i32))
+        .max_pages(5)
+        .stale_time(std::time::Duration::from_secs(10));
+
+        assert_eq!(query.initial_page_param, 0);
+        assert!(query.get_next_page_param.is_some());
+        assert_eq!(query.max_pages, Some(5));
+        assert_eq!(query.options.stale_time, std::time::Duration::from_secs(10));
+    }
+}

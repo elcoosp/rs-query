@@ -154,3 +154,29 @@ impl RetryConfig {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_query_options_default() {
+        let opts = QueryOptions::default();
+        assert_eq!(opts.stale_time, Duration::ZERO);
+        assert_eq!(opts.gc_time, Duration::from_secs(5 * 60));
+        assert_eq!(opts.refetch_on_mount, RefetchOnMount::IfStale);
+        assert!(opts.enabled);
+        assert!(opts.structural_sharing);
+        assert!(opts.refetch_interval.is_none());
+        assert!(!opts.refetch_interval_in_background);
+        assert!(opts.refetch_on_window_focus);
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let retry = RetryConfig::default();
+        assert_eq!(retry.max_retries, 3);
+        assert_eq!(retry.base_delay, Duration::from_millis(1000));
+        assert_eq!(retry.max_delay, Duration::from_secs(30));
+    }
+}

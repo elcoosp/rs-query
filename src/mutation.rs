@@ -134,3 +134,48 @@ where
         self
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryClient, QueryKey, QueryOptions};
+
+    #[test]
+    fn test_mutation_builder() {
+        let mutation = Mutation::<String, String>::new(|p| async move { Ok(p) })
+            .invalidates_key(QueryKey::new("test"))
+            .on_mutate(|_client, _p| Ok(Box::new(|_| {})));
+
+        assert_eq!(mutation.invalidate_keys.len(), 1);
+        assert!(mutation.on_mutate.is_some());
+    }
+
+    #[test]
+    fn test_mutation_state_methods() {
+        assert!(MutationState::<()>::Idle.is_idle());
+        assert!(MutationState::<()>::Pending.is_pending());
+        assert!(MutationState::Success(()).is_success());
+        assert!(MutationState::<()>::Error(QueryError::Custom("e".into())).is_error());
+
+        assert_eq!(MutationState::Success(42).data(), Some(&42));
+        assert_eq!(MutationState::<i32>::Idle.data(), None);
+    }
+
+    #[test]
+    fn test_rollback_context() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, 0, QueryOptions::default());
+
+        let key_for_closure = key.clone(); // Add this line
+        let rollback: RollbackContext = Box::new(move |c| {
+            c.set_query_data(
+                &key_for_closure, // <-- Use the clone inside the closure
+                -1,
+                QueryOptions::default(),
+            );
+        });
+        // Apply rollback
+        rollback(&client);
+        assert_eq!(client.get_query_data::<i32>(&key), Some(-1));
+    }
+}

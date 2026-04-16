@@ -33,3 +33,30 @@ impl Default for FocusManager {
         Self::new()
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_focus_manager_default() {
+        let fm = FocusManager::new();
+        assert!(fm.is_focused());
+    }
+
+    #[test]
+    fn test_focus_manager_set_focused() {
+        let fm = FocusManager::new();
+        fm.set_focused(false);
+        assert!(!fm.is_focused());
+        fm.set_focused(true);
+        assert!(fm.is_focused());
+    }
+
+    #[test]
+    fn test_focus_manager_clone() {
+        let fm1 = FocusManager::new();
+        let fm2 = fm1.clone();
+        fm1.set_focused(false);
+        assert!(!fm2.is_focused());
+    }
+}

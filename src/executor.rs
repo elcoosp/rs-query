@@ -275,7 +275,120 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom(
-        "Max retries exceeded".into(),
-    )))
+    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryError, RetryConfig};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_execute_with_retry_success_first_try() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count = call_count.clone();
+
+        let fetch_fn: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move || {
+            let count = count.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, QueryError>("data".to_string())
+            }) as _
+        });
+
+        let retry_config = RetryConfig::default();
+        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
+        assert_eq!(result.unwrap(), "data");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_retry_retries_on_error() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count = call_count.clone();
+
+        let fetch_fn: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move || {
+            let count = count.clone();
+            Box::pin(async move {
+                let attempts = count.fetch_add(1, Ordering::SeqCst);
+                if attempts < 2 {
+                    Err(QueryError::Network("fail".into()))
+                } else {
+                    Ok("success".to_string())
+                }
+            }) as _
+        });
+
+        let retry_config = RetryConfig {
+            max_retries: 3,
+            base_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+        };
+        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
+        assert_eq!(result.unwrap(), "success");
+        assert_eq!(call_count.load(Ordering::SeqCst), 3); // initial + 2 retries
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_retry_exhausts_retries() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count = call_count.clone();
+
+        let fetch_fn: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move || {
+            let count = count.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err(QueryError::Network("fail".into()))
+            }) as _
+        });
+
+        let retry_config = RetryConfig {
+            max_retries: 2,
+            base_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+        };
+        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
+        assert!(result.is_err());
+        assert_eq!(call_count.load(Ordering::SeqCst), 3); // initial + 2 retries
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_retry_non_retryable_error() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count = call_count.clone();
+
+        let fetch_fn: Arc<
+            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move || {
+            let count = count.clone();
+            Box::pin(async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err(QueryError::Unauthorized)
+            }) as _
+        });
+
+        let retry_config = RetryConfig::default();
+        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
+        assert!(result.is_err());
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
 }

@@ -163,7 +163,11 @@ where
                 client_for_cleanup.set_infinite_data(&key_for_cleanup, data, options);
                 client_for_cleanup
                     .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
-                QueryState::Success(client_for_cleanup.get_infinite_data(&key_for_cleanup).unwrap())
+                QueryState::Success(
+                    client_for_cleanup
+                        .get_infinite_data(&key_for_cleanup)
+                        .unwrap(),
+                )
             }
             Ok(Err(e)) => {
                 tracing::warn!(
@@ -272,7 +276,32 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom(
-        "Max retries exceeded".into(),
-    )))
+    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryClient, QueryKey};
+
+    #[test]
+    fn test_compute_state() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let state = InfiniteQueryObserver::<String, i32>::compute_state(&client, &key);
+        assert!(matches!(state, QueryState::Idle));
+    }
+
+    #[test]
+    fn test_compute_pagination_flags() {
+        let client = QueryClient::new();
+        let query = InfiniteQuery::<String, i32>::new(
+            QueryKey::new("pages"),
+            |_| async { Ok("page".to_string()) },
+            0,
+        );
+        let (has_next, has_prev) =
+            InfiniteQueryObserver::<String, i32>::compute_pagination_flags(&client, &query);
+        assert!(!has_next);
+        assert!(!has_prev);
+    }
 }

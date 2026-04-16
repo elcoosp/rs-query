@@ -75,7 +75,6 @@ impl Hash for QueryKey {
         self.cached_key.hash(state);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,11 +107,41 @@ mod tests {
     }
 
     #[test]
+    fn test_key_matching_with_segments() {
+        let key = QueryKey::new("users").segment("posts").with("id", 1);
+        let pattern1 = QueryKey::new("users");
+        let pattern2 = QueryKey::new("users").segment("posts");
+        let pattern3 = QueryKey::new("users").segment("comments");
+
+        assert!(key.matches(&pattern1));
+        assert!(key.matches(&pattern2));
+        assert!(!key.matches(&pattern3));
+    }
+
+    #[test]
     fn test_key_caching() {
         let key = QueryKey::new("users").with("id", 42);
         let s1 = key.cache_key();
         let s2 = key.cache_key();
-        // Same pointer equality because it's the same &str from the same field.
         assert_eq!(s1 as *const str, s2 as *const str);
+    }
+
+    #[test]
+    fn test_key_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let key1 = QueryKey::new("users").with("id", 1);
+        let key2 = QueryKey::new("users").with("id", 1);
+        let key3 = QueryKey::new("users").with("id", 2);
+
+        let hash = |k: &QueryKey| {
+            let mut h = DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish()
+        };
+
+        assert_eq!(hash(&key1), hash(&key2));
+        assert_ne!(hash(&key1), hash(&key3));
     }
 }

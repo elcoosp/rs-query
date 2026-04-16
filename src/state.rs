@@ -84,3 +84,45 @@ impl<T: Clone> QueryState<T> {
         self.data().cloned().unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_state_methods() {
+        assert!(QueryState::<()>::Idle.is_idle());
+        assert!(QueryState::<()>::Loading.is_loading());
+        assert!(QueryState::Refetching(()).is_fetching());
+        assert!(QueryState::Success(()).is_success());
+        assert!(QueryState::Stale(()).is_stale());
+        assert!(QueryState::<()>::Error {
+            error: QueryError::Custom("e".into()),
+            stale_data: None
+        }
+        .is_error());
+    }
+
+    #[test]
+    fn test_query_state_data() {
+        assert_eq!(QueryState::Success(42).data(), Some(&42));
+        assert_eq!(QueryState::Stale(42).data(), Some(&42));
+        assert_eq!(QueryState::Refetching(42).data(), Some(&42));
+        assert_eq!(QueryState::<i32>::Idle.data(), None);
+        assert_eq!(QueryState::<i32>::Loading.data(), None);
+        assert_eq!(
+            QueryState::<i32>::Error {
+                error: QueryError::Custom("e".into()),
+                stale_data: Some(42)
+            }
+            .data(),
+            Some(&42)
+        );
+    }
+
+    #[test]
+    fn test_unwrap_or_default() {
+        assert_eq!(QueryState::Success(42).unwrap_or_default(), 42);
+        assert_eq!(QueryState::<i32>::Idle.unwrap_or_default(), 0);
+    }
+}

@@ -63,3 +63,52 @@ impl From<&str> for QueryError {
         Self::Custom(s.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_is_retryable() {
+        assert!(QueryError::Network("".into()).is_retryable());
+        assert!(QueryError::Timeout(Duration::from_secs(1)).is_retryable());
+        assert!(QueryError::Http {
+            status: 500,
+            message: "".into()
+        }
+        .is_retryable());
+        assert!(QueryError::Http {
+            status: 503,
+            message: "".into()
+        }
+        .is_retryable());
+        assert!(!QueryError::Http {
+            status: 400,
+            message: "".into()
+        }
+        .is_retryable());
+        assert!(!QueryError::Custom("".into()).is_retryable());
+        assert!(!QueryError::Unauthorized.is_retryable());
+        assert!(!QueryError::NotFound("".into()).is_retryable());
+        assert!(!QueryError::Validation("".into()).is_retryable());
+    }
+
+    #[test]
+    fn test_error_display() {
+        let err = QueryError::Network("boom".into());
+        assert_eq!(err.to_string(), "Network error: boom");
+
+        let err = QueryError::Http {
+            status: 404,
+            message: "not found".into(),
+        };
+        assert_eq!(err.to_string(), "HTTP error 404: not found");
+    }
+
+    #[test]
+    fn test_from_string() {
+        let err: QueryError = "oops".to_string().into();
+        assert!(matches!(err, QueryError::Custom(s) if s == "oops"));
+    }
+}

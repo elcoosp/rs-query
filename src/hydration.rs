@@ -89,10 +89,7 @@ impl QueryClient {
                 cache_key: key.clone(),
                 data: data_str,
                 type_name: std::any::type_name::<()>().to_string(), // Placeholder
-                fetched_at_ms: entry
-                    .fetched_at
-                    .duration_since(Instant::now() - entry.fetched_at.elapsed())
-                    .as_millis() as u64,
+                fetched_at_ms: entry.fetched_at.elapsed().as_millis() as u64,
                 options: DehydratedQueryOptions {
                     stale_time_ms: entry.options.stale_time.as_millis() as u64,
                     gc_time_ms: entry.options.gc_time.as_millis() as u64,
@@ -122,6 +119,10 @@ impl QueryClient {
     /// This will merge the dehydrated data into the existing cache.
     /// If `respect_timestamps` is true, only overwrite if the dehydrated data is newer.
     pub fn hydrate(&self, state: DehydratedState, options: HydrateOptions) {
+        use crate::client::CacheEntry;
+        use std::any::TypeId;
+        use std::sync::Arc;
+
         for (key, dehydrated) in state.queries {
             // Check if we already have this query
             if let Some(existing) = self.cache.get(&key) {
@@ -132,19 +133,58 @@ impl QueryClient {
                         continue;
                     }
                 }
-            }
 
-            // Reconstruct the data from the serialized string.
-            // Since we don't have the type information, we cannot deserialize.
-            // In practice, the user would provide a deserialization callback.
-            // For now, we skip actual data restoration.
-            // The observer system will eventually refetch.
-
-            // Mark as stale to trigger a refetch if needed.
-            if let Some(mut entry) = self.cache.get_mut(&key) {
-                entry.is_stale = true;
-                // Update options if desired.
+                // Update existing entry to be stale
+                if let Some(mut entry) = self.cache.get_mut(&key) {
+                    entry.is_stale = true;
+                }
+            } else {
+                // Insert a placeholder entry so the cache knows about this query
+                // and can report it as stale to trigger a refetch.
+                let entry = CacheEntry {
+                    data: Arc::new(()), // Placeholder data
+                    type_id: TypeId::of::<()>(),
+                    fetched_at: Instant::now() - Duration::from_millis(dehydrated.fetched_at_ms),
+                    last_accessed: Instant::now(),
+                    options: crate::QueryOptions {
+                        stale_time: Duration::from_millis(dehydrated.options.stale_time_ms),
+                        gc_time: Duration::from_millis(dehydrated.options.gc_time_ms),
+                        refetch_on_window_focus: dehydrated.options.refetch_on_window_focus,
+                        ..Default::default()
+                    },
+                    is_stale: true, // Mark as stale so observers know to refetch
+                };
+                self.cache.insert(key, entry);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryClient, QueryKey, QueryOptions};
+
+    #[test]
+    fn test_dehydrate_hydrate_cycle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        let dehydrated = client.dehydrate();
+        assert!(dehydrated.queries.contains_key(key.cache_key()));
+
+        let client2 = QueryClient::new();
+        client2.hydrate(dehydrated, HydrateOptions::default());
+
+        // The cache entry exists (marked stale) even if data not fully restored.
+        assert!(client2.is_stale(&key));
+    }
+
+    #[test]
+    fn test_dehydrate_empty() {
+        let client = QueryClient::new();
+        let dehydrated = client.dehydrate();
+        assert!(dehydrated.queries.is_empty());
     }
 }

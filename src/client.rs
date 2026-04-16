@@ -80,11 +80,9 @@ impl QueryClient {
             return None;
         }
 
-        // Check if stale
-        let age = entry.fetched_at.elapsed();
-        if age > entry.options.stale_time && !entry.is_stale {
-            return None;
-        }
+        // NOTE: Stale data is intentionally returned here!
+        // In React-Query, stale data is still shown to the user while a background refetch occurs.
+        // Users should check `client.is_stale(&key)` if they specifically need to know freshness.
 
         entry.data.downcast_ref::<T>().cloned()
     }
@@ -108,8 +106,9 @@ impl QueryClient {
     pub fn is_stale(&self, key: &QueryKey) -> bool {
         let cache_key = key.cache_key();
         if let Some(entry) = self.cache.get(cache_key) {
-            let age = entry.fetched_at.elapsed();
-            age > entry.options.stale_time || entry.is_stale
+            let time_stale = !entry.options.stale_time.is_zero()
+                && entry.fetched_at.elapsed() > entry.options.stale_time;
+            time_stale || entry.is_stale
         } else {
             false
         }
@@ -317,8 +316,10 @@ impl QueryClient {
         let keys: Vec<String> = self.cache.iter().map(|entry| entry.key().clone()).collect();
         for key in keys {
             if let Some(entry) = self.cache.get(&key) {
-                let age = entry.fetched_at.elapsed();
-                let is_stale = age > entry.options.stale_time || entry.is_stale;
+                let time_stale = !entry.options.stale_time.is_zero()
+                    && entry.fetched_at.elapsed() > entry.options.stale_time;
+                let is_stale = time_stale || entry.is_stale;
+
                 if is_stale && entry.options.refetch_on_window_focus {
                     drop(entry);
                     if let Some(mut entry_mut) = self.cache.get_mut(&key) {
@@ -345,5 +346,159 @@ impl Clone for QueryClient {
             subscribers: Arc::clone(&self.subscribers),
             focus_manager: self.focus_manager.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{QueryKey, QueryOptions};
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn test_set_and_get_query_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let data = "hello".to_string();
+
+        client.set_query_data(&key, data.clone(), QueryOptions::default());
+        let retrieved: Option<String> = client.get_query_data(&key);
+        assert_eq!(retrieved, Some(data));
+    }
+
+    #[tokio::test]
+    async fn test_get_query_data_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let data = "hello".to_string();
+        let options = QueryOptions {
+            stale_time: Duration::from_millis(10),
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, data.clone(), options);
+        sleep(Duration::from_millis(20)).await;
+
+        let retrieved: Option<String> = client.get_query_data(&key);
+
+        // Stale data should STILL be returned to the UI
+        assert_eq!(retrieved, Some(data));
+        // But the client should correctly identify it as stale
+        assert!(client.is_stale(&key));
+    }
+    #[tokio::test]
+    async fn test_invalidate_queries() {
+        let client = QueryClient::new();
+        let key1 = QueryKey::new("users").with("id", 1);
+        let key2 = QueryKey::new("users").with("id", 2);
+        let data = "user".to_string();
+
+        client.set_query_data(&key1, data.clone(), QueryOptions::default());
+        client.set_query_data(&key2, data.clone(), QueryOptions::default());
+
+        // Invalidate all users
+        client.invalidate_queries(&QueryKey::new("users"));
+
+        // Both should be stale now
+        assert!(client.is_stale(&key1));
+        assert!(client.is_stale(&key2));
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_queries_exact_match() {
+        let client = QueryClient::new();
+        let key1 = QueryKey::new("users").with("id", 1);
+        let key2 = QueryKey::new("users").with("id", 2);
+        let data = "user".to_string();
+
+        client.set_query_data(&key1, data.clone(), QueryOptions::default());
+        client.set_query_data(&key2, data.clone(), QueryOptions::default());
+
+        // Invalidate only key1
+        client.invalidate_queries(&key1);
+
+        assert!(client.is_stale(&key1));
+        assert!(!client.is_stale(&key2));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_and_notify() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let cache_key = key.cache_key().to_string();
+
+        let mut rx = client.subscribe(&cache_key);
+
+        // Set data triggers notification
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        let update = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .expect("should receive notification")
+            .expect("should be ok");
+
+        assert_eq!(update.key, cache_key);
+        assert!(matches!(update.state_variant, QueryStateVariant::Success));
+    }
+
+    #[tokio::test]
+    async fn test_garbage_collection() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            gc_time: Duration::from_millis(50),
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+        assert!(client.get_query_data::<String>(&key).is_some());
+
+        // Wait for GC to run (background thread runs every 60s, so manually call gc)
+        sleep(Duration::from_millis(60)).await;
+        client.gc();
+
+        assert!(client.get_query_data::<String>(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_refetch_all_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::from_millis(10),
+            refetch_on_window_focus: true,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+        sleep(Duration::from_millis(20)).await;
+
+        // Should be stale
+        assert!(client.is_stale(&key));
+
+        // Trigger refetch all stale (just ensures no panic)
+        client.refetch_all_stale();
+    }
+
+    #[tokio::test]
+    async fn test_is_in_flight_and_abort_handle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        assert!(!client.is_in_flight(&key));
+
+        // Simulate setting an abort handle
+        let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async {
+            let _ = tx.send(());
+        });
+        let abort_handle = handle.abort_handle();
+        client.set_abort_handle(&key, abort_handle);
+
+        assert!(client.is_in_flight(&key));
+
+        client.clear_abort_handle(&key);
+        assert!(!client.is_in_flight(&key));
     }
 }
