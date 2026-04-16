@@ -78,7 +78,6 @@ where
             };
             (has_next, has_prev)
         } else {
-            // No data yet; next/prev unknown but fetchNextPage can be attempted after initial load.
             (false, false)
         }
     }
@@ -123,9 +122,9 @@ where
     let initial_page_param = query.initial_page_param.clone();
     let options = query.options.clone();
     let client = client.clone();
-    let max_pages = query.max_pages;
-    let get_next = query.get_next_page_param.clone();
-    let get_prev = query.get_previous_page_param.clone();
+    let _max_pages = query.max_pages;
+    let _get_next = query.get_next_page_param.clone();
+    let _get_prev = query.get_previous_page_param.clone();
 
     let observer = InfiniteQueryObserver::new(&client, query.clone());
 

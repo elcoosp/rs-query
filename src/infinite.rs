@@ -1,6 +1,6 @@
 //! Infinite queries for paginated data
 
-use crate::{QueryClient, QueryError, QueryKey, QueryOptions, QueryState, RetryConfig};
+use crate::{QueryError, QueryKey, QueryOptions, RetryConfig};
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -27,6 +27,7 @@ impl<T, P> Default for InfiniteData<T, P> {
 }
 
 /// An infinite query definition.
+#[derive(Clone)]
 pub struct InfiniteQuery<T, P>
 where
     T: Clone + Send + Sync + Debug + 'static,

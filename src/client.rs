@@ -150,22 +150,23 @@ impl QueryClient {
         P: Clone + Send + Sync + 'static,
     {
         let cache_key = key.cache_key().to_string();
-        if let Some(mut entry) = self.cache.get_mut(&cache_key) {
-            if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
-                data.pages.push(page);
-                data.page_params.push(page_param);
-                if let Some(max) = max_pages {
-                    if data.pages.len() > max {
-                        data.pages.remove(0);
-                        data.page_params.remove(0);
-                    }
+        let mut entry = self.cache.get_mut(&cache_key)?;
+
+        if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
+            data.pages.push(page);
+            data.page_params.push(page_param);
+            if let Some(max) = max_pages {
+                if data.pages.len() > max {
+                    data.pages.remove(0);
+                    data.page_params.remove(0);
                 }
-                entry.fetched_at = Instant::now();
-                entry.last_accessed = Instant::now();
-                let result = data.clone();
-                self.notify_subscribers(&cache_key, QueryStateVariant::Success);
-                return Some(result);
             }
+            let result = data.clone();
+            // Update timestamps
+            entry.fetched_at = Instant::now();
+            entry.last_accessed = Instant::now();
+            self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+            return Some(result);
         }
         None
     }
@@ -183,22 +184,23 @@ impl QueryClient {
         P: Clone + Send + Sync + 'static,
     {
         let cache_key = key.cache_key().to_string();
-        if let Some(mut entry) = self.cache.get_mut(&cache_key) {
-            if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
-                data.pages.insert(0, page);
-                data.page_params.insert(0, page_param);
-                if let Some(max) = max_pages {
-                    if data.pages.len() > max {
-                        data.pages.pop();
-                        data.page_params.pop();
-                    }
+        let mut entry = self.cache.get_mut(&cache_key)?;
+
+        if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
+            data.pages.insert(0, page);
+            data.page_params.insert(0, page_param);
+            if let Some(max) = max_pages {
+                if data.pages.len() > max {
+                    data.pages.pop();
+                    data.page_params.pop();
                 }
-                entry.fetched_at = Instant::now();
-                entry.last_accessed = Instant::now();
-                let result = data.clone();
-                self.notify_subscribers(&cache_key, QueryStateVariant::Success);
-                return Some(result);
             }
+            let result = data.clone();
+            // Update timestamps
+            entry.fetched_at = Instant::now();
+            entry.last_accessed = Instant::now();
+            self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+            return Some(result);
         }
         None
     }
