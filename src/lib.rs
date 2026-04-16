@@ -3,6 +3,8 @@
 mod client;
 mod error;
 mod executor;
+mod infinite;
+mod infinite_executor;
 mod key;
 mod mutation;
 mod observer;
@@ -13,6 +15,8 @@ mod state;
 pub use client::QueryClient;
 pub use error::QueryError;
 pub use executor::{spawn_mutation, spawn_query};
+pub use infinite::{InfiniteData, InfiniteQuery};
+pub use infinite_executor::{spawn_infinite_query, InfiniteQueryObserver};
 pub use key::QueryKey;
 pub use mutation::{Mutation, MutationState, RollbackContext};
 pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};

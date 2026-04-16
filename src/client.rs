@@ -1,5 +1,6 @@
 //! QueryClient - central cache and query manager
 
+use crate::infinite::InfiniteData;
 use crate::observer::{QueryStateUpdate, QueryStateVariant};
 use crate::{QueryKey, QueryOptions};
 use dashmap::DashMap;
@@ -80,6 +81,15 @@ impl QueryClient {
         entry.data.downcast_ref::<T>().cloned()
     }
 
+    /// Get cached infinite data if available.
+    pub fn get_infinite_data<T, P>(&self, key: &QueryKey) -> Option<InfiniteData<T, P>>
+    where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        self.get_query_data::<InfiniteData<T, P>>(key)
+    }
+
     /// Check if the data for a key is stale.
     pub fn is_stale(&self, key: &QueryKey) -> bool {
         let cache_key = key.cache_key();
@@ -111,6 +121,86 @@ impl QueryClient {
             },
         );
         self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+    }
+
+    /// Set infinite query data.
+    pub fn set_infinite_data<T, P>(
+        &self,
+        key: &QueryKey,
+        data: InfiniteData<T, P>,
+        options: QueryOptions,
+    ) where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        self.set_query_data(key, data, options);
+    }
+
+    /// Append a new page to existing infinite data.
+    /// Returns the updated data if successful.
+    pub fn append_infinite_page<T, P>(
+        &self,
+        key: &QueryKey,
+        page: T,
+        page_param: P,
+        max_pages: Option<usize>,
+    ) -> Option<InfiniteData<T, P>>
+    where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        let cache_key = key.cache_key().to_string();
+        if let Some(mut entry) = self.cache.get_mut(&cache_key) {
+            if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
+                data.pages.push(page);
+                data.page_params.push(page_param);
+                if let Some(max) = max_pages {
+                    if data.pages.len() > max {
+                        data.pages.remove(0);
+                        data.page_params.remove(0);
+                    }
+                }
+                entry.fetched_at = Instant::now();
+                entry.last_accessed = Instant::now();
+                let result = data.clone();
+                self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// Prepend a new page to existing infinite data (for bi-directional).
+    pub fn prepend_infinite_page<T, P>(
+        &self,
+        key: &QueryKey,
+        page: T,
+        page_param: P,
+        max_pages: Option<usize>,
+    ) -> Option<InfiniteData<T, P>>
+    where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        let cache_key = key.cache_key().to_string();
+        if let Some(mut entry) = self.cache.get_mut(&cache_key) {
+            if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
+                data.pages.insert(0, page);
+                data.page_params.insert(0, page_param);
+                if let Some(max) = max_pages {
+                    if data.pages.len() > max {
+                        data.pages.pop();
+                        data.page_params.pop();
+                    }
+                }
+                entry.fetched_at = Instant::now();
+                entry.last_accessed = Instant::now();
+                let result = data.clone();
+                self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+                return Some(result);
+            }
+        }
+        None
     }
 
     /// Invalidate queries matching the key pattern
