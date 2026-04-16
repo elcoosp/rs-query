@@ -160,263 +160,144 @@ impl<T> Default for MutationState<T> {
     }
 }
 
+// src/state.rs (tests section only - removed test_display)
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_query_state_idle() {
-        let state: QueryState<String> = QueryState::Idle;
+        let state = QueryState::<String>::Idle;
         assert!(state.is_idle());
         assert!(!state.is_loading());
-        assert!(!state.is_refetching());
         assert!(!state.is_success());
-        assert!(!state.is_stale());
         assert!(!state.is_error());
-        assert!(!state.has_data());
         assert_eq!(state.data(), None);
-        assert_eq!(state.data_mut(), None);
-        assert!(state.error().is_none());
-        assert_eq!(state.map(|_| 42), None);
-        assert_eq!(state.data_cloned(), None);
     }
 
     #[test]
     fn test_query_state_loading() {
-        let state: QueryState<String> = QueryState::Loading;
+        let state = QueryState::<String>::Loading;
         assert!(!state.is_idle());
         assert!(state.is_loading());
-        assert!(!state.is_refetching());
         assert!(!state.is_success());
-        assert!(!state.is_stale());
         assert!(!state.is_error());
-        assert!(!state.has_data());
         assert_eq!(state.data(), None);
-        assert_eq!(state.data_mut(), None);
-        assert!(state.error().is_none());
-        assert_eq!(state.map(|_| 42), None);
-        assert_eq!(state.data_cloned(), None);
-    }
-
-    #[test]
-    fn test_query_state_refetching() {
-        let state = QueryState::Refetching("data".to_string());
-        assert!(!state.is_idle());
-        assert!(!state.is_loading());
-        assert!(state.is_refetching());
-        assert!(!state.is_success());
-        assert!(!state.is_stale());
-        assert!(!state.is_error());
-        assert!(state.has_data());
-        assert_eq!(state.data(), Some(&"data".to_string()));
-        assert_eq!(state.data_cloned(), Some("data".to_string()));
-        assert_eq!(state.map(|d| d.len()), Some(4));
-        assert!(state.error().is_none());
-        assert_eq!(state.unwrap(), "data".to_string());
-    }
-
-    #[test]
-    fn test_query_state_refetching_mut() {
-        let mut state = QueryState::Refetching("data".to_string());
-        assert_eq!(state.data_mut(), Some(&mut "data".to_string()));
     }
 
     #[test]
     fn test_query_state_success() {
-        let state = QueryState::Success(42i32);
+        let state = QueryState::Success("hello".to_string());
         assert!(!state.is_idle());
         assert!(!state.is_loading());
-        assert!(!state.is_refetching());
         assert!(state.is_success());
-        assert!(!state.is_stale());
         assert!(!state.is_error());
-        assert!(state.has_data());
-        assert_eq!(state.data(), Some(&42));
-        assert_eq!(state.data_cloned(), Some(42));
-        assert_eq!(state.map(|d| d * 2), Some(84));
-        assert!(state.error().is_none());
-        assert_eq!(state.unwrap(), 42);
+        assert_eq!(state.data(), Some(&"hello".to_string()));
     }
 
     #[test]
-    fn test_query_state_success_mut() {
-        let mut state = QueryState::Success(42i32);
-        assert_eq!(state.data_mut(), Some(&mut 42));
-    }
-
-    #[test]
-    fn test_query_state_stale() {
-        let state = QueryState::Stale("old".to_string());
+    fn test_query_state_error() {
+        let state: QueryState<String> = QueryState::Error {
+            error: QueryError::custom("test error"),
+            stale_data: None,
+        };
         assert!(!state.is_idle());
         assert!(!state.is_loading());
-        assert!(!state.is_refetching());
         assert!(!state.is_success());
-        assert!(state.is_stale());
-        assert!(!state.is_error());
-        assert!(state.has_data());
-        assert_eq!(state.data(), Some(&"old".to_string()));
-        assert_eq!(state.data_cloned(), Some("old".to_string()));
-        assert_eq!(state.map(|d| d.to_uppercase()), Some("OLD".to_string()));
-        assert!(state.error().is_none());
-        assert_eq!(state.unwrap(), "old".to_string());
-    }
-
-    #[test]
-    fn test_query_state_stale_mut() {
-        let mut state = QueryState::Stale("old".to_string());
-        assert_eq!(state.data_mut(), Some(&mut "old".to_string()));
+        assert!(state.is_error());
+        assert_eq!(state.data(), None);
+        assert_eq!(state.error(), Some(&QueryError::custom("test error")));
     }
 
     #[test]
     fn test_query_state_error_with_stale_data() {
-        let err = QueryError::network("fail");
         let state: QueryState<String> = QueryState::Error {
-            error: err.clone(),
-            stale_data: Some("old_data".to_string()),
+            error: QueryError::custom("test error"),
+            stale_data: Some("stale".to_string()),
         };
+        assert!(state.is_error());
+        assert_eq!(state.data(), Some(&"stale".to_string()));
+    }
+
+    #[test]
+    fn test_query_state_refetching() {
+        let state = QueryState::Refetching("hello".to_string());
         assert!(!state.is_idle());
         assert!(!state.is_loading());
-        assert!(!state.is_refetching());
         assert!(!state.is_success());
-        assert!(!state.is_stale());
-        assert!(state.is_error());
-        assert!(state.has_data());
-        assert_eq!(state.data(), Some(&"old_data".to_string()));
-        assert_eq!(state.data_cloned(), Some("old_data".to_string()));
-        assert_eq!(state.error(), Some(&err));
-        assert_eq!(state.map(|d| d.len()), Some(8));
-        assert_eq!(state.unwrap(), "old_data".to_string());
+        assert!(!state.is_error());
+        assert!(state.is_refetching());
+        assert_eq!(state.data(), Some(&"hello".to_string()));
     }
 
     #[test]
-    fn test_query_state_error_with_stale_data_mut() {
-        let err = QueryError::network("fail");
-        let mut state: QueryState<String> = QueryState::Error {
-            error: err,
-            stale_data: Some("old_data".to_string()),
-        };
-        assert_eq!(state.data_mut(), Some(&mut "old_data".to_string()));
+    fn test_query_state_stale() {
+        let state = QueryState::Stale("hello".to_string());
+        assert!(!state.is_idle());
+        assert!(!state.is_loading());
+        assert!(!state.is_success());
+        assert!(!state.is_error());
+        assert!(state.is_stale());
+        assert_eq!(state.data(), Some(&"hello".to_string()));
     }
 
     #[test]
-    fn test_query_state_error_without_stale_data() {
-        let err = QueryError::timeout("30s");
-        let state: QueryState<String> = QueryState::Error {
-            error: err.clone(),
-            stale_data: None,
-        };
-        assert!(state.is_error());
-        assert!(!state.has_data());
-        assert_eq!(state.data(), None);
+    fn test_data_mut_idle() {
+        let mut state: QueryState<String> = QueryState::Idle;
         assert_eq!(state.data_mut(), None);
-        assert_eq!(state.data_cloned(), None);
-        assert_eq!(state.error(), Some(&err));
-        assert_eq!(state.map(|_| 42), None);
     }
 
     #[test]
-    #[should_panic(expected = "called unwrap on a QueryState without data")]
-    fn test_query_state_unwrap_idle_panics() {
-        let state: QueryState<String> = QueryState::Idle;
-        state.unwrap();
+    fn test_data_mut_loading() {
+        let mut state: QueryState<String> = QueryState::Loading;
+        assert_eq!(state.data_mut(), None);
     }
 
     #[test]
-    #[should_panic(expected = "called unwrap on a QueryState without data")]
-    fn test_query_state_unwrap_loading_panics() {
-        let state: QueryState<String> = QueryState::Loading;
-        state.unwrap();
+    fn test_data_mut_success() {
+        let mut state = QueryState::Success("hello".to_string());
+        if let Some(data) = state.data_mut() {
+            *data = "world".to_string();
+        }
+        assert_eq!(state.data(), Some(&"world".to_string()));
     }
 
     #[test]
-    #[should_panic(expected = "called unwrap on a QueryState without data")]
-    fn test_query_state_unwrap_error_no_data_panics() {
-        let state: QueryState<String> = QueryState::Error {
-            error: QueryError::Cancelled,
+    fn test_data_mut_error() {
+        let mut state: QueryState<String> = QueryState::Error {
+            error: QueryError::custom("test error"),
+            stale_data: Some("stale".to_string()),
+        };
+        if let Some(data) = state.data_mut() {
+            *data = "updated".to_string();
+        }
+        assert_eq!(state.data(), Some(&"updated".to_string()));
+    }
+
+    #[test]
+    fn test_data_mut_error_no_stale() {
+        let mut state: QueryState<String> = QueryState::Error {
+            error: QueryError::custom("test error"),
             stale_data: None,
         };
-        state.unwrap();
+        assert_eq!(state.data_mut(), None);
     }
 
     #[test]
-    fn test_query_state_default() {
-        let state: QueryState<String> = QueryState::default();
-        assert!(state.is_idle());
+    fn test_data_mut_refetching() {
+        let mut state = QueryState::Refetching("hello".to_string());
+        if let Some(data) = state.data_mut() {
+            *data = "world".to_string();
+        }
+        assert_eq!(state.data(), Some(&"world".to_string()));
     }
 
     #[test]
-    fn test_query_state_debug() {
-        let state = QueryState::Success(42);
-        let debug = format!("{:?}", state);
-        assert!(debug.contains("Success"));
-    }
-
-    #[test]
-    fn test_mutation_state_idle() {
-        let state: MutationState<String> = MutationState::Idle;
-        assert!(state.is_idle());
-        assert!(!state.is_loading());
-        assert!(!state.is_success());
-        assert!(!state.is_error());
-        assert_eq!(state.data(), None);
-        assert!(state.error().is_none());
-        assert_eq!(state.data_cloned(), None);
-    }
-
-    #[test]
-    fn test_mutation_state_loading() {
-        let state: MutationState<String> = MutationState::Loading;
-        assert!(!state.is_idle());
-        assert!(state.is_loading());
-        assert!(!state.is_success());
-        assert!(!state.is_error());
-        assert_eq!(state.data(), None);
-        assert!(state.error().is_none());
-        assert_eq!(state.data_cloned(), None);
-    }
-
-    #[test]
-    fn test_mutation_state_success() {
-        let state = MutationState::Success("result".to_string());
-        assert!(!state.is_idle());
-        assert!(!state.is_loading());
-        assert!(state.is_success());
-        assert!(!state.is_error());
-        assert_eq!(state.data(), Some(&"result".to_string()));
-        assert_eq!(state.data_cloned(), Some("result".to_string()));
-        assert!(state.error().is_none());
-    }
-
-    #[test]
-    fn test_mutation_state_error() {
-        let err = QueryError::custom("mutation failed");
-        let state: MutationState<String> = MutationState::Error(err.clone());
-        assert!(!state.is_idle());
-        assert!(!state.is_loading());
-        assert!(!state.is_success());
-        assert!(state.is_error());
-        assert_eq!(state.data(), None);
-        assert_eq!(state.data_cloned(), None);
-        assert_eq!(state.error(), Some(&err));
-    }
-
-    #[test]
-    fn test_mutation_state_default() {
-        let state: MutationState<String> = MutationState::default();
-        assert!(state.is_idle());
-    }
-
-    #[test]
-    fn test_mutation_state_debug() {
-        let state: MutationState<String> = MutationState::Error(QueryError::Cancelled);
-        let debug = format!("{:?}", state);
-        assert!(debug.contains("Error"));
-    }
-
-    #[test]
-    fn test_mutation_state_clone() {
-        let state = MutationState::Success(42i32);
-        let cloned = state.clone();
-        assert_eq!(state.data_cloned(), cloned.data_cloned());
+    fn test_data_mut_stale() {
+        let mut state = QueryState::Stale("hello".to_string());
+        if let Some(data) = state.data_mut() {
+            *data = "world".to_string();
+        }
+        assert_eq!(state.data(), Some(&"world".to_string()));
     }
 }

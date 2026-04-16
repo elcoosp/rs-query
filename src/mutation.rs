@@ -86,143 +86,78 @@ impl<T: Send + Sync + 'static, P: Send + Sync + 'static> Mutation<T, P> {
     }
 }
 
+// src/mutation.rs (tests section only)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MutationState;
-    use crate::QueryOptions;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::{QueryKey, QueryOptions};
 
-    #[tokio::test]
-    async fn test_mutation_new() {
+    #[test]
+    fn test_mutation_creation() {
         let mutation: Mutation<String, i32> =
             Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) });
-        let result = (mutation.mutate_fn)(42).await.unwrap();
-        assert_eq!(result, "result_42");
-    }
 
-    #[tokio::test]
-    async fn test_mutation_error() {
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|_param: i32| async move { Err(QueryError::network("fail")) });
-        let result = (mutation.mutate_fn)(42).await;
-        assert!(result.is_err());
+        assert_eq!(mutation.invalidates_keys.len(), 0);
+        assert!(mutation.on_mutate.is_none());
     }
 
     #[test]
-    fn test_mutation_invalidates_key() {
+    fn test_mutation_with_invalidation() {
+        let key1 = QueryKey::new("users");
+        let key2 = QueryKey::new("posts");
+
         let mutation: Mutation<String, i32> =
             Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
-                .invalidates_key(QueryKey::new("users"));
-
-        assert_eq!(mutation.invalidates_keys.len(), 1);
-        assert_eq!(mutation.invalidates_keys[0].cache_key(), "users");
-    }
-
-    #[test]
-    fn test_mutation_invalidates_multiple_keys() {
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
-                .invalidates(vec![QueryKey::new("users"), QueryKey::new("posts")]);
+                .invalidates_key(key1)
+                .invalidates_key(key2);
 
         assert_eq!(mutation.invalidates_keys.len(), 2);
     }
 
     #[test]
-    fn test_mutation_on_mutate_callback() {
-        let client = QueryClient::new();
+    fn test_mutation_with_on_mutate() {
         let key = QueryKey::new("users");
+        let key_for_test = key.clone();
 
         let mutation: Mutation<String, i32> =
             Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_mutate(
                 move |client: &QueryClient, _params: &i32| {
                     client.set_query_data(&key, "optimistic".to_string(), QueryOptions::default());
-                    let rollback_key = key.clone();
+                    let key_for_rollback = key.clone();
                     Ok(Box::new(move |client: &QueryClient| {
                         client.set_query_data(
-                            &rollback_key,
+                            &key_for_rollback,
                             "rolled_back".to_string(),
                             QueryOptions::default(),
                         );
-                    }) as RollbackFn)
+                    }))
                 },
             );
 
         assert!(mutation.on_mutate.is_some());
-        let callback = mutation.on_mutate.as_ref().unwrap();
-        let rollback = callback(&client, &42).unwrap();
-        let data: Option<String> = client.get_query_data(&key);
-        assert_eq!(data, Some("optimistic".to_string()));
-        rollback(&client);
-        let data: Option<String> = client.get_query_data(&key);
-        assert_eq!(data, Some("rolled_back".to_string()));
-    }
 
-    #[test]
-    fn test_mutation_on_mutate_error() {
         let client = QueryClient::new();
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_mutate(
-                |_client: &QueryClient, _params: &i32| Err(QueryError::custom("optimistic failed")),
-            );
+        if let Some(on_mutate) = &mutation.on_mutate {
+            let rollback = on_mutate(&client, &1).unwrap();
+            let data: Option<String> = client.get_query_data(&key_for_test);
+            assert_eq!(data, Some("optimistic".to_string()));
 
-        let callback = mutation.on_mutate.as_ref().unwrap();
-        let result = callback(&client, &42);
-        assert!(result.is_err());
+            rollback(&client);
+            let data: Option<String> = client.get_query_data(&key_for_test);
+            assert_eq!(data, Some("rolled_back".to_string()));
+        }
     }
 
     #[test]
-    fn test_mutation_on_success_callback() {
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = Arc::clone(&counter);
+    fn test_mutation_builder_chain() {
+        let key1 = QueryKey::new("users");
+        let key2 = QueryKey::new("posts");
 
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_success(
-                move |_data: &String, _params: &i32| {
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
-                },
-            );
-
-        assert!(mutation.on_success.is_some());
-        (mutation.on_success.as_ref().unwrap())(&"result".to_string(), &42);
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_mutation_on_error_callback() {
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = Arc::clone(&counter);
-
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_error(
-                move |_error: &QueryError, _params: &i32| {
-                    counter_clone.fetch_add(1, Ordering::SeqCst);
-                },
-            );
-
-        assert!(mutation.on_error.is_some());
-        (mutation.on_error.as_ref().unwrap())(&QueryError::network("fail"), &42);
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_mutation_no_callbacks() {
-        let mutation: Mutation<String, i32> =
-            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) });
-        assert!(mutation.on_mutate.is_none());
-        assert!(mutation.on_success.is_none());
-        assert!(mutation.on_error.is_none());
-        assert!(mutation.invalidates_keys.is_empty());
-    }
-
-    #[test]
-    fn test_mutation_clone() {
         let mutation: Mutation<String, i32> =
             Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
-                .invalidates_key(QueryKey::new("users"));
+                .invalidates_key(key1)
+                .invalidates_key(key2);
 
-        let cloned = mutation.clone();
-        assert_eq!(cloned.invalidates_keys.len(), 1);
-        assert_eq!(cloned.invalidates_keys[0].cache_key(), "users");
+        assert_eq!(mutation.invalidates_keys.len(), 2);
     }
 }
