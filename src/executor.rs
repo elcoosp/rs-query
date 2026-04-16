@@ -92,7 +92,7 @@ pub fn spawn_query<T, V>(
     .detach();
 }
 
-/// Execute a mutation with automatic cache invalidation.
+/// Execute a mutation with automatic cache invalidation and optional optimistic updates.
 pub fn spawn_mutation<T, P, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -106,13 +106,32 @@ pub fn spawn_mutation<T, P, V>(
 {
     let mutate_fn = mutation.mutate_fn.clone();
     let invalidate_keys = mutation.invalidate_keys.clone();
+    let on_mutate = mutation.on_mutate.clone();
     let client = client.clone();
+    let params_for_rollback = params.clone();
 
     tracing::debug!(
         target: "rs_query",
         invalidate_keys = ?invalidate_keys.iter().map(|k| k.cache_key()).collect::<Vec<_>>(),
         "Starting mutation"
     );
+
+    // Perform optimistic update if callback provided.
+    let rollback_context = if let Some(ref on_mutate_cb) = on_mutate {
+        match on_mutate_cb(&client, &params) {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                tracing::warn!(
+                    target: "rs_query",
+                    error = %e,
+                    "Optimistic update failed, mutation will proceed without optimistic data"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let task = cx
         .background_executor()
@@ -140,6 +159,10 @@ pub fn spawn_mutation<T, P, V>(
                     error = %e,
                     "Mutation failed"
                 );
+                // Rollback optimistic update if any
+                if let Some(rollback) = rollback_context {
+                    rollback(&client);
+                }
                 MutationState::Error(e)
             }
         };

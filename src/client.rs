@@ -1,9 +1,6 @@
 //! QueryClient - central cache and query manager
 
-use crate::{
-    observer::{QueryStateUpdate, QueryStateVariant},
-    QueryKey, QueryOptions,
-};
+use crate::{observer::QueryStateVariant, QueryKey, QueryOptions};
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
@@ -20,12 +17,18 @@ struct CacheEntry {
     is_stale: bool,
 }
 
+/// Update message sent to observers when a query's state changes.
+#[derive(Debug, Clone)]
+pub struct QueryStateUpdate {
+    pub key: String,
+    pub state_variant: QueryStateVariant,
+}
+
 /// Central query client managing cache and query execution.
 pub struct QueryClient {
     cache: Arc<DashMap<String, CacheEntry>>,
     in_flight: Arc<DashMap<String, ()>>,
     // Broadcast channels for state updates, one per key.
-    // Using DashMap to store senders so they can be created lazily.
     subscribers: Arc<DashMap<String, broadcast::Sender<QueryStateUpdate>>>,
 }
 
@@ -55,7 +58,7 @@ impl QueryClient {
     }
 
     /// Internal method to notify subscribers of a state change.
-    fn notify_subscribers(&self, cache_key: &str, variant: QueryStateVariant) {
+    pub fn notify_subscribers(&self, cache_key: &str, variant: QueryStateVariant) {
         if let Some(sender) = self.subscribers.get(cache_key) {
             let update = QueryStateUpdate {
                 key: cache_key.to_string(),
@@ -159,7 +162,6 @@ impl QueryClient {
     /// Clear all cached data
     pub fn clear(&self) {
         self.cache.clear();
-        // Also notify subscribers? Maybe send a clear event.
     }
 
     /// Run garbage collection on stale entries (public, but also called automatically)
