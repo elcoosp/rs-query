@@ -1,10 +1,13 @@
 //! GPUI async execution helpers
 
-use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig, observer::QueryStateVariant};
+use crate::observer::QueryStateVariant;
+use crate::{
+    Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig,
+};
 use futures_timer::Delay;
-use std::sync::Arc;
 use gpui::Context;
 use std::future::Future;
+use std::sync::Arc;
 
 /// Execute a query using GPUI's executor.
 pub fn spawn_query<T, V>(
@@ -24,12 +27,14 @@ pub fn spawn_query<T, V>(
     // If cache is empty and initial data is provided, populate it.
     if client.get_query_data::<T>(&key).is_none() {
         if let Some(initial) = &options.initial_data {
-            if let Ok(data) = initial.downcast_ref::<T>() {
+            if let Some(data) = initial.downcast_ref::<T>() {
                 client.set_query_data(&key, data.clone(), options.clone());
             }
         } else if let Some(initial_fn) = &options.initial_data_fn {
-            let data: T = *(initial_fn)().downcast::<T>().expect("initial_data_fn returned wrong type");
-            client.set_query_data(&key, data, options.clone());
+            let boxed = (initial_fn)();
+            if let Some(data) = boxed.downcast_ref::<T>() {
+                client.set_query_data(&key, data.clone(), options.clone());
+            }
         }
     }
 
@@ -83,7 +88,11 @@ pub fn spawn_query<T, V>(
                 let final_data = if let Some(select_fn) = &select {
                     let boxed: Box<dyn std::any::Any + Send + Sync> = Box::new(data);
                     let transformed = select_fn(&*boxed);
-                    *transformed.downcast::<T>().expect("select returned wrong type")
+                    // Downcast and clone the transformed data
+                    transformed
+                        .downcast_ref::<T>()
+                        .expect("select returned wrong type")
+                        .clone()
                 } else {
                     data
                 };
@@ -197,7 +206,11 @@ pub fn spawn_mutation<T, P, V>(
 
 /// Execute with retry logic, using futures_timer::Delay for backoff.
 async fn execute_with_retry<T>(
-    fetch_fn: Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
+    fetch_fn: Arc<
+        dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
+            + Send
+            + Sync,
+    >,
     retry_config: RetryConfig,
     query_key: String,
 ) -> Result<T, QueryError>
@@ -256,5 +269,7 @@ where
         }
     }
 
-    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+    Err(last_error.unwrap_or(QueryError::Custom(
+        "Max retries exceeded".into(),
+    )))
 }
