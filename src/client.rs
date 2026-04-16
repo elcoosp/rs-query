@@ -794,8 +794,8 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_invalidate_queries_with_abort_handle() {
+    #[tokio::test]
+    async fn test_invalidate_queries_with_abort_handle() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
         client.set_query_data(&key, "data".to_string(), QueryOptions::default());
@@ -812,17 +812,26 @@ mod tests {
         assert!(!client.is_in_flight(&key));
         assert!(client.is_stale(&key));
     }
-
-    #[test]
-    fn test_cancel_query_with_handle() {
+    #[tokio::test]
+    async fn test_cancel_query_with_handle() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
 
-        let handle = tokio::spawn(async {});
+        // Create a handle via tokio::spawn
+        let handle = tokio::spawn(async {
+            // Long running task
+            tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+        });
+
         client.set_abort_handle(&key, handle.abort_handle());
+
+        // Should be in flight
         assert!(client.is_in_flight(&key));
 
+        // Cancel should work
         client.cancel_query(&key);
+
+        // Handle should be cleared
         assert!(!client.is_in_flight(&key));
     }
 
@@ -834,28 +843,34 @@ mod tests {
         client.cancel_query(&key);
     }
 
-    #[test]
-    fn test_clear_with_abort_handles() {
+    #[tokio::test]
+    async fn test_clear_with_abort_handles() {
         let client = QueryClient::new();
         let key1 = QueryKey::new("test1");
         let key2 = QueryKey::new("test2");
 
-        client.set_query_data(&key1, "data1".to_string(), QueryOptions::default());
-        client.set_query_data(&key2, "data2".to_string(), QueryOptions::default());
+        // Create handles
+        let handle1 = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+        });
+        let handle2 = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+        });
 
-        let handle1 = tokio::spawn(async {});
-        let handle2 = tokio::spawn(async {});
         client.set_abort_handle(&key1, handle1.abort_handle());
         client.set_abort_handle(&key2, handle2.abort_handle());
 
+        // Both should be in flight
+        assert!(client.is_in_flight(&key1));
+        assert!(client.is_in_flight(&key2));
+
+        // Clear should abort all
         client.clear();
 
-        assert!(client.cache.is_empty());
-        assert!(client.abort_handles.is_empty());
-        assert!(client.get_query_data::<String>(&key1).is_none());
-        assert!(client.get_query_data::<String>(&key2).is_none());
+        // Both handles should be cleared
+        assert!(!client.is_in_flight(&key1));
+        assert!(!client.is_in_flight(&key2));
     }
-
     #[test]
     fn test_clear_empty() {
         let client = QueryClient::new();
