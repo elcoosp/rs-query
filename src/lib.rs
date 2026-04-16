@@ -4,6 +4,7 @@ mod client;
 mod error;
 mod executor;
 mod focus_manager;
+mod hydration;
 mod infinite;
 mod infinite_executor;
 mod key;
@@ -27,3 +28,5 @@ pub use options::{InitialData, PlaceholderData, QueryOptions, RefetchOnMount, Re
 pub use query::Query;
 pub use sharing::replace_equal_deep;
 pub use state::QueryState;
+
+pub use hydration::{DehydratedQuery, DehydratedQueryOptions, DehydratedState, HydrateOptions};
