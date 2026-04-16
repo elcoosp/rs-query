@@ -1,9 +1,7 @@
 //! Query observer for reactive state management
 
-use crate::{QueryClient, QueryKey, QueryState};
+use crate::{QueryClient, QueryKey, QueryOptions, QueryState};
 use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -41,9 +39,7 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
         let rx = client.subscribe(&cache_key);
         let current_state = Self::compute_initial_state(client, &key);
         let options = client
-            .cache
-            .get(&cache_key)
-            .map(|entry| entry.options.clone())
+            .get_query_options(&key)
             .unwrap_or_default();
 
         let mut observer = Self {
@@ -85,7 +81,6 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
                     }
                     // Trigger a refetch by marking as stale and notifying
                     client.invalidate_queries(&key);
-                    // The invalidation will cause any active observer to refetch
                 }
             });
             self.interval_handle = Some(handle);
@@ -97,7 +92,6 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
     }
 
     pub fn update(&mut self) {
-        // Drain all pending updates and recompute latest state
         while let Ok(update) = self.rx.try_recv() {
             if update.key == self.key.cache_key() {
                 self.current_state = Self::compute_initial_state(&self.client, &self.key);
@@ -110,7 +104,7 @@ impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + Debug + 'static> Drop for QueryObserver<T> {
+impl<T: Clone + Send + Sync + 'static> Drop for QueryObserver<T> {
     fn drop(&mut self) {
         if let Some(handle) = self.interval_handle.take() {
             handle.abort();

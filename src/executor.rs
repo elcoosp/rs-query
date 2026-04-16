@@ -31,8 +31,8 @@ pub fn spawn_query<T, V>(
                 client.set_query_data(&key, data.clone(), options.clone());
             }
         } else if let Some(initial_fn) = &options.initial_data_fn {
-            let boxed = (initial_fn)();
-            if let Some(data) = boxed.downcast_ref::<T>() {
+            let arc_data = (initial_fn)();
+            if let Some(data) = arc_data.downcast_ref::<T>() {
                 client.set_query_data(&key, data.clone(), options.clone());
             }
         }
@@ -86,9 +86,8 @@ pub fn spawn_query<T, V>(
                 );
                 // Apply select transformation if present
                 let final_data = if let Some(select_fn) = &select {
-                    let boxed: Box<dyn std::any::Any + Send + Sync> = Box::new(data);
-                    let transformed = select_fn(&*boxed);
-                    // Downcast and clone the transformed data
+                    let arc_data: Arc<dyn std::any::Any + Send + Sync> = Arc::new(data);
+                    let transformed = select_fn(&*arc_data);
                     transformed
                         .downcast_ref::<T>()
                         .expect("select returned wrong type")
@@ -121,6 +120,7 @@ pub fn spawn_query<T, V>(
     })
     .detach();
 }
+
 
 /// Execute a mutation with automatic cache invalidation and optional optimistic updates.
 pub fn spawn_mutation<T, P, V>(

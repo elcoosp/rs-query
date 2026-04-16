@@ -1,6 +1,6 @@
 //! Query definition
 
-use crate::{InitialData, PlaceholderData, QueryError, QueryKey, QueryOptions, RetryConfig};
+use crate::{QueryError, QueryKey, QueryOptions, RetryConfig};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
 
     /// Provide initial data (value)
     pub fn initial_data(mut self, data: T) -> Self {
-        self.options.initial_data = Some(Box::new(data));
+        self.options.initial_data = Some(Arc::new(data));
         self
     }
 
@@ -65,7 +65,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        self.options.initial_data_fn = Some(Arc::new(move || Box::new(f())));
+        self.options.initial_data_fn = Some(Arc::new(move || Arc::new(f())));
         self
     }
 
@@ -77,7 +77,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
 
     /// Provide placeholder data (value)
     pub fn placeholder_data(mut self, data: T) -> Self {
-        self.options.placeholder_data = Some(Box::new(data));
+        self.options.placeholder_data = Some(Arc::new(data));
         self
     }
 
@@ -87,9 +87,9 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
         F: Fn(Option<T>) -> T + Send + Sync + 'static,
     {
         self.options.placeholder_data_fn = Some(Arc::new(
-            move |prev: Option<Box<dyn std::any::Any + Send + Sync>>| {
-                let prev_typed = prev.and_then(|b| b.downcast::<T>().ok()).map(|b| *b);
-                Box::new(f(prev_typed))
+            move |prev: Option<Arc<dyn std::any::Any + Send + Sync>>| {
+                let prev_typed = prev.and_then(|b| b.downcast_ref::<T>().cloned());
+                Arc::new(f(prev_typed))
             },
         ));
         self
@@ -105,7 +105,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
             let typed = data
                 .downcast_ref::<T>()
                 .expect("select called on wrong type");
-            Box::new(f(typed))
+            Arc::new(f(typed))
         }));
         self
     }

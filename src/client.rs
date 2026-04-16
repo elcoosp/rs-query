@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 
 /// Cache entry for type-erased storage
 struct CacheEntry {
-    data: Box<dyn Any + Send + Sync>,
+    data: Arc<dyn Any + Send + Sync>,
     type_id: TypeId,
     fetched_at: Instant,
     last_accessed: Instant,
@@ -82,7 +82,13 @@ impl QueryClient {
             return None;
         }
 
-        entry.data.downcast_ref::<T>().cloned()
+        entry.data.downcast_ref::<T>().map(|v| v.clone())
+    }
+
+    /// Get the options for a query key (if cached).
+    pub fn get_query_options(&self, key: &QueryKey) -> Option<QueryOptions> {
+        let cache_key = key.cache_key();
+        self.cache.get(cache_key).map(|entry| entry.options.clone())
     }
 
     /// Get cached infinite data if available.
@@ -116,7 +122,7 @@ impl QueryClient {
         self.cache.insert(
             cache_key.clone(),
             CacheEntry {
-                data: Box::new(data),
+                data: Arc::new(data),
                 type_id: TypeId::of::<T>(),
                 fetched_at: Instant::now(),
                 last_accessed: Instant::now(),
@@ -156,21 +162,22 @@ impl QueryClient {
         let cache_key = key.cache_key().to_string();
         let mut entry = self.cache.get_mut(&cache_key)?;
 
-        if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
-            data.pages.push(page);
-            data.page_params.push(page_param);
+        if let Some(data) = entry.data.downcast_ref::<InfiniteData<T, P>>() {
+            // Clone the data to mutate
+            let mut new_data = data.clone();
+            new_data.pages.push(page);
+            new_data.page_params.push(page_param);
             if let Some(max) = max_pages {
-                if data.pages.len() > max {
-                    data.pages.remove(0);
-                    data.page_params.remove(0);
+                if new_data.pages.len() > max {
+                    new_data.pages.remove(0);
+                    new_data.page_params.remove(0);
                 }
             }
-            let result = data.clone();
-            // Update timestamps
+            entry.data = Arc::new(new_data.clone());
             entry.fetched_at = Instant::now();
             entry.last_accessed = Instant::now();
             self.notify_subscribers(&cache_key, QueryStateVariant::Success);
-            return Some(result);
+            return Some(new_data);
         }
         None
     }
@@ -190,21 +197,21 @@ impl QueryClient {
         let cache_key = key.cache_key().to_string();
         let mut entry = self.cache.get_mut(&cache_key)?;
 
-        if let Some(data) = entry.data.downcast_mut::<InfiniteData<T, P>>() {
-            data.pages.insert(0, page);
-            data.page_params.insert(0, page_param);
+        if let Some(data) = entry.data.downcast_ref::<InfiniteData<T, P>>() {
+            let mut new_data = data.clone();
+            new_data.pages.insert(0, page);
+            new_data.page_params.insert(0, page_param);
             if let Some(max) = max_pages {
-                if data.pages.len() > max {
-                    data.pages.pop();
-                    data.page_params.pop();
+                if new_data.pages.len() > max {
+                    new_data.pages.pop();
+                    new_data.page_params.pop();
                 }
             }
-            let result = data.clone();
-            // Update timestamps
+            entry.data = Arc::new(new_data.clone());
             entry.fetched_at = Instant::now();
             entry.last_accessed = Instant::now();
             self.notify_subscribers(&cache_key, QueryStateVariant::Success);
-            return Some(result);
+            return Some(new_data);
         }
         None
     }
@@ -274,9 +281,6 @@ impl QueryClient {
                 let age = entry.fetched_at.elapsed();
                 let is_stale = age > entry.options.stale_time || entry.is_stale;
                 if is_stale && entry.options.refetch_on_window_focus {
-                    // Mark as in flight and notify loading, but actual refetch
-                    // would be triggered by a query observer.
-                    // We'll just mark as stale and notify to cause a refetch.
                     drop(entry);
                     if let Some(mut entry_mut) = self.cache.get_mut(&key) {
                         entry_mut.is_stale = true;

@@ -48,19 +48,19 @@ pub struct QueryOptions {
     /// Whether query is enabled
     pub enabled: bool,
     /// Initial data to populate cache if empty
-    pub initial_data: Option<Box<dyn Any + Send + Sync>>,
+    pub initial_data: Option<Arc<dyn Any + Send + Sync>>,
     /// Lazy initial data function
-    pub initial_data_fn: Option<Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>>,
+    pub initial_data_fn: Option<Arc<dyn Fn() -> Arc<dyn Any + Send + Sync> + Send + Sync>>,
     /// Timestamp when initial data was last updated
     pub initial_data_updated_at: Option<Instant>,
     /// Placeholder data shown while fetching
-    pub placeholder_data: Option<Box<dyn Any + Send + Sync>>,
+    pub placeholder_data: Option<Arc<dyn Any + Send + Sync>>,
     /// Placeholder data function (previous_data) -> placeholder
     pub placeholder_data_fn: Option<
-        Arc<dyn Fn(Option<Box<dyn Any + Send + Sync>>) -> Box<dyn Any + Send + Sync> + Send + Sync>,
+        Arc<dyn Fn(Option<Arc<dyn Any + Send + Sync>>) -> Arc<dyn Any + Send + Sync> + Send + Sync>,
     >,
     /// Transform function applied to cached data
-    pub select: Option<Arc<dyn Fn(&dyn Any) -> Box<dyn Any + Send + Sync> + Send + Sync>>,
+    pub select: Option<Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync>>,
     /// Whether to use structural sharing (reserved for future)
     pub structural_sharing: bool,
     /// Interval for automatic background refetch (None = disabled)
