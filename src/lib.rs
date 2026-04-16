@@ -11,6 +11,7 @@ mod mutation;
 mod observer;
 mod options;
 mod query;
+mod sharing;
 mod state;
 
 pub use client::QueryClient;
@@ -24,4 +25,5 @@ pub use mutation::{Mutation, MutationState, RollbackContext};
 pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};
 pub use options::{InitialData, PlaceholderData, QueryOptions, RefetchOnMount, RetryConfig};
 pub use query::Query;
+pub use sharing::replace_equal_deep;
 pub use state::QueryState;

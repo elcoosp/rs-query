@@ -3,6 +3,7 @@
 use crate::focus_manager::FocusManager;
 use crate::infinite::InfiniteData;
 use crate::observer::{QueryStateUpdate, QueryStateVariant};
+use crate::sharing::replace_equal_deep_any;
 use crate::{QueryKey, QueryOptions};
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
@@ -111,7 +112,7 @@ impl QueryClient {
         }
     }
 
-    /// Set cached data
+    /// Set cached data with optional structural sharing.
     pub fn set_query_data<T: Clone + Send + Sync + 'static>(
         &self,
         key: &QueryKey,
@@ -119,10 +120,27 @@ impl QueryClient {
         options: QueryOptions,
     ) {
         let cache_key = key.cache_key().to_string();
+        let new_data_arc = Arc::new(data);
+
+        // Apply structural sharing if enabled and old data exists
+        let final_data = if options.structural_sharing {
+            if let Some(old_entry) = self.cache.get(&cache_key) {
+                if old_entry.type_id == TypeId::of::<T>() {
+                    replace_equal_deep_any(&*old_entry.data, &*new_data_arc)
+                } else {
+                    new_data_arc
+                }
+            } else {
+                new_data_arc
+            }
+        } else {
+            new_data_arc
+        };
+
         self.cache.insert(
             cache_key.clone(),
             CacheEntry {
-                data: Arc::new(data),
+                data: final_data,
                 type_id: TypeId::of::<T>(),
                 fetched_at: Instant::now(),
                 last_accessed: Instant::now(),
