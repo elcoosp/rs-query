@@ -1,10 +1,14 @@
 //! QueryClient - central cache and query manager
 
-use crate::{QueryKey, QueryOptions};
+use crate::{
+    observer::{QueryStateUpdate, QueryStateVariant},
+    QueryKey, QueryOptions,
+};
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 
 /// Cache entry for type-erased storage
 struct CacheEntry {
@@ -20,6 +24,9 @@ struct CacheEntry {
 pub struct QueryClient {
     cache: Arc<DashMap<String, CacheEntry>>,
     in_flight: Arc<DashMap<String, ()>>,
+    // Broadcast channels for state updates, one per key.
+    // Using DashMap to store senders so they can be created lazily.
+    subscribers: Arc<DashMap<String, broadcast::Sender<QueryStateUpdate>>>,
 }
 
 impl QueryClient {
@@ -27,6 +34,7 @@ impl QueryClient {
         let client = Self {
             cache: Arc::new(DashMap::new()),
             in_flight: Arc::new(DashMap::new()),
+            subscribers: Arc::new(DashMap::new()),
         };
         // Spawn background garbage collection thread.
         let cache = Arc::clone(&client.cache);
@@ -35,6 +43,26 @@ impl QueryClient {
             Self::gc_internal(&cache);
         });
         client
+    }
+
+    /// Subscribe to state changes for a given cache key.
+    /// Returns a receiver that will receive updates whenever the query state changes.
+    pub fn subscribe(&self, cache_key: &str) -> broadcast::Receiver<QueryStateUpdate> {
+        // Get or create a sender for this key.
+        let entry = self.subscribers.entry(cache_key.to_string());
+        let sender = entry.or_insert_with(|| broadcast::channel(16).0);
+        sender.subscribe()
+    }
+
+    /// Internal method to notify subscribers of a state change.
+    fn notify_subscribers(&self, cache_key: &str, variant: QueryStateVariant) {
+        if let Some(sender) = self.subscribers.get(cache_key) {
+            let update = QueryStateUpdate {
+                key: cache_key.to_string(),
+                state_variant: variant,
+            };
+            let _ = sender.send(update);
+        }
     }
 
     /// Get cached data if available and not stale
@@ -55,6 +83,17 @@ impl QueryClient {
         entry.data.downcast_ref::<T>().cloned()
     }
 
+    /// Check if the data for a key is stale.
+    pub fn is_stale(&self, key: &QueryKey) -> bool {
+        let cache_key = key.cache_key();
+        if let Some(entry) = self.cache.get(cache_key) {
+            let age = entry.fetched_at.elapsed();
+            age > entry.options.stale_time || entry.is_stale
+        } else {
+            false
+        }
+    }
+
     /// Set cached data
     pub fn set_query_data<T: Clone + Send + Sync + 'static>(
         &self,
@@ -64,7 +103,7 @@ impl QueryClient {
     ) {
         let cache_key = key.cache_key().to_string();
         self.cache.insert(
-            cache_key,
+            cache_key.clone(),
             CacheEntry {
                 data: Box::new(data),
                 type_id: TypeId::of::<T>(),
@@ -74,6 +113,7 @@ impl QueryClient {
                 is_stale: false,
             },
         );
+        self.notify_subscribers(&cache_key, QueryStateVariant::Success);
     }
 
     /// Invalidate queries matching the key pattern
@@ -96,6 +136,7 @@ impl QueryClient {
         for key in keys_to_invalidate {
             if let Some(mut entry) = self.cache.get_mut(&key) {
                 entry.is_stale = true;
+                self.notify_subscribers(&key, QueryStateVariant::Stale);
             }
         }
     }
@@ -118,6 +159,7 @@ impl QueryClient {
     /// Clear all cached data
     pub fn clear(&self) {
         self.cache.clear();
+        // Also notify subscribers? Maybe send a clear event.
     }
 
     /// Run garbage collection on stale entries (public, but also called automatically)
@@ -144,6 +186,7 @@ impl Clone for QueryClient {
         Self {
             cache: Arc::clone(&self.cache),
             in_flight: Arc::clone(&self.in_flight),
+            subscribers: Arc::clone(&self.subscribers),
         }
     }
 }

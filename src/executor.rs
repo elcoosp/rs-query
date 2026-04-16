@@ -1,6 +1,6 @@
 //! GPUI async execution helpers
 
-use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig};
+use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig, observer::QueryStateVariant};
 use futures_timer::Delay;
 use std::sync::Arc;
 use gpui::Context;
@@ -40,6 +40,7 @@ pub fn spawn_query<T, V>(
     );
 
     client.set_in_flight(&key, true);
+    client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
 
     let retry_config = options.retry.clone();
     let key_for_task = key.cache_key().to_string();
@@ -66,6 +67,7 @@ pub fn spawn_query<T, V>(
                     "Query completed successfully"
                 );
                 client_for_cleanup.set_query_data(&key_for_cleanup, data.clone(), options);
+                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
                 QueryState::Success(data)
             }
             Err(e) => {
@@ -75,6 +77,7 @@ pub fn spawn_query<T, V>(
                     error = %e,
                     "Query failed"
                 );
+                client_for_cleanup.notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
                 QueryState::Error {
                     error: e,
                     stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
