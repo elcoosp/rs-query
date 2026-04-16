@@ -4,25 +4,25 @@
 
 ## Features
 
-- **Declarative Queries** – Define a query once with a unique key and async fetch function.  
-- **Automatic Caching** – Data is stored by key and served instantly while background updates occur.  
-- **Stale‑While‑Revalidate** – Show cached (stale) data immediately and refresh in the background.  
-- **Smart Retries** – Exponential backoff for transient failures, configurable per query.  
-- **Request Deduplication** – Identical concurrent queries are coalesced into a single network call.  
-- **Hierarchical Invalidation** – Invalidate whole families of queries using key prefix matching.  
-- **Type‑Safe** – Fully generic over your data types with `Send + Sync` bounds for seamless async use.  
-- **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`.
+- **Declarative Queries** – Define a query once with a unique key and async fetch function.
+- **Automatic Caching** – Data is stored by key and served instantly while background updates occur.
+- **Stale‑While‑Revalidate** – Show cached (stale) data immediately and refresh in the background.
+- **Smart Retries** – Exponential backoff for transient failures, configurable per query.
+- **Request Deduplication** – Identical concurrent queries are coalesced into a single network call.
+- **Hierarchical Invalidation** – Invalidate whole families of queries using key prefix matching.
+- **Type‑Safe** – Fully generic over your data types with `Send + Sync` bounds for seamless async use.
+- **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`; no external async runtime required.
 
 ## Installation
 
-Add `rs-query` to your `Cargo.toml`:
+Add `rs-query` as a Git dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rs-query = "0.1.0"   # replace with actual version
+rs-query = { git = "https://github.com/elcoosp/rs-query" }
 ```
 
-Make sure your project also depends on `gpui` and a Tokio runtime (rs‑query uses `tokio::spawn` internally for retry delays).
+Make sure your project already depends on `gpui` (rs‑query uses GPUI’s background executor and `futures-timer` for backoff delays).
 
 ## Quick Start
 
@@ -128,26 +128,29 @@ fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) 
 
 ### `QueryClient`
 
-Central cache and query manager.  
-- `get_query_data<T>(key: &QueryKey) -> Option<T>`  
-- `set_query_data<T>(key: &QueryKey, data: T, options: QueryOptions)`  
-- `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale  
-- `clear()` – empties the entire cache  
+Central cache and query manager.
+
+- `get_query_data<T>(key: &QueryKey) -> Option<T>`
+- `set_query_data<T>(key: &QueryKey, data: T, options: QueryOptions)`
+- `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale
+- `clear()` – empties the entire cache
 - `gc()` – removes entries older than their `gc_time`
 
 ### `Query<T>`
 
-Definition of a query.  
-- `Query::new(key, fetch_fn)` – builder starts here  
-- `.stale_time(duration)` – how long data is considered fresh  
-- `.gc_time(duration)` – inactive cache lifetime  
-- `.retry(config)` – custom retry behaviour  
+Definition of a query.
+
+- `Query::new(key, fetch_fn)` – builder starts here
+- `.stale_time(duration)` – how long data is considered fresh
+- `.gc_time(duration)` – inactive cache lifetime
+- `.retry(config)` – custom retry behaviour
 - `.enabled(bool)` – conditionally disable the query
 
 ### `Mutation<T, P>`
 
-Definition of a mutation.  
-- `Mutation::new(mutate_fn)` – builder start  
+Definition of a mutation.
+
+- `Mutation::new(mutate_fn)` – builder start
 - `.invalidates_key(key)` / `.invalidates(keys)` – keys to invalidate on success
 
 ### `QueryKey`
@@ -169,13 +172,14 @@ Invalidation is prefix‑based: invalidating `QueryKey::new("users")` will mark 
 
 ### `QueryState<T>` & `MutationState<T>`
 
-Enums that carry data alongside the state.  
-- `QueryState::Idle` / `Loading` / `Refetching(T)` / `Success(T)` / `Stale(T)` / `Error { error, stale_data }`  
+Enums that carry data alongside the state.
+
+- `QueryState::Idle` / `Loading` / `Refetching(T)` / `Success(T)` / `Stale(T)` / `Error { error, stale_data }`
 - Convenience methods: `.data()`, `.is_loading()`, `.is_success()`, etc.
 
 ### Executors
 
-- `spawn_query(cx, client, query, callback)` – executes a query on GPUI’s background executor.  
+- `spawn_query(cx, client, query, callback)` – executes a query on GPUI’s background executor.
 - `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation and invalidates relevant queries on success.
 
 ## Comparison with TanStack Query
@@ -184,35 +188,35 @@ rs‑query aims to provide the core experience of TanStack Query while respectin
 
 | Feature                                   | Status         |
 |-------------------------------------------|----------------|
-| Query cache & GC                          | Implemented    |
-| Stale‑while‑revalidate                    | Implemented    |
-| Automatic retries (exponential backoff)   | Implemented    |
-| Request deduplication                     | Implemented    |
-| Hierarchical key invalidation             | Implemented    |
-| Query / mutation observers                | Not yet        |
-| Optimistic updates                        | Not yet        |
-| Infinite queries / pagination             | Not yet        |
-| `placeholderData` / `initialData`         | Not yet        |
-| `select` transformation                   | Not yet        |
-| `refetchInterval` / window focus refetch  | Not yet (GPUI lacks focus events) |
-| Hydration / persistence                   | Not yet        |
-| Devtools                                  | Not yet        |
+| Query cache & GC                          | ✅ Implemented |
+| Stale‑while‑revalidate                    | ✅ Implemented |
+| Automatic retries (exponential backoff)   | ✅ Implemented |
+| Request deduplication                     | ✅ Implemented |
+| Hierarchical key invalidation             | ✅ Implemented |
+| Query / mutation observers                | ❌ Not yet     |
+| Optimistic updates                        | ❌ Not yet     |
+| Infinite queries / pagination             | ❌ Not yet     |
+| `placeholderData` / `initialData`         | ❌ Not yet     |
+| `select` transformation                   | ❌ Not yet     |
+| `refetchInterval` / window focus refetch  | ❌ Not yet (GPUI lacks focus events) |
+| Hydration / persistence                   | ❌ Not yet     |
+| Devtools                                  | ❌ Not yet     |
 | Suspense integration                      | N/A (GPUI does not use Suspense) |
-| Structural sharing                        | Not yet        |
-| Query cancellation                        | Partial (Tokio tasks can be aborted) |
+| Structural sharing                        | ❌ Not yet     |
+| Query cancellation                        | Partial (tasks can be aborted via GPUI) |
 
 ## Contributing
 
-Contributions are welcome! If you’d like to help implement missing features or improve existing ones, please open an issue or pull request on the repository. Focus areas include:
+Contributions are welcome! If you’d like to help implement missing features or improve existing ones, please open an issue or pull request on the [repository](https://github.com/elcoosp/rs-query). Focus areas include:
 
-- Infinite query support  
-- Optimistic mutation updates  
-- Cache persistence with `serde`  
+- Infinite query support
+- Optimistic mutation updates
+- Cache persistence with `serde`
 - Framework adapters for other Rust UI libraries (Dioxus, Leptos, etc.)
 
 ## License
 
-rs‑query is distributed under the terms of both the MIT license and the Apache License (Version 2.0). See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
+This project is licensed under the MIT License.
 
 ## Acknowledgements
 
