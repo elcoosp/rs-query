@@ -1,8 +1,7 @@
-//! rs-query: TanStack Query-inspired data fetching for GPUI
+// src/lib.rs
+//! rs-query - TanStack Query-inspired async state management for GPUI
 
 mod client;
-#[cfg(feature = "devtools")]
-mod devtools;
 mod error;
 mod executor;
 mod focus_manager;
@@ -17,21 +16,19 @@ mod query;
 mod sharing;
 mod state;
 
+#[cfg(feature = "devtools")]
+pub mod devtools;
+
 pub use client::QueryClient;
 pub use error::QueryError;
 pub use executor::{spawn_mutation, spawn_query};
 pub use focus_manager::FocusManager;
+pub use hydration::{DehydratedQuery, DehydratedState, HydrateOptions};
 pub use infinite::{InfiniteData, InfiniteQuery};
-pub use infinite_executor::{spawn_infinite_query, InfiniteQueryObserver};
+pub use infinite_executor::spawn_infinite_query;
 pub use key::QueryKey;
-pub use mutation::{Mutation, MutationState, RollbackContext};
+pub use mutation::Mutation;
 pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};
-pub use options::{InitialData, PlaceholderData, QueryOptions, RefetchOnMount, RetryConfig};
+pub use options::{PlaceholderData, QueryOptions, RetryConfig};
 pub use query::Query;
-pub use sharing::replace_equal_deep;
-pub use state::QueryState;
-
-pub use hydration::{DehydratedQuery, DehydratedQueryOptions, DehydratedState, HydrateOptions};
-
-#[cfg(feature = "devtools")]
-pub use devtools::QueryDevtools;
+pub use state::{MutationState, QueryState};

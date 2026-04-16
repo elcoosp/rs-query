@@ -1,181 +1,205 @@
-//! Mutation definition
+// src/mutation.rs
+//! Mutation definition and execution
 
 use crate::{QueryClient, QueryError, QueryKey};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-/// Type alias for boxed async mutation function
-pub type MutateFn<T, P> =
-    Arc<dyn Fn(P) -> Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>;
+/// Rollback function type for optimistic updates.
+pub type RollbackFn = Box<dyn FnOnce(&QueryClient) + Send + Sync>;
 
-/// Rollback context returned from `on_mutate` to revert optimistic updates on error.
-pub type RollbackContext = Box<dyn FnOnce(&QueryClient) + Send + Sync>;
-
-/// Callback type for optimistic updates (no longer parameterized over T).
-pub type OnMutateFn<P> =
-    Arc<dyn Fn(&QueryClient, &P) -> Result<RollbackContext, QueryError> + Send + Sync>;
-
-/// Mutation state
-#[derive(Debug, Clone, Default)]
-pub enum MutationState<T: Clone> {
-    #[default]
-    Idle,
-    Pending,
-    Success(T),
-    Error(QueryError),
+/// Definition of a mutation.
+pub struct Mutation<T, P> {
+    pub mutate_fn: Arc<
+        dyn Fn(
+                P,
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, QueryError>> + Send>>
+            + Send
+            + Sync,
+    >,
+    pub invalidates_keys: Vec<QueryKey>,
+    pub on_mutate:
+        Option<Arc<dyn Fn(&QueryClient, &P) -> Result<RollbackFn, QueryError> + Send + Sync>>,
+    pub on_success: Option<Arc<dyn Fn(&T, &P) + Send + Sync>>,
+    pub on_error: Option<Arc<dyn Fn(&QueryError, &P) + Send + Sync>>,
 }
 
-impl<T: Clone> MutationState<T> {
-    pub fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle)
-    }
-
-    pub fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
-    }
-
-    pub fn is_success(&self) -> bool {
-        matches!(self, Self::Success(_))
-    }
-
-    pub fn is_error(&self) -> bool {
-        matches!(self, Self::Error(_))
-    }
-
-    pub fn data(&self) -> Option<&T> {
-        match self {
-            Self::Success(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    pub fn error(&self) -> Option<&QueryError> {
-        match self {
-            Self::Error(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-/// A mutation definition.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let mutation = Mutation::new(|params: CreateUserParams| async move {
-///     api::create_user(params).await
-/// })
-/// .invalidates_key(QueryKey::new("users"))
-/// .on_mutate(|client, params| {
-///     // Optimistically add the new user to the cache
-///     client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
-///         let mut users = old.unwrap_or_default();
-///         users.push(User { id: params.id, name: params.name.clone() });
-///         users
-///     });
-///     Ok(Box::new(move |client| {
-///         // Rollback: remove the user
-///         client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
-///             old.map(|mut users| {
-///                 users.retain(|u| u.id != params.id);
-///                 users
-///             })
-///         });
-///     }))
-/// });
-/// ```
-pub struct Mutation<T, P>
-where
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + 'static,
-{
-    pub mutate_fn: MutateFn<T, P>,
-    pub invalidate_keys: Vec<QueryKey>,
-    pub on_mutate: Option<OnMutateFn<P>>,
-}
-
-impl<T, P> Mutation<T, P>
-where
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + 'static,
-{
-    /// Create a new mutation
+impl<T: Send + Sync + 'static, P: Send + Sync + 'static> Mutation<T, P> {
     pub fn new<F, Fut>(mutate_fn: F) -> Self
     where
         F: Fn(P) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<T, QueryError>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, QueryError>> + Send + 'static,
     {
         Self {
-            mutate_fn: Arc::new(move |p| Box::pin(mutate_fn(p))),
-            invalidate_keys: Vec::new(),
+            mutate_fn: Arc::new(move |params| Box::pin(mutate_fn(params))),
+            invalidates_keys: Vec::new(),
             on_mutate: None,
+            on_success: None,
+            on_error: None,
         }
     }
 
-    /// Add query keys to invalidate on success
-    pub fn invalidates(mut self, keys: impl IntoIterator<Item = QueryKey>) -> Self {
-        self.invalidate_keys.extend(keys);
-        self
-    }
-
-    /// Add a single key to invalidate
     pub fn invalidates_key(mut self, key: QueryKey) -> Self {
-        self.invalidate_keys.push(key);
+        self.invalidates_keys.push(key);
         self
     }
 
-    /// Set an `on_mutate` callback for optimistic updates.
+    pub fn invalidates(mut self, keys: Vec<QueryKey>) -> Self {
+        self.invalidates_keys = keys;
+        self
+    }
+
     pub fn on_mutate<F>(mut self, f: F) -> Self
     where
-        F: Fn(&QueryClient, &P) -> Result<RollbackContext, QueryError> + Send + Sync + 'static,
+        F: Fn(&QueryClient, &P) -> Result<RollbackFn, QueryError> + Send + Sync + 'static,
     {
         self.on_mutate = Some(Arc::new(f));
         self
     }
+
+    pub fn on_success<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&T, &P) + Send + Sync + 'static,
+    {
+        self.on_success = Some(Arc::new(f));
+        self
+    }
+
+    pub fn on_error<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&QueryError, &P) + Send + Sync + 'static,
+    {
+        self.on_error = Some(Arc::new(f));
+        self
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QueryClient, QueryKey, QueryOptions};
+    use crate::MutationState;
+    use crate::QueryOptions;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn test_mutation_builder() {
-        let mutation = Mutation::<String, String>::new(|p| async move { Ok(p) })
-            .invalidates_key(QueryKey::new("test"))
-            .on_mutate(|_client, _p| Ok(Box::new(|_| {})));
+    #[tokio::test]
+    async fn test_mutation_new() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) });
+        let result = (mutation.mutate_fn)(42).await.unwrap();
+        assert_eq!(result, "result_42");
+    }
 
-        assert_eq!(mutation.invalidate_keys.len(), 1);
-        assert!(mutation.on_mutate.is_some());
+    #[tokio::test]
+    async fn test_mutation_error() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|_param: i32| async move { Err(QueryError::network("fail")) });
+        let result = (mutation.mutate_fn)(42).await;
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_mutation_state_methods() {
-        assert!(MutationState::<()>::Idle.is_idle());
-        assert!(MutationState::<()>::Pending.is_pending());
-        assert!(MutationState::Success(()).is_success());
-        assert!(MutationState::<()>::Error(QueryError::Custom("e".into())).is_error());
+    fn test_mutation_invalidates_key() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates_key(QueryKey::new("users"));
 
-        assert_eq!(MutationState::Success(42).data(), Some(&42));
-        assert_eq!(MutationState::<i32>::Idle.data(), None);
+        assert_eq!(mutation.invalidates_keys.len(), 1);
+        assert_eq!(mutation.invalidates_keys[0].cache_key(), "users");
     }
 
     #[test]
-    fn test_rollback_context() {
+    fn test_mutation_invalidates_multiple_keys() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates(vec![QueryKey::new("users"), QueryKey::new("posts")]);
+
+        assert_eq!(mutation.invalidates_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_mutation_on_mutate_callback() {
         let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        client.set_query_data(&key, 0, QueryOptions::default());
+        let key = QueryKey::new("users");
 
-        let key_for_closure = key.clone(); // Add this line
-        let rollback: RollbackContext = Box::new(move |c| {
-            c.set_query_data(
-                &key_for_closure, // <-- Use the clone inside the closure
-                -1,
-                QueryOptions::default(),
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_mutate(
+                move |client: &QueryClient, _params: &i32| {
+                    client.set_query_data(&key, "optimistic".to_string(), QueryOptions::default());
+                    let rollback_key = key.clone();
+                    Ok(Box::new(move |client: &QueryClient| {
+                        client.set_query_data(
+                            &rollback_key,
+                            "rolled_back".to_string(),
+                            QueryOptions::default(),
+                        );
+                    }) as RollbackFn)
+                },
             );
-        });
-        // Apply rollback
+
+        assert!(mutation.on_mutate.is_some());
+        let callback = mutation.on_mutate.as_ref().unwrap();
+        let rollback = callback(&client, &42).unwrap();
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("optimistic".to_string()));
         rollback(&client);
-        assert_eq!(client.get_query_data::<i32>(&key), Some(-1));
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("rolled_back".to_string()));
+    }
+
+    #[test]
+    fn test_mutation_on_mutate_error() {
+        let client = QueryClient::new();
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_mutate(
+                |_client: &QueryClient, _params: &i32| Err(QueryError::custom("optimistic failed")),
+            );
+
+        let callback = mutation.on_mutate.as_ref().unwrap();
+        let result = callback(&client, &42);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mutation_on_success_callback() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_success(
+                move |_data: &String, _params: &i32| {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+
+        assert!(mutation.on_success.is_some());
+        (mutation.on_success.as_ref().unwrap())(&"result".to_string(), &42);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_mutation_on_error_callback() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = Arc::clone(&counter);
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_error(
+                move |_error: &QueryError, _params: &i32| {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+
+        assert!(mutation.on_error.is_some());
+        (mutation.on_error.as_ref().unwrap())(&QueryError::network("fail"), &42);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_mutation_no_callbacks() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) });
+        assert!(mutation.on_mutate.is_none());
+        assert!(mutation.on_success.is_none());
+        assert!(mutation.on_error.is_none());
+        assert!(mutation.invalidates_keys.is_empty());
     }
 }

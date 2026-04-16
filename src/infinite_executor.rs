@@ -1,307 +1,577 @@
-//! GPUI async execution helpers for infinite queries
+// src/infinite_executor.rs
+//! Infinite query execution
 
 use crate::infinite::{InfiniteData, InfiniteQuery};
-use crate::observer::QueryStateVariant;
-use crate::{QueryClient, QueryError, QueryState, RetryConfig};
-use futures_timer::Delay;
-use gpui::Context;
-use std::future::Future;
-use std::sync::Arc;
+use crate::observer::{QueryObserver, QueryStateVariant};
+use crate::{QueryClient, QueryOptions, QueryState};
+use tokio::sync::oneshot;
 
-pub struct InfiniteQueryObserver<T, P>
-where
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    P: Clone + Send + Sync + std::fmt::Debug + 'static,
+/// Observer for an infinite query with fetch-next/previous capabilities.
+pub struct InfiniteQueryObserver<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
 {
-    pub client: QueryClient,
-    pub query: InfiniteQuery<T, P>,
-    pub current_state: QueryState<InfiniteData<T, P>>,
-    pub has_next_page: bool,
-    pub has_previous_page: bool,
-    pub is_fetching_next_page: bool,
-    pub is_fetching_previous_page: bool,
+    pub observer: QueryObserver<InfiniteData<T, P>>,
+    query: std::sync::Arc<InfiniteQuery<T, P>>,
+    next_page_tx: oneshot::Sender<()>,
+    prev_page_tx: Option<oneshot::Sender<()>>,
 }
 
-impl<T, P> InfiniteQueryObserver<T, P>
-where
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    P: Clone + Send + Sync + std::fmt::Debug + 'static,
+impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
+    InfiniteQueryObserver<T, P>
 {
-    pub fn new(client: &QueryClient, query: InfiniteQuery<T, P>) -> Self {
-        let current_state = Self::compute_state(client, &query.key);
-        let (has_next, has_prev) = Self::compute_pagination_flags(client, &query);
-        Self {
-            client: client.clone(),
-            query,
-            current_state,
-            has_next_page: has_next,
-            has_previous_page: has_prev,
-            is_fetching_next_page: false,
-            is_fetching_previous_page: false,
-        }
-    }
-
-    fn compute_state(
-        client: &QueryClient,
-        key: &crate::QueryKey,
-    ) -> QueryState<InfiniteData<T, P>> {
-        if let Some(data) = client.get_infinite_data::<T, P>(key) {
-            let stale = client.is_stale(key);
-            if stale {
-                QueryState::Stale(data)
-            } else {
-                QueryState::Success(data)
-            }
-        } else {
-            QueryState::Idle
-        }
-    }
-
-    fn compute_pagination_flags(client: &QueryClient, query: &InfiniteQuery<T, P>) -> (bool, bool) {
-        if let Some(data) = client.get_infinite_data::<T, P>(&query.key) {
-            let has_next = if let Some(ref get_next) = query.get_next_page_param {
-                data.pages
-                    .last()
-                    .and_then(|last| get_next(last, &data.pages))
-                    .is_some()
-            } else {
-                false
-            };
-            let has_prev = if let Some(ref get_prev) = query.get_previous_page_param {
-                data.pages
-                    .first()
-                    .and_then(|first| get_prev(first, &data.pages))
-                    .is_some()
-            } else {
-                false
-            };
-            (has_next, has_prev)
-        } else {
-            (false, false)
-        }
-    }
-
     pub fn state(&self) -> &QueryState<InfiniteData<T, P>> {
-        &self.current_state
+        self.observer.state()
+    }
+
+    pub fn has_next_page(&self) -> bool {
+        if let Some(data) = self.observer.state().data() {
+            if let Some(ref get_next) = self.query.get_next_page_param {
+                if let Some(last_page) = data.last_page() {
+                    return get_next(last_page, &data.pages).is_some();
+                }
+            }
+        }
+        false
+    }
+
+    pub fn has_previous_page(&self) -> bool {
+        if let Some(data) = self.observer.state().data() {
+            if let Some(ref get_prev) = self.query.get_previous_page_param {
+                if let Some(first_page) = data.first_page() {
+                    return get_prev(first_page, &data.pages).is_some();
+                }
+            }
+        }
+        false
     }
 }
 
-/// Spawn an infinite query and return an observer.
-pub fn spawn_infinite_query<T, P, V>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-    query: &InfiniteQuery<T, P>,
-    on_complete: impl FnOnce(&mut V, QueryState<InfiniteData<T, P>>, &mut Context<V>) + 'static,
-) -> InfiniteQueryObserver<T, P>
-where
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    P: Clone + Send + Sync + std::fmt::Debug + 'static,
-    V: 'static,
-{
-    let key = query.key.clone();
-    let fetch_fn = query.fetch_fn.clone();
-    let initial_page_param = query.initial_page_param.clone();
-    let options = query.options.clone();
-    let client = client.clone();
-    let _max_pages = query.max_pages;
-    let _get_next = query.get_next_page_param.clone();
-    let _get_prev = query.get_previous_page_param.clone();
-
-    let observer = InfiniteQueryObserver::new(&client, query.clone());
-
-    if client.is_in_flight(&key) {
-        tracing::trace!(
-            target: "rs_query",
-            query_key = %key.cache_key(),
-            "Infinite query already in flight, skipping duplicate request"
-        );
-        return observer;
-    }
-
-    tracing::debug!(
-        target: "rs_query",
-        query_key = %key.cache_key(),
-        stale_time_ms = ?options.stale_time.as_millis(),
-        max_retries = options.retry.max_retries,
-        "Starting infinite query"
-    );
-
-    client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
-
-    let retry_config = options.retry.clone();
-    let key_for_task = key.cache_key().to_string();
-
-    let task = tokio::spawn(execute_with_retry(
-        fetch_fn,
-        initial_page_param,
-        retry_config,
-        key_for_task.clone(),
-    ));
-    let abort_handle = task.abort_handle();
-    client.set_abort_handle(&key, abort_handle);
-
-    let gpui_task = cx.background_executor().spawn(task);
-
-    let key_for_cleanup = key.clone();
-    let client_for_cleanup = client.clone();
-
-    cx.spawn(async move |this, cx| {
-        let result = gpui_task.await;
-        client_for_cleanup.clear_abort_handle(&key_for_cleanup);
-
-        let state = match result {
-            Ok(Ok((page, page_param))) => {
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    "Infinite query initial page completed"
-                );
-                let data = InfiniteData {
-                    pages: vec![page],
-                    page_params: vec![page_param],
-                };
-                client_for_cleanup.set_infinite_data(&key_for_cleanup, data, options);
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
-                QueryState::Success(
-                    client_for_cleanup
-                        .get_infinite_data(&key_for_cleanup)
-                        .unwrap(),
-                )
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    error = %e,
-                    "Infinite query failed"
-                );
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
-                QueryState::Error {
-                    error: e,
-                    stale_data: client_for_cleanup.get_infinite_data(&key_for_cleanup),
-                }
-            }
-            Err(join_error) => {
-                let error = QueryError::Custom(format!("Task cancelled: {}", join_error));
-                tracing::warn!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    error = %error,
-                    "Infinite query cancelled"
-                );
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
-                QueryState::Error {
-                    error,
-                    stale_data: client_for_cleanup.get_infinite_data(&key_for_cleanup),
-                }
-            }
-        };
-
-        let _ = this.update(cx, |this, cx| {
-            on_complete(this, state, cx);
-        });
-    })
-    .detach();
-
-    observer
-}
-
-async fn execute_with_retry<T, P>(
-    fetch_fn: Arc<
-        dyn Fn(P) -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
-            + Send
-            + Sync,
-    >,
-    page_param: P,
-    retry_config: RetryConfig,
-    query_key: String,
-) -> Result<(T, P), QueryError>
-where
+/// Execute an infinite query.
+pub fn spawn_infinite_query<
     T: Clone + Send + Sync + 'static,
     P: Clone + Send + Sync + 'static,
-{
-    let mut attempts = 0;
-    let mut last_error = None;
-    let current_param = page_param;
+    V: 'static,
+>(
+    _cx: &mut gpui::Context<V>,
+    client: &QueryClient,
+    query: &InfiniteQuery<T, P>,
+    callback: impl FnOnce(&mut V, QueryState<InfiniteData<T, P>>, &mut gpui::Context<V>)
+        + Send
+        + 'static,
+) -> InfiniteQueryObserver<T, P> {
+    let key = query.key.clone();
+    let options = query.options.clone();
+    let initial_param = query.initial_page_param.clone();
+    let fetch_fn = query.fetch_fn.clone();
+    let get_next_fn = query.get_next_page_param.clone();
+    let get_prev_fn = query.get_previous_page_param.clone();
+    let max_pages = query.max_pages;
+    let client = client.clone();
 
-    while attempts <= retry_config.max_retries {
-        match (fetch_fn)(current_param.clone()).await {
-            Ok(data) => {
-                if attempts > 0 {
-                    tracing::debug!(
-                        target: "rs_query",
-                        query_key = %query_key,
-                        attempts = attempts + 1,
-                        "Infinite query page succeeded after retry"
-                    );
+    let mut observer = QueryObserver::with_options(&client, key.clone(), options.clone());
+
+    let (next_page_tx, mut next_page_rx) = oneshot::channel::<()>();
+    let (prev_page_tx, mut prev_page_rx) = oneshot::channel::<()>();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            observer.set_loading();
+            let result = fetch_fn(initial_param.clone()).await;
+            match result {
+                Ok(page) => {
+                    let mut initial_data = InfiniteData::new();
+                    initial_data.push_page(page, initial_param);
+                    client.set_infinite_data(&key, initial_data, options.clone());
                 }
-                return Ok((data, current_param));
+                Err(_) => {
+                    client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+                }
             }
-            Err(e) => {
-                if !e.is_retryable() || attempts >= retry_config.max_retries {
-                    if attempts > 0 {
-                        tracing::debug!(
-                            target: "rs_query",
-                            query_key = %query_key,
-                            attempts = attempts + 1,
-                            error = %e,
-                            "Infinite query failed after all retries"
-                        );
+            observer.update();
+
+            loop {
+                tokio::select! {
+                    _ = &mut next_page_rx => {
+                        if client.is_in_flight(&key) { continue; }
+                        let current_data = client.get_infinite_data::<T, P>(&key);
+                        if let Some(data) = current_data {
+                            if let Some(ref get_next) = get_next_fn {
+                                if let Some(last_page) = data.last_page() {
+                                    if let Some(next_param) = get_next(last_page, &data.pages) {
+                                        let handle = tokio::spawn(async {}).abort_handle();
+                                        client.set_abort_handle(&key, handle);
+                                        match fetch_fn(next_param.clone()).await {
+                                            Ok(page) => {
+                                                client.append_infinite_page(&key, page, next_param, max_pages);
+                                                observer.update();
+                                            }
+                                            Err(_) => {
+                                                client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+                                            }
+                                        }
+                                        client.clear_abort_handle(&key);
+                                    }
+                                }
+                            }
+                        }
                     }
-                    return Err(e);
+                    _ = &mut prev_page_rx => {
+                        if client.is_in_flight(&key) { continue; }
+                        let current_data = client.get_infinite_data::<T, P>(&key);
+                        if let Some(data) = current_data {
+                            if let Some(ref get_prev) = get_prev_fn {
+                                if let Some(first_page) = data.first_page() {
+                                    if let Some(prev_param) = get_prev(first_page, &data.pages) {
+                                        let handle = tokio::spawn(async {}).abort_handle();
+                                        client.set_abort_handle(&key, handle);
+                                        match fetch_fn(prev_param.clone()).await {
+                                            Ok(page) => {
+                                                client.prepend_infinite_page(&key, page, prev_param, max_pages);
+                                                observer.update();
+                                            }
+                                            Err(_) => {
+                                                client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+                                            }
+                                        }
+                                        client.clear_abort_handle(&key);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else => break,
                 }
-
-                attempts += 1;
-                let delay = std::cmp::min(
-                    retry_config.base_delay * 2u32.pow(attempts - 1),
-                    retry_config.max_delay,
-                );
-
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %query_key,
-                    attempt = attempts,
-                    max_retries = retry_config.max_retries,
-                    delay_ms = delay.as_millis(),
-                    error = %e,
-                    "Retrying infinite query page after error"
-                );
-
-                last_error = Some(e);
-                Delay::new(delay).await;
             }
-        }
-    }
+        });
+    });
 
-    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+    InfiniteQueryObserver {
+        observer,
+        query: std::sync::Arc::new(query.clone()),
+        next_page_tx,
+        prev_page_tx: Some(prev_page_tx),
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QueryClient, QueryKey};
+    use crate::{QueryKey, QueryOptions};
 
     #[test]
-    fn test_compute_state() {
+    fn test_has_next_page_true() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-        let state = InfiniteQueryObserver::<String, i32>::compute_state(&client, &key);
-        assert!(matches!(state, QueryState::Idle));
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(infinite_observer.has_next_page());
     }
 
     #[test]
-    fn test_compute_pagination_flags() {
+    fn test_has_next_page_false_when_no_fn() {
         let client = QueryClient::new();
-        let query = InfiniteQuery::<String, i32>::new(
-            QueryKey::new("pages"),
-            |_| async { Ok("page".to_string()) },
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
             0,
         );
-        let (has_next, has_prev) =
-            InfiniteQueryObserver::<String, i32>::compute_pagination_flags(&client, &query);
-        assert!(!has_next);
-        assert!(!has_prev);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_next_page());
+    }
+
+    #[test]
+    fn test_has_next_page_false_when_fn_returns_none() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| None);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_next_page());
+    }
+
+    #[test]
+    fn test_has_next_page_false_when_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_next_page());
+    }
+
+    #[test]
+    fn test_has_previous_page_true() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_has_previous_page_false_when_no_fn() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_has_previous_page_false_when_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_has_previous_page_false_when_fn_returns_none() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| None);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_infinite_observer_state() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: oneshot::channel().0,
+            prev_page_tx: None,
+        };
+
+        assert!(infinite_observer.state().is_idle());
+    }
+
+    #[test]
+    fn test_append_infinite_page() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.append_infinite_page(&key, vec![3, 4], 1, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1, 2]);
+        assert_eq!(result.pages[1], vec![3, 4]);
+    }
+
+    #[test]
+    fn test_append_infinite_page_with_max_pages_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        client.append_infinite_page(&key, vec![2], 1, Some(2));
+
+        let result = client.append_infinite_page(&key, vec![3], 2, Some(2));
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![2]);
+        assert_eq!(result.pages[1], vec![3]);
+    }
+
+    #[test]
+    fn test_append_infinite_page_with_max_pages_no_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.append_infinite_page(&key, vec![2], 1, Some(3));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().page_count(), 2);
+    }
+
+    #[test]
+    fn test_append_infinite_page_no_existing_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let result = client.append_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_append_infinite_page_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "wrong_type".to_string(), QueryOptions::default());
+
+        let result = client.append_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepend_infinite_page() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![3, 4], 1);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.prepend_infinite_page(&key, vec![1, 2], 0, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1, 2]);
+        assert_eq!(result.pages[1], vec![3, 4]);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_with_max_pages_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![3], 2);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        client.prepend_infinite_page(&key, vec![2], 1, Some(2));
+        let result = client.prepend_infinite_page(&key, vec![1], 0, Some(2));
+
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1]);
+        assert_eq!(result.pages[1], vec![2]);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_with_max_pages_no_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![2], 1);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.prepend_infinite_page(&key, vec![1], 0, Some(3));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().page_count(), 2);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_no_existing_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let result = client.prepend_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "wrong_type".to_string(), QueryOptions::default());
+
+        let result = client.prepend_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_channel_next_page() {
+        let (tx, rx) = oneshot::channel::<()>();
+        tx.send(()).unwrap();
+        let result = rx.await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_channel_dropped() {
+        let (tx, rx) = oneshot::channel::<()>();
+        drop(tx);
+        let result = rx.await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_infinite_query_error_notification() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+
+        let result: Option<InfiniteData<Vec<i32>, i32>> = client.get_infinite_data(&key);
+        assert!(result.is_some());
     }
 }

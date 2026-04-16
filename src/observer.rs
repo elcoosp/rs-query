@@ -1,19 +1,13 @@
-//! Query observer for reactive state management
+// src/observer.rs
+//! Query observer for reactive state updates
 
-use crate::{QueryClient, QueryKey, QueryOptions, QueryState};
-use std::fmt::Debug;
+use crate::{QueryClient, QueryError, QueryKey, QueryOptions, QueryState};
+use std::marker::PhantomData;
+use std::time::Instant;
 use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
-use tokio::time;
 
-/// Update message sent to observers when a query's state changes.
-#[derive(Debug, Clone)]
-pub struct QueryStateUpdate {
-    pub key: String,
-    pub state_variant: QueryStateVariant,
-}
-
-#[derive(Debug, Clone)]
+/// Variant of a query state update, used for notifications.
+#[derive(Clone, Debug, PartialEq)]
 pub enum QueryStateVariant {
     Idle,
     Loading,
@@ -23,171 +17,406 @@ pub enum QueryStateVariant {
     Error,
 }
 
-/// Observer that subscribes to a query's state changes.
-/// Call `update()` periodically (e.g., in a render loop) to refresh the state.
-pub struct QueryObserver<T: Clone + Send + Sync + 'static> {
-    key: QueryKey,
-    client: QueryClient,
-    current_state: QueryState<T>,
-    rx: broadcast::Receiver<QueryStateUpdate>,
-    interval_handle: Option<JoinHandle<()>>,
+/// A state update notification sent to subscribers.
+#[derive(Clone, Debug)]
+pub struct QueryStateUpdate {
+    pub key: String,
+    pub state_variant: QueryStateVariant,
 }
 
-impl<T: Clone + Send + Sync + Debug + 'static> QueryObserver<T> {
+/// Reactive observer for a query key.
+pub struct QueryObserver<T> {
+    pub key: QueryKey,
+    state: QueryState<T>,
+    client: QueryClient,
+    receiver: broadcast::Receiver<QueryStateUpdate>,
+    options: QueryOptions,
+    fetch_started_at: Option<Instant>,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
     pub fn new(client: &QueryClient, key: QueryKey) -> Self {
         let cache_key = key.cache_key().to_string();
-        let rx = client.subscribe(&cache_key);
-        let current_state = Self::compute_initial_state(client, &key);
-        let options = client.get_query_options(&key).unwrap_or_default();
+        let receiver = client.subscribe(&cache_key);
 
-        let mut observer = Self {
-            key,
-            client: client.clone(),
-            current_state,
-            rx,
-            interval_handle: None,
-        };
-
-        observer.maybe_start_interval(options);
-        observer
-    }
-
-    fn compute_initial_state(client: &QueryClient, key: &QueryKey) -> QueryState<T> {
-        if let Some(data) = client.get_query_data::<T>(key) {
-            let stale = client.is_stale(key);
-            if stale {
+        let state = if let Some(data) = client.get_query_data::<T>(&key) {
+            if client.is_stale(&key) {
                 QueryState::Stale(data)
             } else {
                 QueryState::Success(data)
             }
         } else {
             QueryState::Idle
+        };
+
+        Self {
+            key,
+            state,
+            client: client.clone(),
+            receiver,
+            options: QueryOptions::default(),
+            fetch_started_at: None,
+            _marker: PhantomData,
         }
     }
 
-    fn maybe_start_interval(&mut self, options: QueryOptions) {
-        if let Some(interval) = options.refetch_interval {
-            let client = self.client.clone();
-            let key = self.key.clone();
-            let in_background = options.refetch_interval_in_background;
-            let handle = tokio::spawn(async move {
-                let mut ticker = time::interval(interval);
-                loop {
-                    ticker.tick().await;
-                    if !in_background && !client.focus_manager.is_focused() {
-                        continue;
-                    }
-                    // Trigger a refetch by marking as stale and notifying
-                    client.invalidate_queries(&key);
-                }
-            });
-            self.interval_handle = Some(handle);
-        }
+    pub fn with_options(client: &QueryClient, key: QueryKey, options: QueryOptions) -> Self {
+        let mut observer = Self::new(client, key);
+        observer.options = options;
+        observer
     }
 
     pub fn state(&self) -> &QueryState<T> {
-        &self.current_state
+        &self.state
+    }
+
+    pub fn client(&self) -> &QueryClient {
+        &self.client
     }
 
     pub fn update(&mut self) {
-        while let Ok(update) = self.rx.try_recv() {
-            if update.key == self.key.cache_key() {
-                self.current_state = Self::compute_initial_state(&self.client, &self.key);
+        let data: Option<T> = self.client.get_query_data(&self.key);
+        let is_stale = self.client.is_stale(&self.key);
+
+        self.state = match (&self.state, data, is_stale) {
+            (_, None, _) => QueryState::Idle,
+            (QueryState::Loading, Some(data), _) => {
+                if is_stale {
+                    QueryState::Stale(data)
+                } else {
+                    QueryState::Success(data)
+                }
             }
+            (QueryState::Refetching(_), Some(data), _) => {
+                if is_stale {
+                    QueryState::Stale(data)
+                } else {
+                    QueryState::Success(data)
+                }
+            }
+            (_, Some(data), true) => QueryState::Stale(data),
+            (_, Some(data), false) => QueryState::Success(data),
+        };
+    }
+
+    pub fn set_loading(&mut self) {
+        self.fetch_started_at = Some(Instant::now());
+        let has_data = self.state.data().is_some();
+        if has_data {
+            let data = self.state.data_cloned().unwrap();
+            self.state = QueryState::Refetching(data);
+        } else {
+            self.state = QueryState::Loading;
         }
     }
 
-    pub fn refetch(&self) {
+    pub fn set_success(&mut self, data: T) {
+        self.fetch_started_at = None;
+        self.state = QueryState::Success(data);
+    }
+
+    pub fn set_error(&mut self, error: QueryError) {
+        self.fetch_started_at = None;
+        let stale_data = self.state.data_cloned();
+        self.state = QueryState::Error { error, stale_data };
+    }
+
+    pub fn set_stale(&mut self) {
+        if let Some(data) = self.state.data_cloned() {
+            self.state = QueryState::Stale(data);
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Option<QueryStateUpdate> {
+        match self.receiver.try_recv() {
+            Ok(update) => Some(update),
+            Err(broadcast::error::TryRecvError::Empty) => None,
+            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                let mut last = None;
+                for _ in 0..n {
+                    match self.receiver.try_recv() {
+                        Ok(u) => last = Some(u),
+                        Err(_) => break,
+                    }
+                }
+                last
+            }
+            Err(broadcast::error::TryRecvError::Closed) => None,
+        }
+    }
+
+    pub fn refetch(&mut self) {
         self.client.invalidate_queries(&self.key);
     }
-}
 
-impl<T: Clone + Send + Sync + 'static> Drop for QueryObserver<T> {
-    fn drop(&mut self) {
-        if let Some(handle) = self.interval_handle.take() {
-            handle.abort();
-        }
+    pub fn options(&self) -> &QueryOptions {
+        &self.options
+    }
+
+    pub fn fetch_started_at(&self) -> Option<Instant> {
+        self.fetch_started_at
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QueryClient, QueryKey, QueryOptions};
     use std::time::Duration;
-    use tokio::time::sleep;
 
-    #[tokio::test]
-    async fn test_observer_initial_state() {
+    #[test]
+    fn test_observer_new_empty_cache() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-
-        let observer = QueryObserver::<String>::new(&client, key.clone());
-        assert!(matches!(observer.state(), QueryState::Idle));
-
-        // Set data and create new observer
-        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
-        let observer2 = QueryObserver::<String>::new(&client, key);
-        assert!(matches!(observer2.state(), QueryState::Success(_)));
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        assert!(observer.state().is_idle());
+        assert_eq!(observer.key, key);
     }
 
-    #[tokio::test]
-    async fn test_observer_updates_on_notification() {
+    #[test]
+    fn test_observer_new_with_data() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
+        client.set_query_data(&key, "hello".to_string(), QueryOptions::default());
 
-        let mut observer = QueryObserver::<String>::new(&client, key.clone());
-        assert!(matches!(observer.state(), QueryState::Idle));
-
-        // Set data triggers notification
-        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
-
-        // Wait a tiny bit for notification to propagate
-        sleep(Duration::from_millis(10)).await;
-
-        observer.update();
-        assert!(matches!(observer.state(), QueryState::Success(ref s) if s == "data"));
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        assert!(observer.state().is_success());
+        assert_eq!(observer.state().data(), Some(&"hello".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_observer_refetch() {
+    #[test]
+    fn test_observer_new_with_stale_data() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-        let options = QueryOptions {
-            stale_time: Duration::from_millis(10),
+        let mut opts = QueryOptions::default();
+        opts.stale_time = Duration::from_millis(1);
+        client.set_query_data(&key, "stale".to_string(), opts);
+        std::thread::sleep(Duration::from_millis(5));
+
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        assert!(observer.state().is_stale());
+    }
+
+    #[test]
+    fn test_observer_with_options() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let opts = QueryOptions {
+            stale_time: Duration::from_secs(60),
             ..Default::default()
         };
+        let observer: QueryObserver<String> =
+            QueryObserver::with_options(&client, key, opts.clone());
+        assert_eq!(observer.options().stale_time, Duration::from_secs(60));
+    }
 
-        client.set_query_data(&key, "old".to_string(), options);
-        sleep(Duration::from_millis(20)).await;
+    #[test]
+    fn test_observer_set_loading_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        assert!(observer.state().is_loading());
+        assert!(observer.fetch_started_at().is_some());
+    }
 
-        let observer = QueryObserver::<String>::new(&client, key.clone());
-        // Should be stale
-        assert!(matches!(observer.state(), QueryState::Stale(_)));
+    #[test]
+    fn test_observer_set_loading_with_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        observer.set_success("existing".to_string());
+        observer.set_loading();
+        assert!(observer.state().is_refetching());
+        assert_eq!(observer.state().data(), Some(&"existing".to_string()));
+    }
 
+    #[test]
+    fn test_observer_set_success() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        observer.set_success("data".to_string());
+        assert!(observer.state().is_success());
+        assert_eq!(observer.state().data(), Some(&"data".to_string()));
+        assert!(observer.fetch_started_at().is_none());
+    }
+
+    #[test]
+    fn test_observer_set_error_no_stale_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        observer.set_error(QueryError::network("fail"));
+        assert!(observer.state().is_error());
+        assert_eq!(observer.state().data(), None);
+    }
+
+    #[test]
+    fn test_observer_set_error_with_stale_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_success("old".to_string());
+        observer.set_error(QueryError::timeout("30s"));
+        assert!(observer.state().is_error());
+        assert_eq!(observer.state().data(), Some(&"old".to_string()));
+    }
+
+    #[test]
+    fn test_observer_set_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_success("data".to_string());
+        observer.set_stale();
+        assert!(observer.state().is_stale());
+        assert_eq!(observer.state().data(), Some(&"data".to_string()));
+    }
+
+    #[test]
+    fn test_observer_set_stale_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_stale();
+        assert!(observer.state().is_idle());
+    }
+
+    #[test]
+    fn test_observer_update_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_success("data".to_string());
+        observer.update();
+        assert!(observer.state().is_idle());
+    }
+
+    #[test]
+    fn test_observer_update_with_fresh_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "fresh".to_string(), QueryOptions::default());
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        observer.update();
+        assert!(observer.state().is_success());
+    }
+
+    #[test]
+    fn test_observer_update_with_stale_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut opts = QueryOptions::default();
+        opts.stale_time = Duration::from_millis(1);
+        client.set_query_data(&key, "stale".to_string(), opts);
+        std::thread::sleep(Duration::from_millis(5));
+
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        observer.update();
+        assert!(observer.state().is_stale());
+    }
+
+    #[test]
+    fn test_observer_update_refetching_to_fresh() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "fresh".to_string(), QueryOptions::default());
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_success("old".to_string());
+        observer.set_loading();
+        observer.update();
+        assert!(observer.state().is_success());
+    }
+
+    #[test]
+    fn test_observer_update_refetching_to_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut opts = QueryOptions::default();
+        opts.stale_time = Duration::from_millis(1);
+        client.set_query_data(&key, "stale".to_string(), opts);
+        std::thread::sleep(Duration::from_millis(5));
+
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_success("old".to_string());
+        observer.set_loading();
+        observer.update();
+        assert!(observer.state().is_stale());
+    }
+
+    #[test]
+    fn test_observer_try_recv_empty() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        assert!(observer.try_recv().is_none());
+    }
+
+    #[test]
+    fn test_observer_try_recv_lagged() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let cache_key = key.cache_key().to_string();
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+
+        for _ in 0..20 {
+            client.notify_subscribers(&cache_key, QueryStateVariant::Success);
+        }
+
+        let _result = observer.try_recv();
+    }
+
+    #[test]
+    fn test_observer_refetch() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
         observer.refetch();
         assert!(client.is_stale(&key));
     }
 
-    #[tokio::test]
-    async fn test_observer_interval_refetch() {
+    #[test]
+    fn test_observer_client() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-        let options = QueryOptions {
-            refetch_interval: Some(Duration::from_millis(50)),
-            refetch_interval_in_background: true,
-            ..Default::default()
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        let _ = observer.client();
+    }
+
+    #[test]
+    fn test_query_state_variant_equality() {
+        assert_eq!(QueryStateVariant::Idle, QueryStateVariant::Idle);
+        assert_eq!(QueryStateVariant::Loading, QueryStateVariant::Loading);
+        assert_ne!(QueryStateVariant::Success, QueryStateVariant::Error);
+    }
+
+    #[test]
+    fn test_query_state_variant_clone() {
+        let v = QueryStateVariant::Success;
+        let cloned = v.clone();
+        assert_eq!(v, cloned);
+    }
+
+    #[test]
+    fn test_query_state_variant_debug() {
+        let v = QueryStateVariant::Error;
+        let debug = format!("{:?}", v);
+        assert!(debug.contains("Error"));
+    }
+
+    #[test]
+    fn test_query_state_update_debug() {
+        let update = QueryStateUpdate {
+            key: "test".to_string(),
+            state_variant: QueryStateVariant::Success,
         };
-
-        client.set_query_data(&key, "data".to_string(), options.clone());
-
-        let observer = QueryObserver::<String>::new(&client, key.clone());
-
-        // Wait for interval to tick
-        sleep(Duration::from_millis(120)).await;
-
-        // Observer still alive
-        assert!(client.get_query_data::<String>(&key).is_some());
-        drop(observer);
+        let debug = format!("{:?}", update);
+        assert!(debug.contains("test"));
     }
 }

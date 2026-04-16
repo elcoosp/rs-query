@@ -1,161 +1,87 @@
-//! Hydration utilities for server-side rendering and persistence
+// src/hydration.rs
+//! Hydration and persistence support
 
-use crate::QueryClient;
+use crate::{QueryClient, QueryError, QueryKey, QueryOptions};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
-/// A dehydrated state of the query cache that can be serialized and transferred.
-#[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DehydratedState {
-    /// Serialized queries, keyed by their cache key.
-    pub queries: HashMap<String, DehydratedQuery>,
-    /// Serialized mutations (if any) - not implemented yet.
-    pub mutations: HashMap<String, DehydratedMutation>,
-}
-
-/// A dehydrated query entry.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+/// A single dehydrated query entry.
+#[derive(Clone, Debug)]
 pub struct DehydratedQuery {
-    /// The query key in its string representation.
-    pub cache_key: String,
-    /// The serialized data (as a string for transport).
+    pub key: String,
     pub data: String,
-    /// Type identifier for deserialization.
-    pub type_name: String,
-    /// Timestamp when the data was fetched (milliseconds since epoch).
-    pub fetched_at_ms: u64,
-    /// Query options used for this query.
-    pub options: DehydratedQueryOptions,
-    /// Whether the query was marked stale.
-    pub is_stale: bool,
-}
-
-/// Dehydrated query options (subset of `QueryOptions`).
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DehydratedQueryOptions {
+    pub fetched_at_secs: u64,
     pub stale_time_ms: u64,
     pub gc_time_ms: u64,
-    pub refetch_on_mount: String,
-    pub enabled: bool,
-    pub structural_sharing: bool,
-    pub refetch_interval_ms: Option<u64>,
-    pub refetch_interval_in_background: bool,
-    pub refetch_on_window_focus: bool,
 }
 
-/// A dehydrated mutation entry (placeholder).
-#[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct DehydratedMutation {
-    // To be implemented later.
+/// Dehydrated state containing all serializable query cache entries.
+#[derive(Clone, Debug, Default)]
+pub struct DehydratedState {
+    pub queries: HashMap<String, DehydratedQuery>,
 }
 
-/// Options for hydrating a dehydrated state.
-#[derive(Debug, Clone, Default)]
+/// Options for hydrating the query cache.
+#[derive(Clone, Debug)]
 pub struct HydrateOptions {
-    /// If true, only overwrite cache entries if the dehydrated data is newer.
-    pub respect_timestamps: bool,
+    pub should_overwrite: bool,
+    pub should_hydrate: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+}
+
+impl Default for HydrateOptions {
+    fn default() -> Self {
+        Self {
+            should_overwrite: true,
+            should_hydrate: None,
+        }
+    }
 }
 
 impl QueryClient {
-    /// Dehydrate the current cache into a serializable state.
-    ///
-    /// Only successful queries are included by default.
     pub fn dehydrate(&self) -> DehydratedState {
-        let mut queries = HashMap::new();
-
+        let mut state = DehydratedState::default();
         for entry in self.cache.iter() {
             let key = entry.key().clone();
-            let entry = entry.value();
+            let value = entry.value();
 
-            // Skip stale or error states? For simplicity, include all.
-            // We'll serialize the data as JSON if `serde` is enabled, else as a placeholder.
-            let data_str = if cfg!(feature = "serde") {
-                // Since we don't know the type, we can't serialize directly.
-                // In practice, users would need to provide a serialization hook.
-                // For now, store an empty string as placeholder.
-                String::new()
-            } else {
-                String::new()
-            };
-
-            let dehydrated = DehydratedQuery {
-                cache_key: key.clone(),
-                data: data_str,
-                type_name: std::any::type_name::<()>().to_string(), // Placeholder
-                fetched_at_ms: entry.fetched_at.elapsed().as_millis() as u64,
-                options: DehydratedQueryOptions {
-                    stale_time_ms: entry.options.stale_time.as_millis() as u64,
-                    gc_time_ms: entry.options.gc_time.as_millis() as u64,
-                    refetch_on_mount: format!("{:?}", entry.options.refetch_on_mount),
-                    enabled: entry.options.enabled,
-                    structural_sharing: entry.options.structural_sharing,
-                    refetch_interval_ms: entry
-                        .options
-                        .refetch_interval
-                        .map(|d| d.as_millis() as u64),
-                    refetch_interval_in_background: entry.options.refetch_interval_in_background,
-                    refetch_on_window_focus: entry.options.refetch_on_window_focus,
-                },
-                is_stale: entry.is_stale,
-            };
-            queries.insert(key, dehydrated);
+            if let Some(data) = value.data.downcast_ref::<String>() {
+                state.queries.insert(
+                    key,
+                    DehydratedQuery {
+                        key: key.clone(),
+                        data: data.clone(),
+                        fetched_at_secs: value.fetched_at.elapsed().as_secs(),
+                        stale_time_ms: value.options.stale_time.as_millis() as u64,
+                        gc_time_ms: value.options.gc_time.as_millis() as u64,
+                    },
+                );
+            }
         }
-
-        DehydratedState {
-            queries,
-            mutations: HashMap::new(),
-        }
+        state
     }
 
-    /// Hydrate the cache with a previously dehydrated state.
-    ///
-    /// This will merge the dehydrated data into the existing cache.
-    /// If `respect_timestamps` is true, only overwrite if the dehydrated data is newer.
     pub fn hydrate(&self, state: DehydratedState, options: HydrateOptions) {
-        use crate::client::CacheEntry;
-        use std::any::TypeId;
-        use std::sync::Arc;
-
         for (key, dehydrated) in state.queries {
-            // Check if we already have this query
-            if let Some(existing) = self.cache.get(&key) {
-                if options.respect_timestamps {
-                    let dehydrated_time = Duration::from_millis(dehydrated.fetched_at_ms);
-                    if existing.fetched_at.elapsed() < dehydrated_time {
-                        // Existing data is newer, skip.
-                        continue;
-                    }
+            if let Some(ref filter) = options.should_hydrate {
+                if !filter(&key) {
+                    continue;
                 }
-
-                // Update existing entry to be stale
-                if let Some(mut entry) = self.cache.get_mut(&key) {
-                    entry.is_stale = true;
-                }
-            } else {
-                // Insert a placeholder entry so the cache knows about this query
-                // and can report it as stale to trigger a refetch.
-                let entry = CacheEntry {
-                    data: Arc::new(()), // Placeholder data
-                    type_id: TypeId::of::<()>(),
-                    fetched_at: Instant::now() - Duration::from_millis(dehydrated.fetched_at_ms),
-                    last_accessed: Instant::now(),
-                    options: crate::QueryOptions {
-                        stale_time: Duration::from_millis(dehydrated.options.stale_time_ms),
-                        gc_time: Duration::from_millis(dehydrated.options.gc_time_ms),
-                        refetch_on_window_focus: dehydrated.options.refetch_on_window_focus,
-                        ..Default::default()
-                    },
-                    is_stale: true, // Mark as stale so observers know to refetch
-                };
-                self.cache.insert(key, entry);
             }
+
+            if !options.should_overwrite {
+                if self.cache.contains_key(&key) {
+                    continue;
+                }
+            }
+
+            let query_options = QueryOptions {
+                stale_time: Duration::from_millis(dehydrated.stale_time_ms),
+                gc_time: Duration::from_millis(dehydrated.gc_time_ms),
+                ..Default::default()
+            };
+
+            let query_key = QueryKey::new(&key);
+            self.set_query_data(&query_key, dehydrated.data, query_options);
         }
     }
 }
@@ -163,28 +89,287 @@ impl QueryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QueryClient, QueryKey, QueryOptions};
 
     #[test]
-    fn test_dehydrate_hydrate_cycle() {
+    fn test_dehydrate_empty_cache() {
         let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
-
-        let dehydrated = client.dehydrate();
-        assert!(dehydrated.queries.contains_key(key.cache_key()));
-
-        let client2 = QueryClient::new();
-        client2.hydrate(dehydrated, HydrateOptions::default());
-
-        // The cache entry exists (marked stale) even if data not fully restored.
-        assert!(client2.is_stale(&key));
+        let state = client.dehydrate();
+        assert!(state.queries.is_empty());
     }
 
     #[test]
-    fn test_dehydrate_empty() {
+    fn test_dehydrate_with_data() {
         let client = QueryClient::new();
-        let dehydrated = client.dehydrate();
-        assert!(dehydrated.queries.is_empty());
+        let key = QueryKey::new("users");
+        let opts = QueryOptions {
+            stale_time: Duration::from_secs(60),
+            gc_time: Duration::from_secs(300),
+            ..Default::default()
+        };
+        client.set_query_data(&key, "user_data".to_string(), opts);
+
+        let state = client.dehydrate();
+        assert_eq!(state.queries.len(), 1);
+        let entry = state.queries.get("users").unwrap();
+        assert_eq!(entry.data, "user_data");
+        assert_eq!(entry.stale_time_ms, 60_000);
+        assert_eq!(entry.gc_time_ms, 300_000);
+    }
+
+    #[test]
+    fn test_dehydrate_non_string_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("count");
+        client.set_query_data(&key, 42i32, QueryOptions::default());
+
+        let state = client.dehydrate();
+        assert!(state.queries.is_empty());
+    }
+
+    #[test]
+    fn test_dehydrate_multiple_entries() {
+        let client = QueryClient::new();
+        client.set_query_data(
+            &QueryKey::new("a"),
+            "data_a".to_string(),
+            QueryOptions::default(),
+        );
+        client.set_query_data(
+            &QueryKey::new("b"),
+            "data_b".to_string(),
+            QueryOptions::default(),
+        );
+
+        let state = client.dehydrate();
+        assert_eq!(state.queries.len(), 2);
+    }
+
+    #[test]
+    fn test_hydrate_into_empty_cache() {
+        let client = QueryClient::new();
+        let mut queries = HashMap::new();
+        queries.insert(
+            "users".to_string(),
+            DehydratedQuery {
+                key: "users".to_string(),
+                data: "restored".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 60_000,
+                gc_time_ms: 300_000,
+            },
+        );
+        let state = DehydratedState { queries };
+
+        client.hydrate(state, HydrateOptions::default());
+
+        let data: Option<String> = client.get_query_data(&QueryKey::new("users"));
+        assert_eq!(data, Some("restored".to_string()));
+    }
+
+    #[test]
+    fn test_hydrate_with_should_overwrite_false() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        client.set_query_data(&key, "existing".to_string(), QueryOptions::default());
+
+        let mut queries = HashMap::new();
+        queries.insert(
+            "users".to_string(),
+            DehydratedQuery {
+                key: "users".to_string(),
+                data: "new_data".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 0,
+                gc_time_ms: 0,
+            },
+        );
+        let state = DehydratedState { queries };
+
+        let options = HydrateOptions {
+            should_overwrite: false,
+            should_hydrate: None,
+        };
+        client.hydrate(state, options);
+
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("existing".to_string()));
+    }
+
+    #[test]
+    fn test_hydrate_with_should_overwrite_true() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        client.set_query_data(&key, "existing".to_string(), QueryOptions::default());
+
+        let mut queries = HashMap::new();
+        queries.insert(
+            "users".to_string(),
+            DehydratedQuery {
+                key: "users".to_string(),
+                data: "overwritten".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 0,
+                gc_time_ms: 0,
+            },
+        );
+        let state = DehydratedState { queries };
+
+        let options = HydrateOptions {
+            should_overwrite: true,
+            should_hydrate: None,
+        };
+        client.hydrate(state, options);
+
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("overwritten".to_string()));
+    }
+
+    #[test]
+    fn test_hydrate_with_filter() {
+        let client = QueryClient::new();
+        let mut queries = HashMap::new();
+        queries.insert(
+            "users".to_string(),
+            DehydratedQuery {
+                key: "users".to_string(),
+                data: "user_data".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 0,
+                gc_time_ms: 0,
+            },
+        );
+        queries.insert(
+            "posts".to_string(),
+            DehydratedQuery {
+                key: "posts".to_string(),
+                data: "post_data".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 0,
+                gc_time_ms: 0,
+            },
+        );
+        let state = DehydratedState { queries };
+
+        let options = HydrateOptions {
+            should_overwrite: true,
+            should_hydrate: Some(Box::new(|key| key.starts_with("users"))),
+        };
+        client.hydrate(state, options);
+
+        let users: Option<String> = client.get_query_data(&QueryKey::new("users"));
+        let posts: Option<String> = client.get_query_data(&QueryKey::new("posts"));
+        assert_eq!(users, Some("user_data".to_string()));
+        assert_eq!(posts, None);
+    }
+
+    #[test]
+    fn test_hydrate_with_filter_rejecting_all() {
+        let client = QueryClient::new();
+        let mut queries = HashMap::new();
+        queries.insert(
+            "users".to_string(),
+            DehydratedQuery {
+                key: "users".to_string(),
+                data: "data".to_string(),
+                fetched_at_secs: 0,
+                stale_time_ms: 0,
+                gc_time_ms: 0,
+            },
+        );
+        let state = DehydratedState { queries };
+
+        let options = HydrateOptions {
+            should_overwrite: true,
+            should_hydrate: Some(Box::new(|_| false)),
+        };
+        client.hydrate(state, options);
+
+        let users: Option<String> = client.get_query_data(&QueryKey::new("users"));
+        assert_eq!(users, None);
+    }
+
+    #[test]
+    fn test_hydrate_empty_state() {
+        let client = QueryClient::new();
+        let state = DehydratedState::default();
+        client.hydrate(state, HydrateOptions::default());
+        assert!(client.cache.is_empty());
+    }
+
+    #[test]
+    fn test_dehydrated_state_default() {
+        let state = DehydratedState::default();
+        assert!(state.queries.is_empty());
+    }
+
+    #[test]
+    fn test_dehydrated_query_clone() {
+        let query = DehydratedQuery {
+            key: "test".to_string(),
+            data: "data".to_string(),
+            fetched_at_secs: 100,
+            stale_time_ms: 500,
+            gc_time_ms: 1000,
+        };
+        let cloned = query.clone();
+        assert_eq!(query.key, cloned.key);
+        assert_eq!(query.data, cloned.data);
+    }
+
+    #[test]
+    fn test_dehydrated_query_debug() {
+        let query = DehydratedQuery {
+            key: "test".to_string(),
+            data: "data".to_string(),
+            fetched_at_secs: 100,
+            stale_time_ms: 500,
+            gc_time_ms: 1000,
+        };
+        let debug = format!("{:?}", query);
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn test_hydrate_options_default() {
+        let opts = HydrateOptions::default();
+        assert!(opts.should_overwrite);
+        assert!(opts.should_hydrate.is_none());
+    }
+
+    #[test]
+    fn test_hydrate_options_clone() {
+        let opts = HydrateOptions {
+            should_overwrite: false,
+            should_hydrate: Some(Box::new(|_| true)),
+        };
+        let _cloned = opts.clone();
+    }
+
+    #[test]
+    fn test_hydrate_options_debug() {
+        let opts = HydrateOptions::default();
+        let debug = format!("{:?}", opts);
+        assert!(debug.contains("should_overwrite"));
+    }
+
+    #[test]
+    fn test_roundtrip_dehydrate_hydrate() {
+        let client = QueryClient::new();
+        client.set_query_data(
+            &QueryKey::new("test"),
+            "roundtrip".to_string(),
+            QueryOptions {
+                stale_time: Duration::from_secs(30),
+                gc_time: Duration::from_secs(120),
+                ..Default::default()
+            },
+        );
+
+        let state = client.dehydrate();
+        let client2 = QueryClient::new();
+        client2.hydrate(state, HydrateOptions::default());
+
+        let data: Option<String> = client2.get_query_data(&QueryKey::new("test"));
+        assert_eq!(data, Some("roundtrip".to_string()));
     }
 }

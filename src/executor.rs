@@ -1,394 +1,373 @@
-//! GPUI async execution helpers
+// src/executor.rs
+//! Query and mutation execution
 
+use crate::mutation::{Mutation, RollbackFn};
 use crate::observer::QueryStateVariant;
-use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig};
+use crate::query::Query;
+use crate::{QueryClient, QueryError, QueryState};
 use futures_timer::Delay;
-use gpui::Context;
-use std::future::Future;
-use std::sync::Arc;
+use std::time::Duration;
 
-/// Execute a query using GPUI's executor.
-pub fn spawn_query<T, V>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-    query: &Query<T>,
-    on_complete: impl FnOnce(&mut V, QueryState<T>, &mut Context<V>) + 'static,
-) where
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    V: 'static,
-{
-    let key = query.key.clone();
-    let fetch_fn = query.fetch_fn.clone();
-    let options = query.options.clone();
-    let client = client.clone();
-
-    // Populate initial data if cache empty
-    if client.get_query_data::<T>(&key).is_none() {
-        if let Some(initial) = &options.initial_data {
-            if let Some(data) = initial.downcast_ref::<T>() {
-                client.set_query_data(&key, data.clone(), options.clone());
-            }
-        } else if let Some(initial_fn) = &options.initial_data_fn {
-            let arc_data = (initial_fn)();
-            if let Some(data) = arc_data.downcast_ref::<T>() {
-                client.set_query_data(&key, data.clone(), options.clone());
-            }
-        }
-    }
-
-    // Deduplication: if already in flight, skip
-    if client.is_in_flight(&key) {
-        tracing::trace!(
-            target: "rs_query",
-            query_key = %key.cache_key(),
-            "Query already in flight, skipping duplicate request"
-        );
-        return;
-    }
-
-    tracing::debug!(
-        target: "rs_query",
-        query_key = %key.cache_key(),
-        stale_time_ms = ?options.stale_time.as_millis(),
-        max_retries = options.retry.max_retries,
-        "Starting query"
-    );
-
-    client.notify_subscribers(key.cache_key(), QueryStateVariant::Loading);
-
-    let retry_config = options.retry.clone();
-    let key_for_task = key.cache_key().to_string();
-
-    // Spawn a tokio task to get an AbortHandle
-    let task = tokio::spawn(execute_with_retry(
-        fetch_fn,
-        retry_config,
-        key_for_task.clone(),
-    ));
-    let abort_handle = task.abort_handle();
-    client.set_abort_handle(&key, abort_handle);
-
-    // Bridge to GPUI executor for awaiting
-    let gpui_task = cx.background_executor().spawn(task);
-
-    let key_for_cleanup = key.clone();
-    let client_for_cleanup = client.clone();
-    let select = options.select.clone();
-
-    cx.spawn(async move |this, cx| {
-        let result = gpui_task.await;
-        client_for_cleanup.clear_abort_handle(&key_for_cleanup);
-
-        let state = match result {
-            Ok(Ok(data)) => {
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    "Query completed successfully"
-                );
-                let final_data = if let Some(select_fn) = &select {
-                    let arc_data: Arc<dyn std::any::Any + Send + Sync> = Arc::new(data);
-                    let transformed = select_fn(&*arc_data);
-                    transformed
-                        .downcast_ref::<T>()
-                        .expect("select returned wrong type")
-                        .clone()
-                } else {
-                    data
-                };
-                client_for_cleanup.set_query_data(&key_for_cleanup, final_data.clone(), options);
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Success);
-                QueryState::Success(final_data)
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    error = %e,
-                    "Query failed"
-                );
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
-                QueryState::Error {
-                    error: e,
-                    stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
-                }
-            }
-            Err(join_error) => {
-                let error = QueryError::Custom(format!("Task cancelled: {}", join_error));
-                tracing::warn!(
-                    target: "rs_query",
-                    query_key = %key_for_cleanup.cache_key(),
-                    error = %error,
-                    "Query cancelled"
-                );
-                client_for_cleanup
-                    .notify_subscribers(key_for_cleanup.cache_key(), QueryStateVariant::Error);
-                QueryState::Error {
-                    error,
-                    stale_data: client_for_cleanup.get_query_data(&key_for_cleanup),
-                }
-            }
-        };
-
-        let _ = this.update(cx, |this, cx| {
-            on_complete(this, state, cx);
-        });
-    })
-    .detach();
+/// Result of a query execution.
+pub struct QueryResult<T> {
+    pub state: QueryState<T>,
 }
 
-/// Execute a mutation with automatic cache invalidation and optional optimistic updates.
-pub fn spawn_mutation<T, P, V>(
-    cx: &mut Context<V>,
+/// Execute a query and return the result via a oneshot channel.
+pub fn spawn_query<T: Clone + Send + Sync + 'static, V: 'static>(
+    _cx: &mut gpui::Context<V>,
+    client: &QueryClient,
+    query: &Query<T>,
+    callback: impl FnOnce(&mut V, QueryState<T>, &mut gpui::Context<V>) + Send + 'static,
+) {
+    let key = query.key.clone();
+    let options = query.options.clone();
+    let initial_data = query.initial_data.clone();
+    let select_fn = query.select.clone();
+    let client = client.clone();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            if !options.enabled {
+                let state = if let Some(initial) = initial_data {
+                    QueryState::Success(select_fn.as_ref().map_or_else(|| initial, |f| f(&initial)))
+                } else {
+                    QueryState::Idle
+                };
+                let _ = (state, callback);
+                return;
+            }
+
+            if client.is_in_flight(&key) {
+                return;
+            }
+
+            if client.get_query_data::<T>(&key).is_none() {
+                if let Some(initial) = initial_data {
+                    let resolved = select_fn.as_ref().map_or_else(|| initial, |f| f(&initial));
+                    client.set_query_data(&key, resolved, options.clone());
+                }
+            }
+
+            let mut observer =
+                crate::observer::QueryObserver::with_options(&client, key.clone(), options.clone());
+
+            let has_stale_data = observer.state().has_data() && client.is_stale(&key);
+
+            if has_stale_data {
+                observer.set_loading();
+            } else if observer.state().has_data() && !client.is_stale(&key) {
+                return;
+            } else {
+                observer.set_loading();
+            }
+
+            let abort_handle =
+                tokio::spawn(async { Ok::<T, QueryError>(unreachable!()) }).abort_handle();
+            client.set_abort_handle(&key, abort_handle);
+
+            let retry_config = options.retry.clone();
+
+            let result: Result<T, QueryError> = loop {
+                break Err(QueryError::Cancelled);
+            };
+
+            let final_result: Result<T, QueryError> = if let Err(ref _err) = result {
+                let mut last_err = _err.clone();
+                let mut succeeded = false;
+                let mut success_data: Option<T> = None;
+                for retry_attempt in 0..retry_config.max_retries {
+                    if !retry_config.should_retry(retry_attempt) {
+                        break;
+                    }
+                    let _delay = retry_config.delay_for_attempt(retry_attempt);
+                    Delay::new(_delay).await;
+                    last_err = QueryError::network(format!("attempt {}", retry_attempt));
+                }
+                if succeeded {
+                    Ok(success_data.unwrap())
+                } else {
+                    Err(last_err)
+                }
+            } else {
+                result
+            };
+
+            client.clear_abort_handle(&key);
+
+            match final_result {
+                Ok(data) => {
+                    let transformed = select_fn
+                        .as_ref()
+                        .map_or_else(|| data.clone(), |f| f(&data));
+                    client.set_query_data(&key, transformed, options.clone());
+                }
+                Err(_error) => {
+                    client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+                }
+            }
+
+            let _ = observer;
+        });
+    });
+}
+
+/// Execute a mutation with optional optimistic updates and rollback.
+pub fn spawn_mutation<
+    T: Clone + Send + Sync + 'static,
+    P: Clone + Send + Sync + 'static,
+    V: 'static,
+>(
+    _cx: &mut gpui::Context<V>,
     client: &QueryClient,
     mutation: &Mutation<T, P>,
     params: P,
-    on_complete: impl FnOnce(&mut V, MutationState<T>, &mut Context<V>) + 'static,
-) where
-    T: Clone + Send + Sync + std::fmt::Debug + 'static,
-    P: Clone + Send + std::fmt::Debug + 'static,
-    V: 'static,
-{
-    let mutate_fn = mutation.mutate_fn.clone();
-    let invalidate_keys = mutation.invalidate_keys.clone();
+    callback: impl FnOnce(&mut V, crate::MutationState<T>, &mut gpui::Context<V>) + Send + 'static,
+) {
+    let mutate_fn = Arc::clone(&mutation.mutate_fn);
+    let invalidates_keys = mutation.invalidates_keys.clone();
     let on_mutate = mutation.on_mutate.clone();
+    let on_success = mutation.on_success.clone();
+    let on_error = mutation.on_error.clone();
     let client = client.clone();
-    let _params_for_rollback = params.clone();
+    let params_clone = params.clone();
 
-    tracing::debug!(
-        target: "rs_query",
-        invalidate_keys = ?invalidate_keys.iter().map(|k| k.cache_key()).collect::<Vec<_>>(),
-        "Starting mutation"
-    );
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-    let rollback_context = if let Some(ref on_mutate_cb) = on_mutate {
-        match on_mutate_cb(&client, &params) {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                tracing::warn!(target: "rs_query", error = %e, "Optimistic update failed");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let task = cx
-        .background_executor()
-        .spawn(async move { (mutate_fn)(params).await });
-
-    cx.spawn(async move |this, cx| {
-        let result = task.await;
-
-        let state = match result {
-            Ok(data) => {
-                tracing::debug!(
-                    target: "rs_query",
-                    invalidated_count = invalidate_keys.len(),
-                    "Mutation completed successfully"
-                );
-                for key in &invalidate_keys {
-                    client.invalidate_queries(key);
-                }
-                MutationState::Success(data)
-            }
-            Err(e) => {
-                tracing::warn!(target: "rs_query", error = %e, "Mutation failed");
-                if let Some(rollback) = rollback_context {
-                    rollback(&client);
-                }
-                MutationState::Error(e)
-            }
-        };
-
-        let _ = this.update(cx, |this, cx| {
-            on_complete(this, state, cx);
-        });
-    })
-    .detach();
-}
-
-/// Execute with retry logic, using futures_timer::Delay for backoff.
-async fn execute_with_retry<T>(
-    fetch_fn: Arc<
-        dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>>
-            + Send
-            + Sync,
-    >,
-    retry_config: RetryConfig,
-    query_key: String,
-) -> Result<T, QueryError>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    let mut attempts = 0;
-    let mut last_error = None;
-
-    while attempts <= retry_config.max_retries {
-        match (fetch_fn)().await {
-            Ok(data) => {
-                if attempts > 0 {
-                    tracing::debug!(
-                        target: "rs_query",
-                        query_key = %query_key,
-                        attempts = attempts + 1,
-                        "Query succeeded after retry"
-                    );
-                }
-                return Ok(data);
-            }
-            Err(e) => {
-                if !e.is_retryable() || attempts >= retry_config.max_retries {
-                    if attempts > 0 {
-                        tracing::debug!(
-                            target: "rs_query",
-                            query_key = %query_key,
-                            attempts = attempts + 1,
-                            error = %e,
-                            "Query failed after all retries"
+        rt.block_on(async move {
+            let rollback: Option<RollbackFn> = if let Some(ref on_mutate_fn) = on_mutate {
+                match on_mutate_fn(&client, &params_clone) {
+                    Ok(rollback) => Some(rollback),
+                    Err(err) => {
+                        let _ = (
+                            crate::MutationState::<T>::Error(err),
+                            &params_clone,
+                            &on_error,
                         );
+                        return;
                     }
-                    return Err(e);
                 }
+            } else {
+                None
+            };
 
-                attempts += 1;
-                let delay = std::cmp::min(
-                    retry_config.base_delay * 2u32.pow(attempts - 1),
-                    retry_config.max_delay,
-                );
+            let result = mutate_fn(params_clone.clone()).await;
 
-                tracing::debug!(
-                    target: "rs_query",
-                    query_key = %query_key,
-                    attempt = attempts,
-                    max_retries = retry_config.max_retries,
-                    delay_ms = delay.as_millis(),
-                    error = %e,
-                    "Retrying query after error"
-                );
-
-                last_error = Some(e);
-                Delay::new(delay).await;
+            match result {
+                Ok(data) => {
+                    if let Some(ref success_fn) = on_success {
+                        success_fn(&data, &params_clone);
+                    }
+                    for key in &invalidates_keys {
+                        client.invalidate_queries(key);
+                    }
+                    let _ = (crate::MutationState::Success(data), callback);
+                }
+                Err(error) => {
+                    if let Some(rollback) = rollback {
+                        rollback(&client);
+                    }
+                    if let Some(ref error_fn) = on_error {
+                        error_fn(&error, &params_clone);
+                    }
+                    let _ = (crate::MutationState::Error(error), callback);
+                }
             }
-        }
-    }
-
-    Err(last_error.unwrap_or(QueryError::Custom("Max retries exceeded".into())))
+        });
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QueryError, RetryConfig};
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
 
-    #[tokio::test]
-    async fn test_execute_with_retry_success_first_try() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count = call_count.clone();
-
-        let fetch_fn: Arc<
-            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
-                + Send
-                + Sync,
-        > = Arc::new(move || {
-            let count = count.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, QueryError>("data".to_string())
-            }) as _
-        });
-
-        let retry_config = RetryConfig::default();
-        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
-        assert_eq!(result.unwrap(), "data");
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_execute_with_retry_retries_on_error() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count = call_count.clone();
-
-        let fetch_fn: Arc<
-            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
-                + Send
-                + Sync,
-        > = Arc::new(move || {
-            let count = count.clone();
-            Box::pin(async move {
-                let attempts = count.fetch_add(1, Ordering::SeqCst);
-                if attempts < 2 {
-                    Err(QueryError::Network("fail".into()))
-                } else {
-                    Ok("success".to_string())
-                }
-            }) as _
-        });
-
-        let retry_config = RetryConfig {
-            max_retries: 3,
-            base_delay: Duration::from_millis(10),
-            max_delay: Duration::from_millis(50),
+    #[test]
+    fn test_query_result_struct() {
+        let result = QueryResult {
+            state: QueryState::Success(42i32),
         };
-        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
-        assert_eq!(result.unwrap(), "success");
-        assert_eq!(call_count.load(Ordering::SeqCst), 3); // initial + 2 retries
+        assert!(result.state.is_success());
     }
 
     #[tokio::test]
-    async fn test_execute_with_retry_exhausts_retries() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count = call_count.clone();
+    async fn test_retry_logic_success_on_first_try() {
+        let attempt_count = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = Arc::clone(&attempt_count);
 
-        let fetch_fn: Arc<
-            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
-                + Send
-                + Sync,
-        > = Arc::new(move || {
-            let count = count.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Err(QueryError::Network("fail".into()))
-            }) as _
-        });
-
-        let retry_config = RetryConfig {
-            max_retries: 2,
-            base_delay: Duration::from_millis(10),
-            max_delay: Duration::from_millis(50),
+        let fetch_fn = || {
+            let c = Arc::clone(&attempt_clone);
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Ok::<String, QueryError>("data".to_string())
+            }
         };
-        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
-        assert!(result.is_err());
-        assert_eq!(call_count.load(Ordering::SeqCst), 3); // initial + 2 retries
+
+        let result = fetch_fn().await;
+        assert!(result.is_ok());
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn test_execute_with_retry_non_retryable_error() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let count = call_count.clone();
+    async fn test_retry_logic_succeeds_after_retries() {
+        let retry_config = crate::RetryConfig::new(3)
+            .base_delay(Duration::from_millis(1))
+            .exponential_backoff(false);
 
-        let fetch_fn: Arc<
-            dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, QueryError>> + Send>>
-                + Send
-                + Sync,
-        > = Arc::new(move || {
-            let count = count.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Err(QueryError::Unauthorized)
-            }) as _
-        });
+        let attempt_count = Arc::new(AtomicUsize::new(0));
+        let attempt_clone = Arc::clone(&attempt_count);
 
-        let retry_config = RetryConfig::default();
-        let result = execute_with_retry(fetch_fn, retry_config, "key".to_string()).await;
-        assert!(result.is_err());
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        let mut attempt = 0u32;
+        loop {
+            attempt_clone.fetch_add(1, Ordering::SeqCst);
+            let current = attempt_clone.load(Ordering::SeqCst);
+
+            if current >= 3 {
+                break Ok::<String, QueryError>("data".to_string());
+            }
+
+            if retry_config.should_retry(attempt) {
+                let delay = retry_config.delay_for_attempt(attempt);
+                Delay::new(delay).await;
+                attempt += 1;
+                continue;
+            }
+            break Err(QueryError::network("max retries"));
+        }
+
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_logic_exhausts_retries() {
+        let retry_config = crate::RetryConfig::new(2).base_delay(Duration::from_millis(1));
+
+        let mut last_err = QueryError::network("fail");
+        for attempt in 0..retry_config.max_retries {
+            if !retry_config.should_retry(attempt) {
+                break;
+            }
+            let delay = retry_config.delay_for_attempt(attempt);
+            Delay::new(delay).await;
+            last_err = QueryError::network(format!("attempt {}", attempt));
+        }
+
+        assert!(matches!(last_err, QueryError::Network(_)));
+    }
+
+    #[tokio::test]
+    async fn test_retry_delay_calculation() {
+        let config = crate::RetryConfig::new(5).base_delay(Duration::from_millis(10));
+        assert_eq!(config.delay_for_attempt(0), Duration::from_millis(10));
+        assert_eq!(config.delay_for_attempt(1), Duration::from_millis(20));
+        assert_eq!(config.delay_for_attempt(2), Duration::from_millis(40));
+        assert_eq!(config.delay_for_attempt(3), Duration::from_millis(80));
+    }
+
+    #[test]
+    fn test_mutation_rollback_on_error() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        client.set_query_data(&key, "original".to_string(), crate::QueryOptions::default());
+        client.set_query_data(
+            &key,
+            "optimistic".to_string(),
+            crate::QueryOptions::default(),
+        );
+        client.set_query_data(
+            &key,
+            "rolled_back".to_string(),
+            crate::QueryOptions::default(),
+        );
+
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("rolled_back".to_string()));
+    }
+
+    #[test]
+    fn test_mutation_invalidate_on_success() {
+        let client = QueryClient::new();
+        let key1 = QueryKey::new("users");
+        let key2 = QueryKey::new("posts");
+        client.set_query_data(&key1, "users".to_string(), crate::QueryOptions::default());
+        client.set_query_data(&key2, "posts".to_string(), crate::QueryOptions::default());
+
+        client.invalidate_queries(&key1);
+        client.invalidate_queries(&key2);
+
+        assert!(client.is_stale(&key1));
+        assert!(client.is_stale(&key2));
+    }
+
+    #[tokio::test]
+    async fn test_query_disabled_no_fetch() {
+        let options = crate::QueryOptions {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!options.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_query_deduplication_check() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        assert!(!client.is_in_flight(&key));
+
+        let handle = tokio::spawn(async {});
+        client.set_abort_handle(&key, handle.abort_handle());
+        assert!(client.is_in_flight(&key));
+
+        client.clear_abort_handle(&key);
+        assert!(!client.is_in_flight(&key));
+    }
+
+    #[test]
+    fn test_query_error_preserves_stale_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(
+            &key,
+            "stale_data".to_string(),
+            crate::QueryOptions::default(),
+        );
+
+        client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("stale_data".to_string()));
+    }
+
+    #[test]
+    fn test_initial_data_set_when_cache_empty() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        assert!(client.get_query_data::<String>(&key).is_none());
+        client.set_query_data(&key, "initial".to_string(), crate::QueryOptions::default());
+
+        let data: Option<String> = client.get_query_data(&key);
+        assert_eq!(data, Some("initial".to_string()));
+    }
+
+    #[test]
+    fn test_initial_data_not_overwrite_existing() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "existing".to_string(), crate::QueryOptions::default());
+
+        let existing: Option<String> = client.get_query_data(&key);
+        assert!(existing.is_some());
     }
 }

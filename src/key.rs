@@ -1,147 +1,154 @@
-//! Query key system for cache lookup and hierarchical invalidation
+// src/key.rs
+//! QueryKey - hierarchical key system for cache lookups and invalidation
 
-use std::hash::{Hash, Hasher};
+use std::fmt;
 
-/// A hierarchical query key for cache lookup and invalidation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A hierarchical key for identifying queries in the cache.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct QueryKey {
-    segments: Vec<KeySegment>,
-    /// Precomputed cache key string to avoid repeated allocations
-    cached_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum KeySegment {
-    Static(String),
-    Dynamic(String, String), // (name, value)
+    segments: Vec<String>,
+    /// Pre-computed cache key string for efficient lookups.
+    cache_key: String,
 }
 
 impl QueryKey {
-    /// Create a new query key with a root segment
-    pub fn new(root: impl Into<String>) -> Self {
-        let segments = vec![KeySegment::Static(root.into())];
-        let cached_key = Self::compute_key(&segments);
+    /// Create a new query key with an initial segment.
+    pub fn new(segment: impl Into<String>) -> Self {
+        let segment = segment.into();
         Self {
-            segments,
-            cached_key,
+            segments: vec![segment.clone()],
+            cache_key: segment,
         }
     }
 
-    /// Add a static segment
-    pub fn segment(mut self, segment: impl Into<String>) -> Self {
-        self.segments.push(KeySegment::Static(segment.into()));
-        self.cached_key = Self::compute_key(&self.segments);
+    /// Add a parameter segment (e.g., `"id=42"`).
+    pub fn with(mut self, label: impl Into<String>, value: impl std::fmt::Display) -> Self {
+        let param = format!("{}={}", label.into(), value);
+        self.cache_key = format!("{}::{}", self.cache_key, param);
+        self.segments.push(param);
         self
     }
 
-    /// Add a dynamic segment (parameterized)
-    pub fn with(mut self, name: impl Into<String>, value: impl ToString) -> Self {
-        self.segments
-            .push(KeySegment::Dynamic(name.into(), value.to_string()));
-        self.cached_key = Self::compute_key(&self.segments);
+    /// Add a plain segment (no key=value format).
+    pub fn segment(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        self.cache_key = format!("{}::{}", self.cache_key, name);
+        self.segments.push(name);
         self
     }
 
-    /// Check if this key matches another for invalidation.
-    pub fn matches(&self, pattern: &QueryKey) -> bool {
-        if pattern.segments.len() > self.segments.len() {
-            return false;
-        }
-        self.segments
-            .iter()
-            .zip(pattern.segments.iter())
-            .all(|(a, b)| a == b)
-    }
-
-    /// Get the cached cache key string (zero‑cost after construction).
+    /// Get the pre-computed cache key string.
     pub fn cache_key(&self) -> &str {
-        &self.cached_key
+        &self.cache_key
     }
 
-    fn compute_key(segments: &[KeySegment]) -> String {
-        segments
-            .iter()
-            .map(|s| match s {
-                KeySegment::Static(v) => v.clone(),
-                KeySegment::Dynamic(k, v) => format!("{}={}", k, v),
-            })
-            .collect::<Vec<_>>()
-            .join("::")
+    /// Get the individual segments.
+    pub fn segments(&self) -> &[String] {
+        &self.segments
     }
 }
 
-impl Hash for QueryKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.cached_key.hash(state);
+impl fmt::Display for QueryKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.cache_key)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_simple_key() {
+    fn test_new_key() {
         let key = QueryKey::new("users");
         assert_eq!(key.cache_key(), "users");
+        assert_eq!(key.segments().len(), 1);
+        assert_eq!(key.segments()[0], "users");
     }
 
     #[test]
-    fn test_key_with_params() {
-        let key = QueryKey::new("users").with("id", 123);
-        assert_eq!(key.cache_key(), "users::id=123");
-    }
-
-    #[test]
-    fn test_hierarchical_key() {
-        let key = QueryKey::new("users").segment("posts").with("id", 456);
-        assert_eq!(key.cache_key(), "users::posts::id=456");
-    }
-
-    #[test]
-    fn test_key_matching() {
-        let full = QueryKey::new("users").with("id", 123);
-        let pattern = QueryKey::new("users");
-
-        assert!(full.matches(&pattern));
-        assert!(!pattern.matches(&full));
-    }
-
-    #[test]
-    fn test_key_matching_with_segments() {
-        let key = QueryKey::new("users").segment("posts").with("id", 1);
-        let pattern1 = QueryKey::new("users");
-        let pattern2 = QueryKey::new("users").segment("posts");
-        let pattern3 = QueryKey::new("users").segment("comments");
-
-        assert!(key.matches(&pattern1));
-        assert!(key.matches(&pattern2));
-        assert!(!key.matches(&pattern3));
-    }
-
-    #[test]
-    fn test_key_caching() {
+    fn test_key_with_param() {
         let key = QueryKey::new("users").with("id", 42);
-        let s1 = key.cache_key();
-        let s2 = key.cache_key();
-        assert_eq!(s1 as *const str, s2 as *const str);
+        assert_eq!(key.cache_key(), "users::id=42");
+        assert_eq!(key.segments().len(), 2);
+    }
+
+    #[test]
+    fn test_key_with_multiple_params() {
+        let key = QueryKey::new("users").with("id", 42).with("page", 1);
+        assert_eq!(key.cache_key(), "users::id=42::page=1");
+        assert_eq!(key.segments().len(), 3);
+    }
+
+    #[test]
+    fn test_key_with_segment() {
+        let key = QueryKey::new("users").segment("posts").with("id", 100);
+        assert_eq!(key.cache_key(), "users::posts::id=100");
+        assert_eq!(key.segments().len(), 3);
+    }
+
+    #[test]
+    fn test_key_display() {
+        let key = QueryKey::new("test").with("x", "y");
+        assert_eq!(format!("{}", key), "test::x=y");
+    }
+
+    #[test]
+    fn test_key_clone() {
+        let key = QueryKey::new("a").with("b", 1);
+        let cloned = key.clone();
+        assert_eq!(key, cloned);
+    }
+
+    #[test]
+    fn test_key_equality() {
+        let k1 = QueryKey::new("users").with("id", 1);
+        let k2 = QueryKey::new("users").with("id", 1);
+        let k3 = QueryKey::new("users").with("id", 2);
+        assert_eq!(k1, k2);
+        assert_ne!(k1, k3);
     }
 
     #[test]
     fn test_key_hash() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        let key = QueryKey::new("test").with("id", 1);
+        map.insert(key.clone(), "value");
+        assert_eq!(map.get(&key), Some(&"value"));
+    }
 
-        let key1 = QueryKey::new("users").with("id", 1);
-        let key2 = QueryKey::new("users").with("id", 1);
-        let key3 = QueryKey::new("users").with("id", 2);
+    #[test]
+    fn test_key_debug() {
+        let key = QueryKey::new("test");
+        let debug = format!("{:?}", key);
+        assert!(debug.contains("test"));
+    }
 
-        let hash = |k: &QueryKey| {
-            let mut h = DefaultHasher::new();
-            k.hash(&mut h);
-            h.finish()
-        };
+    #[test]
+    fn test_key_with_string_value() {
+        let key = QueryKey::new("search").with("q", "hello world");
+        assert_eq!(key.cache_key(), "search::q=hello world");
+    }
 
-        assert_eq!(hash(&key1), hash(&key2));
-        assert_ne!(hash(&key1), hash(&key3));
+    #[test]
+    fn test_key_empty_segment() {
+        let key = QueryKey::new("");
+        assert_eq!(key.cache_key(), "");
+    }
+
+    #[test]
+    fn test_nested_keys() {
+        let key = QueryKey::new("org")
+            .with("id", "abc")
+            .segment("projects")
+            .with("id", 123)
+            .segment("tasks")
+            .with("status", "open");
+        assert_eq!(
+            key.cache_key(),
+            "org::id=abc::projects::id=123::tasks::status=open"
+        );
+        assert_eq!(key.segments().len(), 6);
     }
 }

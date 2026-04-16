@@ -1,3 +1,4 @@
+// src/client.rs
 //! QueryClient - central cache and query manager
 
 use crate::focus_manager::FocusManager;
@@ -257,8 +258,8 @@ impl QueryClient {
             if let Some((_, handle)) = self.abort_handles.remove(&key) {
                 handle.abort();
             }
-            if let Some(mut entry) = self.cache.get_mut(&key) {
-                entry.is_stale = true;
+            if let Some(mut entry_mut) = self.cache.get_mut(&key) {
+                entry_mut.is_stale = true;
                 self.notify_subscribers(&key, QueryStateVariant::Stale);
             }
         }
@@ -387,6 +388,7 @@ mod tests {
         // But the client should correctly identify it as stale
         assert!(client.is_stale(&key));
     }
+
     #[tokio::test]
     async fn test_invalidate_queries() {
         let client = QueryClient::new();
@@ -500,5 +502,545 @@ mod tests {
 
         client.clear_abort_handle(&key);
         assert!(!client.is_in_flight(&key));
+    }
+
+    // --- NEW TESTS FOR 100% COVERAGE ---
+
+    #[test]
+    fn test_get_query_options() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::from_secs(60),
+            gc_time: Duration::from_secs(300),
+            ..Default::default()
+        };
+
+        assert!(client.get_query_options(&key).is_none());
+
+        client.set_query_data(&key, "data".to_string(), options.clone());
+        let retrieved = client.get_query_options(&key).unwrap();
+        assert_eq!(retrieved.stale_time, Duration::from_secs(60));
+        assert_eq!(retrieved.gc_time, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_get_infinite_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        assert!(client.get_infinite_data::<Vec<i32>, i32>(&key).is_none());
+
+        let data = InfiniteData::with_first_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data.clone(), QueryOptions::default());
+
+        let retrieved = client.get_infinite_data::<Vec<i32>, i32>(&key).unwrap();
+        assert_eq!(retrieved.page_count(), 1);
+        assert_eq!(retrieved.pages[0], vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_set_infinite_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let data = InfiniteData::with_first_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let retrieved: Option<InfiniteData<Vec<i32>, i32>> = client.get_query_data(&key);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().pages[0], vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_is_stale_no_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("nonexistent");
+        assert!(!client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_is_stale_not_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+        assert!(!client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_is_stale_flag_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+        client.invalidate_queries(&key);
+        assert!(client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_is_stale_zero_stale_time() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        // stale_time of ZERO means data is ALWAYS fresh from a time perspective
+        let options = QueryOptions {
+            stale_time: Duration::ZERO,
+            ..Default::default()
+        };
+        client.set_query_data(&key, "data".to_string(), options);
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(!client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_get_query_data_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "string_data".to_string(), QueryOptions::default());
+
+        // Try to get as wrong type
+        let retrieved: Option<i32> = client.get_query_data(&key);
+        assert!(retrieved.is_none());
+    }
+
+    #[test]
+    fn test_get_query_data_no_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("nonexistent");
+        let retrieved: Option<String> = client.get_query_data(&key);
+        assert!(retrieved.is_none());
+    }
+
+    #[test]
+    fn test_set_query_data_structural_sharing_disabled() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            structural_sharing: false,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "first".to_string(), options.clone());
+        client.set_query_data(&key, "second".to_string(), options);
+
+        let retrieved: Option<String> = client.get_query_data(&key);
+        assert_eq!(retrieved, Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_set_query_data_structural_sharing_enabled_no_old_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            structural_sharing: true,
+            ..Default::default()
+        };
+
+        // No old data exists, should still work
+        client.set_query_data(&key, "data".to_string(), options);
+        let retrieved: Option<String> = client.get_query_data(&key);
+        assert_eq!(retrieved, Some("data".to_string()));
+    }
+
+    #[test]
+    fn test_set_query_data_structural_sharing_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        // Store as String
+        client.set_query_data(&key, "string".to_string(), QueryOptions::default());
+
+        // Overwrite as i32 with structural sharing enabled
+        // The old entry is String, new is i32 - type mismatch branch
+        let options = QueryOptions {
+            structural_sharing: true,
+            ..Default::default()
+        };
+        client.set_query_data(&key, 42i32, options);
+
+        let retrieved: Option<i32> = client.get_query_data(&key);
+        assert_eq!(retrieved, Some(42));
+    }
+
+    #[test]
+    fn test_append_infinite_page() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![1, 2], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.append_infinite_page(&key, vec![3, 4], 1, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1, 2]);
+        assert_eq!(result.pages[1], vec![3, 4]);
+        assert_eq!(result.page_params, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_append_infinite_page_with_max_pages_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![1], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        // Max 2 pages, add second
+        client.append_infinite_page(&key, vec![2], 1, Some(2));
+
+        // Add third - should evict first
+        let result = client.append_infinite_page(&key, vec![3], 2, Some(2));
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![2]);
+        assert_eq!(result.pages[1], vec![3]);
+    }
+
+    #[test]
+    fn test_append_infinite_page_with_max_pages_no_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![1], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        // Max 3 pages, only adding 1 more = 2 total, no eviction
+        let result = client.append_infinite_page(&key, vec![2], 1, Some(3));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().page_count(), 2);
+    }
+
+    #[test]
+    fn test_append_infinite_page_no_existing_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let result = client.append_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_append_infinite_page_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "wrong_type".to_string(), QueryOptions::default());
+
+        let result = client.append_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepend_infinite_page() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![3, 4], 1);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.prepend_infinite_page(&key, vec![1, 2], 0, None);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1, 2]);
+        assert_eq!(result.pages[1], vec![3, 4]);
+        assert_eq!(result.page_params, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_with_max_pages_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![3], 2);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        client.prepend_infinite_page(&key, vec![2], 1, Some(2));
+        let result = client.prepend_infinite_page(&key, vec![1], 0, Some(2));
+
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.page_count(), 2);
+        assert_eq!(result.pages[0], vec![1]);
+        assert_eq!(result.pages[1], vec![2]);
+        assert_eq!(result.page_params, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_with_max_pages_no_eviction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let data = InfiniteData::with_first_page(vec![2], 1);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let result = client.prepend_infinite_page(&key, vec![1], 0, Some(3));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().page_count(), 2);
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_no_existing_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let result = client.prepend_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_prepend_infinite_page_wrong_type() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "wrong_type".to_string(), QueryOptions::default());
+
+        let result = client.prepend_infinite_page::<Vec<i32>, i32>(&key, vec![1], 0, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_invalidate_queries_with_abort_handle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        // Set an abort handle
+        let handle = tokio::spawn(async {});
+        client.set_abort_handle(&key, handle.abort_handle());
+
+        assert!(client.is_in_flight(&key));
+
+        // Invalidate should cancel in-flight
+        client.invalidate_queries(&key);
+
+        assert!(!client.is_in_flight(&key));
+        assert!(client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_cancel_query_with_handle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let handle = tokio::spawn(async {});
+        client.set_abort_handle(&key, handle.abort_handle());
+        assert!(client.is_in_flight(&key));
+
+        client.cancel_query(&key);
+        assert!(!client.is_in_flight(&key));
+    }
+
+    #[test]
+    fn test_cancel_query_no_handle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        // Should not panic when no handle exists
+        client.cancel_query(&key);
+    }
+
+    #[test]
+    fn test_clear_with_abort_handles() {
+        let client = QueryClient::new();
+        let key1 = QueryKey::new("test1");
+        let key2 = QueryKey::new("test2");
+
+        client.set_query_data(&key1, "data1".to_string(), QueryOptions::default());
+        client.set_query_data(&key2, "data2".to_string(), QueryOptions::default());
+
+        let handle1 = tokio::spawn(async {});
+        let handle2 = tokio::spawn(async {});
+        client.set_abort_handle(&key1, handle1.abort_handle());
+        client.set_abort_handle(&key2, handle2.abort_handle());
+
+        client.clear();
+
+        assert!(client.cache.is_empty());
+        assert!(client.abort_handles.is_empty());
+        assert!(client.get_query_data::<String>(&key1).is_none());
+        assert!(client.get_query_data::<String>(&key2).is_none());
+    }
+
+    #[test]
+    fn test_clear_empty() {
+        let client = QueryClient::new();
+        // Should not panic on empty cache
+        client.clear();
+        assert!(client.cache.is_empty());
+    }
+
+    #[test]
+    fn test_refetch_all_stale_not_stale() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::from_secs(60),
+            refetch_on_window_focus: true,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+
+        // Data is fresh, refetch_all_stale should not notify
+        client.refetch_all_stale();
+        assert!(!client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_refetch_all_stale_refetch_disabled() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::from_millis(1),
+            refetch_on_window_focus: false,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(client.is_stale(&key));
+
+        // refetch_on_window_focus is false, so refetch_all_stale should not notify
+        client.refetch_all_stale();
+        // The data should still be stale (not re-fetched)
+        assert!(client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_refetch_all_stale_empty_cache() {
+        let client = QueryClient::new();
+        // Should not panic on empty cache
+        client.refetch_all_stale();
+    }
+
+    #[test]
+    fn test_refetch_all_stale_flag_stale_with_refetch_enabled() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            stale_time: Duration::ZERO, // time-based not stale
+            refetch_on_window_focus: true,
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+        // Manually mark as stale via invalidation
+        client.invalidate_queries(&key);
+
+        // Now refetch_all_stale should pick it up (flag is stale, refetch enabled)
+        client.refetch_all_stale();
+        assert!(client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_subscribe_multiple_subscribers() {
+        let client = QueryClient::new();
+        let cache_key = "test".to_string();
+
+        let mut rx1 = client.subscribe(&cache_key);
+        let mut rx2 = client.subscribe(&cache_key);
+
+        client.notify_subscribers(&cache_key, QueryStateVariant::Success);
+
+        let u1 = rx1.try_recv().unwrap();
+        let u2 = rx2.try_recv().unwrap();
+        assert_eq!(u1.key, cache_key);
+        assert_eq!(u2.key, cache_key);
+    }
+
+    #[test]
+    fn test_notify_subscribers_no_subscribers() {
+        let client = QueryClient::new();
+        // Should not panic when no subscribers exist
+        client.notify_subscribers("nonexistent", QueryStateVariant::Success);
+    }
+
+    #[test]
+    fn test_client_default() {
+        let client = QueryClient::default();
+        assert!(client.cache.is_empty());
+    }
+
+    #[test]
+    fn test_client_clone() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        let cloned = client.clone();
+        let data: Option<String> = cloned.get_query_data(&key);
+        assert_eq!(data, Some("data".to_string()));
+    }
+
+    #[test]
+    fn test_gc_retains_fresh_entries() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let options = QueryOptions {
+            gc_time: Duration::from_secs(300),
+            ..Default::default()
+        };
+
+        client.set_query_data(&key, "data".to_string(), options);
+        client.gc();
+        let data: Option<String> = client.get_query_data(&key);
+        assert!(data.is_some());
+    }
+
+    #[test]
+    fn test_invalidate_queries_no_matching_keys() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        // Pattern doesn't match
+        client.invalidate_queries(&QueryKey::new("posts"));
+        assert!(!client.is_stale(&key));
+    }
+
+    #[test]
+    fn test_invalidate_queries_prefix_match() {
+        let client = QueryClient::new();
+        let key1 = QueryKey::new("users").with("id", 1);
+        let key2 = QueryKey::new("users").with("id", 2);
+        let key3 = QueryKey::new("posts").with("id", 1);
+
+        client.set_query_data(&key1, "u1".to_string(), QueryOptions::default());
+        client.set_query_data(&key2, "u2".to_string(), QueryOptions::default());
+        client.set_query_data(&key3, "p1".to_string(), QueryOptions::default());
+
+        client.invalidate_queries(&QueryKey::new("users"));
+
+        assert!(client.is_stale(&key1));
+        assert!(client.is_stale(&key2));
+        assert!(!client.is_stale(&key3));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_creates_sender_lazily() {
+        let client = QueryClient::new();
+        let cache_key = "new_key".to_string();
+
+        // This should create a new sender
+        let mut rx = client.subscribe(&cache_key);
+        client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
+
+        let update = tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(update.state_variant, QueryStateVariant::Loading));
+    }
+
+    #[test]
+    fn test_set_query_data_resets_stale_flag() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+        client.invalidate_queries(&key);
+        assert!(client.is_stale(&key));
+
+        // Setting new data should reset stale flag
+        client.set_query_data(&key, "fresh".to_string(), QueryOptions::default());
+        assert!(!client.is_stale(&key));
     }
 }

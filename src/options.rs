@@ -1,131 +1,54 @@
-//! Query and mutation options
+// src/options.rs
+//! Query options configuration
 
-use std::any::Any;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Initial data for a query – either a concrete value or a lazy function.
-pub enum InitialData<T: Clone + Send + Sync + 'static> {
-    Value(T),
-    Function(Arc<dyn Fn() -> T + Send + Sync>),
-}
-
-impl<T: Clone + Send + Sync + 'static> Clone for InitialData<T> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Value(v) => Self::Value(v.clone()),
-            Self::Function(f) => Self::Function(Arc::clone(f)),
-        }
-    }
-}
-
-/// Placeholder data for a query – value or function that receives previous data.
-pub enum PlaceholderData<T: Clone + Send + Sync + 'static> {
-    Value(T),
-    Function(Arc<dyn Fn(Option<T>) -> T + Send + Sync>),
-}
-
-impl<T: Clone + Send + Sync + 'static> Clone for PlaceholderData<T> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Value(v) => Self::Value(v.clone()),
-            Self::Function(f) => Self::Function(Arc::clone(f)),
-        }
-    }
-}
-
-/// Configuration options for a query
-#[derive(Clone)]
-pub struct QueryOptions {
-    /// Time after which data is considered stale (default: 0 = immediately)
-    pub stale_time: Duration,
-    /// Time after which inactive cache is garbage collected (default: 5 min)
-    pub gc_time: Duration,
-    /// Whether to refetch when query becomes active
-    pub refetch_on_mount: RefetchOnMount,
-    /// Retry configuration
-    pub retry: RetryConfig,
-    /// Whether query is enabled
-    pub enabled: bool,
-    /// Initial data to populate cache if empty
-    pub initial_data: Option<Arc<dyn Any + Send + Sync>>,
-    /// Lazy initial data function
-    pub initial_data_fn: Option<Arc<dyn Fn() -> Arc<dyn Any + Send + Sync> + Send + Sync>>,
-    /// Timestamp when initial data was last updated
-    pub initial_data_updated_at: Option<Instant>,
-    /// Placeholder data shown while fetching
-    pub placeholder_data: Option<Arc<dyn Any + Send + Sync>>,
-    /// Placeholder data function (previous_data) -> placeholder
-    pub placeholder_data_fn: Option<
-        Arc<dyn Fn(Option<Arc<dyn Any + Send + Sync>>) -> Arc<dyn Any + Send + Sync> + Send + Sync>,
-    >,
-    /// Transform function applied to cached data
-    pub select: Option<Arc<dyn Fn(&dyn Any) -> Arc<dyn Any + Send + Sync> + Send + Sync>>,
-    /// Whether to use structural sharing (reserved for future)
-    pub structural_sharing: bool,
-    /// Interval for automatic background refetch (None = disabled)
-    pub refetch_interval: Option<Duration>,
-    /// Whether to continue refetch interval when app is in background
-    pub refetch_interval_in_background: bool,
-    /// Refetch on window focus when data is stale
-    pub refetch_on_window_focus: bool,
-}
-
-impl std::fmt::Debug for QueryOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QueryOptions")
-            .field("stale_time", &self.stale_time)
-            .field("gc_time", &self.gc_time)
-            .field("refetch_on_mount", &self.refetch_on_mount)
-            .field("retry", &self.retry)
-            .field("enabled", &self.enabled)
-            .field("initial_data_updated_at", &self.initial_data_updated_at)
-            .field("structural_sharing", &self.structural_sharing)
-            .field("refetch_interval", &self.refetch_interval)
-            .field(
-                "refetch_interval_in_background",
-                &self.refetch_interval_in_background,
-            )
-            .field("refetch_on_window_focus", &self.refetch_on_window_focus)
-            .finish_non_exhaustive()
-    }
-}
-
-/// When to refetch on mount
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefetchOnMount {
-    Always,
-    IfStale,
-    Never,
-}
-
-/// Retry configuration with exponential backoff
-#[derive(Debug, Clone)]
+/// Configuration for automatic retry behaviour.
+#[derive(Clone, Debug)]
 pub struct RetryConfig {
+    /// Maximum number of retry attempts (not counting the initial request).
     pub max_retries: u32,
+    /// Base delay between retries.
     pub base_delay: Duration,
-    pub max_delay: Duration,
+    /// Whether to use exponential backoff.
+    pub exponential_backoff: bool,
 }
 
-impl Default for QueryOptions {
-    fn default() -> Self {
+impl RetryConfig {
+    /// Create a new retry configuration.
+    pub fn new(max_retries: u32) -> Self {
         Self {
-            stale_time: Duration::ZERO,
-            gc_time: Duration::from_secs(5 * 60),
-            refetch_on_mount: RefetchOnMount::IfStale,
-            retry: RetryConfig::default(),
-            enabled: true,
-            initial_data: None,
-            initial_data_fn: None,
-            initial_data_updated_at: None,
-            placeholder_data: None,
-            placeholder_data_fn: None,
-            select: None,
-            structural_sharing: true,
-            refetch_interval: None,
-            refetch_interval_in_background: false,
-            refetch_on_window_focus: true,
+            max_retries,
+            base_delay: Duration::from_millis(500),
+            exponential_backoff: true,
         }
+    }
+
+    /// Set the base delay between retries.
+    pub fn base_delay(mut self, delay: Duration) -> Self {
+        self.base_delay = delay;
+        self
+    }
+
+    /// Enable or disable exponential backoff.
+    pub fn exponential_backoff(mut self, enabled: bool) -> Self {
+        self.exponential_backoff = enabled;
+        self
+    }
+
+    /// Calculate the delay for a given retry attempt (0-indexed).
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        if self.exponential_backoff {
+            let multiplier = 2u32.saturating_pow(attempt);
+            self.base_delay * multiplier
+        } else {
+            self.base_delay
+        }
+    }
+
+    /// Check if a retry should be attempted.
+    pub fn should_retry(&self, attempt: u32) -> bool {
+        attempt < self.max_retries
     }
 }
 
@@ -133,50 +56,256 @@ impl Default for RetryConfig {
     fn default() -> Self {
         Self {
             max_retries: 3,
-            base_delay: Duration::from_millis(1000),
-            max_delay: Duration::from_secs(30),
+            base_delay: Duration::from_millis(500),
+            exponential_backoff: true,
         }
     }
 }
 
-impl RetryConfig {
-    pub fn none() -> Self {
-        Self {
-            max_retries: 0,
-            ..Default::default()
-        }
-    }
+/// Placeholder data configuration.
+#[derive(Clone)]
+pub enum PlaceholderData<T: Clone> {
+    /// Static placeholder data.
+    Value(T),
+    /// Function that computes placeholder data from previous data.
+    Function(std::sync::Arc<dyn Fn(Option<&T>) -> T + Send + Sync>),
+}
 
-    pub fn retries(max_retries: u32) -> Self {
-        Self {
-            max_retries,
-            ..Default::default()
+impl<T: Clone> std::fmt::Debug for PlaceholderData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Value(v) => f.debug_tuple("Value").field(&v).finish(),
+            Self::Function(_) => f.debug_tuple("Function").finish(),
         }
     }
 }
+
+impl<T: Clone> PlaceholderData<T> {
+    /// Create a static placeholder.
+    pub fn value(data: T) -> Self {
+        Self::Value(data)
+    }
+
+    /// Create a function-based placeholder.
+    pub fn function<F>(f: F) -> Self
+    where
+        F: Fn(Option<&T>) -> T + Send + Sync + 'static,
+    {
+        Self::Function(std::sync::Arc::new(f))
+    }
+
+    /// Resolve the placeholder data.
+    pub fn resolve(&self, previous: Option<&T>) -> T {
+        match self {
+            PlaceholderData::Value(v) => v.clone(),
+            PlaceholderData::Function(f) => f(previous),
+        }
+    }
+}
+
+/// Options for query behaviour.
+#[derive(Clone, Debug)]
+pub struct QueryOptions {
+    /// How long data is considered fresh before becoming stale.
+    pub stale_time: Duration,
+    /// How long unused cache entries are kept before garbage collection.
+    pub gc_time: Duration,
+    /// Retry configuration.
+    pub retry: RetryConfig,
+    /// Whether the query is enabled.
+    pub enabled: bool,
+    /// Whether to refetch when the window regains focus.
+    pub refetch_on_window_focus: bool,
+    /// Interval for automatic background refetching.
+    pub refetch_interval: Duration,
+    /// Whether to apply structural sharing when updating cache.
+    pub structural_sharing: bool,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self {
+            stale_time: Duration::ZERO,
+            gc_time: Duration::from_secs(300),
+            retry: RetryConfig::default(),
+            enabled: true,
+            refetch_on_window_focus: true,
+            refetch_interval: Duration::ZERO,
+            structural_sharing: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[test]
+    fn test_retry_config_new() {
+        let config = RetryConfig::new(5);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.base_delay, Duration::from_millis(500));
+        assert!(config.exponential_backoff);
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.base_delay, Duration::from_millis(500));
+        assert!(config.exponential_backoff);
+    }
+
+    #[test]
+    fn test_retry_config_base_delay_builder() {
+        let config = RetryConfig::new(2).base_delay(Duration::from_secs(1));
+        assert_eq!(config.base_delay, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_retry_config_exponential_backoff_builder() {
+        let config = RetryConfig::new(2).exponential_backoff(false);
+        assert!(!config.exponential_backoff);
+    }
+
+    #[test]
+    fn test_retry_config_delay_for_attempt_exponential() {
+        let config = RetryConfig::new(3).base_delay(Duration::from_millis(100));
+        assert_eq!(config.delay_for_attempt(0), Duration::from_millis(100));
+        assert_eq!(config.delay_for_attempt(1), Duration::from_millis(200));
+        assert_eq!(config.delay_for_attempt(2), Duration::from_millis(400));
+        assert_eq!(config.delay_for_attempt(3), Duration::from_millis(800));
+    }
+
+    #[test]
+    fn test_retry_config_delay_for_attempt_linear() {
+        let config = RetryConfig::new(3)
+            .base_delay(Duration::from_millis(100))
+            .exponential_backoff(false);
+        assert_eq!(config.delay_for_attempt(0), Duration::from_millis(100));
+        assert_eq!(config.delay_for_attempt(1), Duration::from_millis(100));
+        assert_eq!(config.delay_for_attempt(2), Duration::from_millis(100));
+        assert_eq!(config.delay_for_attempt(3), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_retry_config_should_retry() {
+        let config = RetryConfig::new(3);
+        assert!(config.should_retry(0));
+        assert!(config.should_retry(1));
+        assert!(config.should_retry(2));
+        assert!(!config.should_retry(3));
+        assert!(!config.should_retry(4));
+        assert!(!config.should_retry(100));
+    }
+
+    #[test]
+    fn test_retry_config_should_retry_zero() {
+        let config = RetryConfig::new(0);
+        assert!(!config.should_retry(0));
+        assert!(!config.should_retry(1));
+    }
+
+    #[test]
+    fn test_retry_config_debug() {
+        let config = RetryConfig::new(3);
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("max_retries"));
+        assert!(debug.contains("3"));
+    }
+
+    #[test]
+    fn test_placeholder_data_value() {
+        let ph = PlaceholderData::value("placeholder".to_string());
+        assert_eq!(ph.resolve(None), "placeholder".to_string());
+        assert_eq!(
+            ph.resolve(Some(&"previous".to_string())),
+            "placeholder".to_string()
+        );
+    }
+
+    #[test]
+    fn test_placeholder_data_function_with_previous() {
+        let ph: PlaceholderData<String> = PlaceholderData::function(|prev| {
+            prev.map(|p| format!("{} (loading...)", p))
+                .unwrap_or_else(|| "loading...".to_string())
+        });
+
+        assert_eq!(ph.resolve(Some(&"old".to_string())), "old (loading...)");
+        assert_eq!(ph.resolve(None), "loading...");
+    }
+
+    #[test]
+    fn test_placeholder_data_value_clone() {
+        let ph = PlaceholderData::value(42i32);
+        let cloned = ph.clone();
+        assert_eq!(ph.resolve(None), cloned.resolve(None));
+    }
+
+    #[test]
+    fn test_placeholder_data_function_clone() {
+        let ph: PlaceholderData<Vec<i32>> =
+            PlaceholderData::function(|prev| prev.cloned().unwrap_or_default());
+        let cloned = ph.clone();
+        assert_eq!(cloned.resolve(None), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn test_placeholder_data_debug_value() {
+        let ph = PlaceholderData::value("test".to_string());
+        let debug = format!("{:?}", ph);
+        assert!(debug.contains("Value"));
+    }
+
+    #[test]
+    fn test_placeholder_data_debug_function() {
+        let ph: PlaceholderData<String> = PlaceholderData::function(|_| "computed".to_string());
+        let debug = format!("{:?}", ph);
+        assert!(debug.contains("Function"));
+    }
 
     #[test]
     fn test_query_options_default() {
         let opts = QueryOptions::default();
         assert_eq!(opts.stale_time, Duration::ZERO);
-        assert_eq!(opts.gc_time, Duration::from_secs(5 * 60));
-        assert_eq!(opts.refetch_on_mount, RefetchOnMount::IfStale);
+        assert_eq!(opts.gc_time, Duration::from_secs(300));
+        assert_eq!(opts.retry.max_retries, 3);
         assert!(opts.enabled);
-        assert!(opts.structural_sharing);
-        assert!(opts.refetch_interval.is_none());
-        assert!(!opts.refetch_interval_in_background);
         assert!(opts.refetch_on_window_focus);
+        assert_eq!(opts.refetch_interval, Duration::ZERO);
+        assert!(opts.structural_sharing);
     }
 
     #[test]
-    fn test_retry_config_default() {
-        let retry = RetryConfig::default();
-        assert_eq!(retry.max_retries, 3);
-        assert_eq!(retry.base_delay, Duration::from_millis(1000));
-        assert_eq!(retry.max_delay, Duration::from_secs(30));
+    fn test_query_options_clone() {
+        let opts = QueryOptions::default();
+        let cloned = opts.clone();
+        assert_eq!(opts.stale_time, cloned.stale_time);
+        assert_eq!(opts.gc_time, cloned.gc_time);
+    }
+
+    #[test]
+    fn test_query_options_debug() {
+        let opts = QueryOptions::default();
+        let debug = format!("{:?}", opts);
+        assert!(debug.contains("stale_time"));
+    }
+
+    #[test]
+    fn test_query_options_custom() {
+        let opts = QueryOptions {
+            stale_time: Duration::from_secs(60),
+            gc_time: Duration::from_secs(600),
+            retry: RetryConfig::new(5),
+            enabled: false,
+            refetch_on_window_focus: false,
+            refetch_interval: Duration::from_secs(30),
+            structural_sharing: false,
+        };
+        assert_eq!(opts.stale_time, Duration::from_secs(60));
+        assert!(!opts.enabled);
+        assert!(!opts.refetch_on_window_focus);
+        assert!(!opts.structural_sharing);
+        assert_eq!(opts.retry.max_retries, 5);
     }
 }
