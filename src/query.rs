@@ -10,15 +10,6 @@ pub type QueryFn<T> =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>;
 
 /// A query definition.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let query = Query::new(QueryKey::new("users"), || async {
-///     api::fetch_users().await
-/// })
-/// .stale_time(Duration::from_secs(60));
-/// ```
 pub struct Query<T: Clone + Send + Sync + 'static> {
     pub key: QueryKey,
     pub fetch_fn: QueryFn<T>,

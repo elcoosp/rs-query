@@ -3,22 +3,11 @@
 use std::hash::{Hash, Hasher};
 
 /// A hierarchical query key for cache lookup and invalidation.
-///
-/// Keys can have static and dynamic segments for flexible matching:
-///
-/// ```rust,ignore
-/// // Static key
-/// QueryKey::new("users")
-///
-/// // With parameters
-/// QueryKey::new("users").with("id", user_id)
-///
-/// // Hierarchical
-/// QueryKey::new("users").segment("posts").with("id", post_id)
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryKey {
     segments: Vec<KeySegment>,
+    /// Precomputed cache key string to avoid repeated allocations
+    cached_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,14 +19,18 @@ enum KeySegment {
 impl QueryKey {
     /// Create a new query key with a root segment
     pub fn new(root: impl Into<String>) -> Self {
+        let segments = vec![KeySegment::Static(root.into())];
+        let cached_key = Self::compute_key(&segments);
         Self {
-            segments: vec![KeySegment::Static(root.into())],
+            segments,
+            cached_key,
         }
     }
 
     /// Add a static segment
     pub fn segment(mut self, segment: impl Into<String>) -> Self {
         self.segments.push(KeySegment::Static(segment.into()));
+        self.cached_key = Self::compute_key(&self.segments);
         self
     }
 
@@ -45,11 +38,11 @@ impl QueryKey {
     pub fn with(mut self, name: impl Into<String>, value: impl ToString) -> Self {
         self.segments
             .push(KeySegment::Dynamic(name.into(), value.to_string()));
+        self.cached_key = Self::compute_key(&self.segments);
         self
     }
 
     /// Check if this key matches another for invalidation.
-    /// Returns true if `pattern` is a prefix of or equal to `self`.
     pub fn matches(&self, pattern: &QueryKey) -> bool {
         if pattern.segments.len() > self.segments.len() {
             return false;
@@ -60,9 +53,13 @@ impl QueryKey {
             .all(|(a, b)| a == b)
     }
 
-    /// Get cache key string for HashMap lookup
-    pub fn cache_key(&self) -> String {
-        self.segments
+    /// Get the cached cache key string (zero‑cost after construction).
+    pub fn cache_key(&self) -> &str {
+        &self.cached_key
+    }
+
+    fn compute_key(segments: &[KeySegment]) -> String {
+        segments
             .iter()
             .map(|s| match s {
                 KeySegment::Static(v) => v.clone(),
@@ -75,7 +72,7 @@ impl QueryKey {
 
 impl Hash for QueryKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.cache_key().hash(state);
+        self.cached_key.hash(state);
     }
 }
 
@@ -108,5 +105,14 @@ mod tests {
 
         assert!(full.matches(&pattern));
         assert!(!pattern.matches(&full));
+    }
+
+    #[test]
+    fn test_key_caching() {
+        let key = QueryKey::new("users").with("id", 42);
+        let s1 = key.cache_key();
+        let s2 = key.cache_key();
+        // Same pointer equality because it's the same &str from the same field.
+        assert_eq!(s1 as *const str, s2 as *const str);
     }
 }

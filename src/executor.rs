@@ -1,34 +1,12 @@
 //! GPUI async execution helpers
 
 use crate::{Mutation, MutationState, Query, QueryClient, QueryError, QueryState, RetryConfig};
+use futures_timer::Delay;
+use std::sync::Arc;
 use gpui::Context;
 use std::future::Future;
 
 /// Execute a query using GPUI's executor.
-///
-/// This is the main entry point for running queries. It:
-/// - Deduplicates in-flight requests
-/// - Handles retries with exponential backoff
-/// - Caches results automatically
-/// - Calls your callback with the result
-///
-/// # Example
-///
-/// ```rust,ignore
-/// spawn_query(cx, &self.query_client, &users_query, |this, state, cx| {
-///     match state {
-///         QueryState::Success(users) => {
-///             this.users = users;
-///         }
-///         QueryState::Error { error, stale_data } => {
-///             this.error = Some(error.to_string());
-///             // Can still show stale_data if available
-///         }
-///         _ => {}
-///     }
-///     cx.notify();
-/// });
-/// ```
 pub fn spawn_query<T, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -64,12 +42,14 @@ pub fn spawn_query<T, V>(
     client.set_in_flight(&key, true);
 
     let retry_config = options.retry.clone();
-    let key_for_task = key.cache_key();
+    let key_for_task = key.cache_key().to_string();
 
-    let task = cx.background_executor().spawn(async move {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        rt.block_on(async { execute_with_retry(&*fetch_fn, &retry_config, &key_for_task).await })
-    });
+    // Directly spawn the async future – no Tokio runtime needed.
+    let task = cx.background_executor().spawn(execute_with_retry(
+        fetch_fn,
+        retry_config,
+        key_for_task,
+    ));
 
     let key_for_cleanup = key.clone();
     let client_for_cleanup = client.clone();
@@ -110,23 +90,6 @@ pub fn spawn_query<T, V>(
 }
 
 /// Execute a mutation with automatic cache invalidation.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// spawn_mutation(cx, &self.query_client, &create_user_mutation, params, |this, state, cx| {
-///     match state {
-///         MutationState::Success(user) => {
-///             this.show_success("User created!");
-///         }
-///         MutationState::Error(e) => {
-///             this.show_error(e.to_string());
-///         }
-///         _ => {}
-///     }
-///     cx.notify();
-/// });
-/// ```
 pub fn spawn_mutation<T, P, V>(
     cx: &mut Context<V>,
     client: &QueryClient,
@@ -150,10 +113,7 @@ pub fn spawn_mutation<T, P, V>(
 
     let task = cx
         .background_executor()
-        .spawn(async move {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-            rt.block_on(async { (mutate_fn)(params).await })
-        });
+        .spawn(async move { (mutate_fn)(params).await });
 
     cx.spawn(async move |this, cx| {
         let result = task.await;
@@ -188,20 +148,20 @@ pub fn spawn_mutation<T, P, V>(
     .detach();
 }
 
-/// Execute with retry logic
-async fn execute_with_retry<T, F>(
-    fetch_fn: &F,
-    retry_config: &RetryConfig,
-    query_key: &str,
+/// Execute with retry logic, using futures_timer::Delay for backoff.
+async fn execute_with_retry<T>(
+    fetch_fn: Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + Send + Sync>,
+    retry_config: RetryConfig,
+    query_key: String,
 ) -> Result<T, QueryError>
 where
-    F: Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send>> + ?Sized,
+    T: Clone + Send + Sync + 'static,
 {
     let mut attempts = 0;
     let mut last_error = None;
 
     while attempts <= retry_config.max_retries {
-        match fetch_fn().await {
+        match (fetch_fn)().await {
             Ok(data) => {
                 if attempts > 0 {
                     tracing::debug!(
@@ -244,7 +204,7 @@ where
                 );
 
                 last_error = Some(e);
-                tokio::time::sleep(delay).await;
+                Delay::new(delay).await;
             }
         }
     }
