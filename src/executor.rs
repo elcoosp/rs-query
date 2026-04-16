@@ -218,3 +218,269 @@ pub fn spawn_mutation<
         })
         .detach();
 }
+// src/executor.rs - Add test module
+
+#[cfg(test)]
+// src/executor.rs - Replace the test module with this corrected version
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{query::Query, QueryClient, QueryError, QueryKey, QueryOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn make_retry_options(max_retries: u32) -> QueryOptions {
+        QueryOptions {
+            retry: crate::options::RetryConfig {
+                max_retries,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_success() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query = Query::new(key, || async { Ok("data".to_string()) });
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_success());
+        assert_eq!(state.data(), Some(&"data".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_error_no_retry() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> =
+            Query::new(key, || async { Err(QueryError::custom("immediate fail")) });
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_error());
+        assert!(state.data().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_network_error_retries() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query = Query::new(key, move || {
+            let a = attempts_clone.clone();
+            async move {
+                let count = a.fetch_add(1, Ordering::SeqCst);
+                if count < 1 {
+                    Err(QueryError::Network("transient".to_string()))
+                } else {
+                    Ok("recovered".to_string())
+                }
+            }
+        })
+        .options(make_retry_options(3));
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_success());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_timeout_error_retries() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query = Query::new(key, move || {
+            let a = attempts_clone.clone();
+            async move {
+                let count = a.fetch_add(1, Ordering::SeqCst);
+                if count < 1 {
+                    Err(QueryError::Timeout("slow".to_string()))
+                } else {
+                    Ok("recovered".to_string())
+                }
+            }
+        })
+        .options(make_retry_options(3));
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_success());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_max_retries_exceeded() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key, || async {
+            Err(QueryError::Network("persistent".to_string()))
+        })
+        .options(make_retry_options(2));
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_error());
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_no_retry_on_custom_error() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key, move || {
+            let a = attempts_clone.clone();
+            async move {
+                a.fetch_add(1, Ordering::SeqCst);
+                Err(QueryError::custom("not retryable"))
+            }
+        })
+        .options(make_retry_options(3));
+
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_error());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_caches_result() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query = Query::new(key.clone(), || async { Ok("data".to_string()) });
+
+        let _ = execute_query(&client, &query).await;
+
+        let cached: Option<String> = client.get_query_data(&key);
+        assert_eq!(cached, Some("data".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_query_refetch_updates_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        // Pre-populate cache with old data
+        client.set_query_data(&key, "old".to_string(), QueryOptions::default());
+
+        let query = Query::new(key.clone(), || async { Ok("new".to_string()) });
+
+        // Execute should complete and update cache
+        let state = execute_query(&client, &query).await;
+        assert!(state.is_success());
+        assert_eq!(state.data(), Some(&"new".to_string()));
+
+        // Cache should be updated with new data
+        let cached: Option<String> = client.get_query_data(&key);
+        assert_eq!(cached, Some("new".to_string()));
+    }
+    #[test]
+    fn test_should_retry_network() {
+        assert!(should_retry(
+            &QueryError::Network("err".to_string()),
+            &crate::options::RetryConfig::default()
+        ));
+    }
+
+    #[test]
+    fn test_should_retry_timeout() {
+        assert!(should_retry(
+            &QueryError::Timeout("err".to_string()),
+            &crate::options::RetryConfig::default()
+        ));
+    }
+
+    #[test]
+    fn test_should_not_retry_custom() {
+        assert!(!should_retry(
+            &QueryError::custom("err"),
+            &crate::options::RetryConfig::default()
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_execute_mutation_success() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        let mutation =
+            crate::mutation::Mutation::new(
+                |param: i32| async move { Ok(format!("result_{}", param)) },
+            )
+            .invalidates_key(key);
+
+        let result = execute_mutation(&client, &mutation, 42).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "result_42");
+    }
+
+    #[tokio::test]
+    async fn test_execute_mutation_error() {
+        let client = QueryClient::new();
+        let mutation: crate::mutation::Mutation<String, i32> =
+            crate::mutation::Mutation::new(|_param: i32| async { Err(QueryError::custom("fail")) });
+
+        let result = execute_mutation(&client, &mutation, 1).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_mutation_with_rollback() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        let key_for_test = key.clone();
+
+        let mutation: crate::mutation::Mutation<String, i32> =
+            crate::mutation::Mutation::new(|_param: i32| async { Err(QueryError::custom("fail")) })
+                .on_mutate(move |client: &QueryClient, _params: &i32| {
+                    client.set_query_data(&key, "optimistic".to_string(), QueryOptions::default());
+                    let key_for_rollback = key.clone();
+                    Ok(Box::new(move |client: &QueryClient| {
+                        client.set_query_data(
+                            &key_for_rollback,
+                            "rolled_back".to_string(),
+                            QueryOptions::default(),
+                        );
+                    }))
+                });
+
+        let result = execute_mutation(&client, &mutation, 1).await;
+        assert!(result.is_err());
+
+        let data: Option<String> = client.get_query_data(&key_for_test);
+        assert_eq!(data, Some("rolled_back".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_execute_mutation_invalidates_on_success() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("users");
+        client.set_query_data(&key, "cached".to_string(), QueryOptions::default());
+        assert!(!client.is_stale(&key));
+
+        let mutation: crate::mutation::Mutation<String, i32> = crate::mutation::Mutation::new(
+            |param: i32| async move { Ok(format!("result_{}", param)) },
+        )
+        .invalidates_key(key.clone());
+
+        let _ = execute_mutation(&client, &mutation, 1).await;
+        assert!(client.is_stale(&key));
+    }
+
+    #[tokio::test]
+    async fn test_execute_mutation_on_mutate_error() {
+        let client = QueryClient::new();
+        let mutation: crate::mutation::Mutation<String, i32> =
+            crate::mutation::Mutation::new(|_param: i32| async {
+                Ok("should not reach".to_string())
+            })
+            .on_mutate(|_client: &QueryClient, _params: &i32| {
+                Err(QueryError::custom("optimistic failed"))
+            });
+
+        let result = execute_mutation(&client, &mutation, 1).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "optimistic failed");
+    }
+}

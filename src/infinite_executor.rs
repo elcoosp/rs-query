@@ -625,4 +625,138 @@ mod tests {
         let result: Option<InfiniteData<Vec<i32>, i32>> = client.get_infinite_data(&key);
         assert!(result.is_some());
     }
+    #[test]
+    fn test_infinite_observer_has_next_page_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+        };
+
+        // No data yet
+        assert!(!infinite_observer.has_next_page());
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_infinite_observer_has_previous_page_no_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+        };
+
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[test]
+    fn test_infinite_observer_has_next_page_fn_returns_none() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| None);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+        };
+
+        // Fn exists but returns None
+        assert!(!infinite_observer.has_next_page());
+    }
+
+    #[test]
+    fn test_infinite_observer_has_previous_page_fn_returns_none() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| None);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        client.set_infinite_data(&key, data, QueryOptions::default());
+
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+        };
+
+        assert!(!infinite_observer.has_previous_page());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_next_page_channel_full() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+
+        // Fill the channel
+        tx.send(()).await.unwrap();
+
+        // Should fail silently (channel full)
+        assert!(tx.try_send(()).is_err());
+
+        // Drain it
+        let _ = rx.recv().await;
+
+        // Now should succeed
+        assert!(tx.try_send(()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_previous_page_channel_full() {
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+
+        tx.send(()).await.unwrap();
+        assert!(tx.try_send(()).is_err());
+
+        let _ = rx.recv().await;
+        assert!(tx.try_send(()).is_ok());
+    }
 }

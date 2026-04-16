@@ -160,4 +160,120 @@ mod tests {
 
         assert_eq!(mutation.invalidates_keys.len(), 2);
     }
+    #[test]
+    fn test_mutation_invalidates_vec() {
+        let key1 = QueryKey::new("users");
+        let key2 = QueryKey::new("posts");
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates(vec![key1, key2]);
+
+        assert_eq!(mutation.invalidates_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_mutation_invalidates_vec_empty() {
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates(vec![]);
+
+        assert_eq!(mutation.invalidates_keys.len(), 0);
+    }
+
+    #[test]
+    fn test_mutation_on_success() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_success(
+                move |_data: &String, _params: &i32| {
+                    called_clone.store(true, Ordering::SeqCst);
+                },
+            );
+
+        assert!(mutation.on_success.is_some());
+        if let Some(on_success) = &mutation.on_success {
+            on_success(&"result_1".to_string(), &1);
+            assert!(called.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn test_mutation_on_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_error(
+                move |_error: &QueryError, _params: &i32| {
+                    called_clone.store(true, Ordering::SeqCst);
+                },
+            );
+
+        assert!(mutation.on_error.is_some());
+        if let Some(on_error) = &mutation.on_error {
+            on_error(&QueryError::custom("fail"), &1);
+            assert!(called.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn test_mutation_clone() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates_key(QueryKey::new("users"))
+                .on_success(move |_data: &String, _params: &i32| {
+                    called_clone.store(true, Ordering::SeqCst);
+                });
+
+        let cloned = mutation.clone();
+        assert_eq!(cloned.invalidates_keys.len(), 1);
+        assert!(cloned.on_success.is_some());
+
+        if let Some(on_success) = &cloned.on_success {
+            on_success(&"data".to_string(), &1);
+            assert!(called.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn test_mutation_full_builder_chain() {
+        let key = QueryKey::new("users");
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) })
+                .invalidates_key(key)
+                .invalidates_key(QueryKey::new("posts"));
+
+        assert_eq!(mutation.invalidates_keys.len(), 2);
+        assert!(mutation.on_mutate.is_none());
+        assert!(mutation.on_success.is_none());
+        assert!(mutation.on_error.is_none());
+    }
+    #[test]
+    fn test_mutation_on_mutate_returns_error() {
+        let client = QueryClient::new();
+
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|param: i32| async move { Ok(format!("result_{}", param)) }).on_mutate(
+                |_client: &QueryClient, _params: &i32| Err(QueryError::custom("optimistic failed")),
+            );
+
+        assert!(mutation.on_mutate.is_some());
+        if let Some(on_mutate) = &mutation.on_mutate {
+            let result = on_mutate(&client, &1);
+            assert!(result.is_err());
+        }
+    }
 }
