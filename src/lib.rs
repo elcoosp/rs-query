@@ -1,6 +1,8 @@
 //! rs-query: TanStack Query-inspired data fetching for GPUI
 
 mod client;
+#[cfg(feature = "devtools")]
+mod devtools;
 mod error;
 mod executor;
 mod focus_manager;
@@ -30,3 +32,6 @@ pub use sharing::replace_equal_deep;
 pub use state::QueryState;
 
 pub use hydration::{DehydratedQuery, DehydratedQueryOptions, DehydratedState, HydrateOptions};
+
+#[cfg(feature = "devtools")]
+pub use devtools::QueryDevtools;

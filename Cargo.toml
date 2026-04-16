@@ -1,5 +1,6 @@
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
 thiserror = "2"
 tokio ={version ="1",features = ["rt-multi-thread", "time", "sync"]}
 tracing = "0.1"
@@ -10,6 +11,7 @@ serde_json = { version = "1.0", optional = true }
 [features]
 default = []
 serde = ["dep:serde", "serde_json"]
+devtools = ["dep:gpui-component"]
 
 [lib]
 name = "rs_query"

@@ -1,6 +1,6 @@
 //! Hydration utilities for server-side rendering and persistence
 
-use crate::{QueryClient, QueryOptions};
+use crate::QueryClient;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
