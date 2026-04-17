@@ -1,57 +1,37 @@
 // src/observer.rs
-//! Query observer for reactive state updates
+//! Reactive observer that subscribes to cache changes for a specific query key.
 
-use crate::{QueryClient, QueryError, QueryKey, QueryOptions, QueryState};
+use crate::client::QueryClient;
+use crate::key::QueryKey;
+use crate::options::QueryOptions;
+use crate::query::{PlaceholderData, Query};
+use crate::state::{QueryState, QueryStateUpdate, QueryStateVariant};
 use std::marker::PhantomData;
 use std::time::Instant;
 use tokio::sync::broadcast;
 
-/// Variant of a query state update, used for notifications.
-#[derive(Clone, Debug, PartialEq)]
-pub enum QueryStateVariant {
-    Idle,
-    Loading,
-    Refetching,
-    Success,
-    Stale,
-    Error,
-}
-
-/// A state update notification sent to subscribers.
-#[derive(Clone, Debug)]
-pub struct QueryStateUpdate {
-    pub key: String,
-    pub state_variant: QueryStateVariant,
-}
-
-/// Reactive observer for a query key.
-pub struct QueryObserver<T> {
-    pub key: QueryKey,
+/// Reactive observer for a query.
+///
+/// Subscribes to cache updates via a broadcast channel and exposes the current
+/// [`QueryState<T>`]. Use [`QueryObserver::new`] for simple cases or
+/// [`QueryObserver::from_query`] to automatically apply `initialData`.
+pub struct QueryObserver<T: Clone + Send + Sync + 'static> {
+    key: QueryKey,
     state: QueryState<T>,
     client: QueryClient,
     receiver: broadcast::Receiver<QueryStateUpdate>,
     options: QueryOptions,
     fetch_started_at: Option<Instant>,
+    /// Placeholder data resolved from the query definition, used during loading.
+    placeholder_data: Option<PlaceholderData<T>>,
     _marker: PhantomData<T>,
 }
 
-impl<T: Clone + Send + Sync + 'static> Clone for QueryObserver<T> {
-    fn clone(&self) -> Self {
-        // broadcast::Receiver doesn't implement Clone, so we create a new subscription
-        let receiver = self.client.subscribe(self.key.cache_key());
-        Self {
-            key: self.key.clone(),
-            state: self.state.clone(),
-            client: self.client.clone(),
-            receiver,
-            options: self.options.clone(),
-            fetch_started_at: self.fetch_started_at,
-            _marker: PhantomData,
-        }
-    }
-}
-
 impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
+    /// Create an observer for a query key using an existing client.
+    ///
+    /// This reads the current cache state but does **not** apply `initialData`.
+    /// Use [`from_query`](Self::from_query) for full initial-data support.
     pub fn new(client: &QueryClient, key: QueryKey) -> Self {
         let cache_key = key.cache_key().to_string();
         let receiver = client.subscribe(&cache_key);
@@ -71,107 +51,131 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
             state,
             client: client.clone(),
             receiver,
-            options: QueryOptions::default(),
+            options: client.get_query_options(&key).unwrap_or_default(),
             fetch_started_at: None,
+            placeholder_data: None,
             _marker: PhantomData,
         }
     }
 
-    pub fn with_options(client: &QueryClient, key: QueryKey, options: QueryOptions) -> Self {
-        let mut observer = Self::new(client, key);
-        observer.options = options;
-        observer
+    /// Create an observer from a [`Query`] definition.
+    ///
+    /// This applies `initialData` by inserting it into the cache if no data is
+    /// present yet, and stores `placeholderData` for use during loading states.
+    pub fn from_query(client: &QueryClient, query: &Query<T>) -> Self {
+        let key = query.key.clone();
+        let cache_key = key.cache_key().to_string();
+        let receiver = client.subscribe(&cache_key);
+
+        let state = if let Some(data) = client.get_query_data::<T>(&key) {
+            if client.is_stale(&key) {
+                QueryState::Stale(data)
+            } else {
+                QueryState::Success(data)
+            }
+        } else if let Some(initial) = &query.initial_data {
+            // Insert initial data into the cache so subsequent reads find it.
+            client.set_query_data(&key, initial.clone(), query.options.clone());
+            QueryState::Success(initial.clone())
+        } else {
+            QueryState::Idle
+        };
+
+        Self {
+            key,
+            state,
+            client: client.clone(),
+            receiver,
+            options: query.options.clone(),
+            fetch_started_at: None,
+            placeholder_data: query.placeholder_data.clone(),
+            _marker: PhantomData,
+        }
     }
 
+    /// Returns a reference to the current query state.
     pub fn state(&self) -> &QueryState<T> {
         &self.state
     }
 
-    pub fn client(&self) -> &QueryClient {
-        &self.client
-    }
-
-    pub fn update(&mut self) {
-        let data: Option<T> = self.client.get_query_data(&self.key);
-        let is_stale = self.client.is_stale(&self.key);
-
-        self.state = match (&self.state, data, is_stale) {
-            (_, None, _) => QueryState::Idle,
-            (QueryState::Loading, Some(data), _) => {
-                if is_stale {
-                    QueryState::Stale(data)
-                } else {
-                    QueryState::Success(data)
-                }
-            }
-            (QueryState::Refetching(_), Some(data), _) => {
-                if is_stale {
-                    QueryState::Stale(data)
-                } else {
-                    QueryState::Success(data)
-                }
-            }
-            (_, Some(data), true) => QueryState::Stale(data),
-            (_, Some(data), false) => QueryState::Success(data),
-        };
-    }
-
+    /// Transition to a loading state.
+    ///
+    /// If previous data exists, transitions to `Refetching(data)`.
+    /// If placeholder data is configured, transitions to `LoadingWithPlaceholder(data)`.
+    /// Otherwise transitions to `Loading`.
     pub fn set_loading(&mut self) {
         self.fetch_started_at = Some(Instant::now());
-        let has_data = self.state.data().is_some();
-        if has_data {
-            let data = self.state.data_cloned().unwrap();
+        if let Some(data) = self.state.data_cloned() {
             self.state = QueryState::Refetching(data);
+        } else if let Some(placeholder) = &self.placeholder_data {
+            let resolved = placeholder.resolve(None);
+            self.state = QueryState::LoadingWithPlaceholder(resolved);
         } else {
             self.state = QueryState::Loading;
         }
     }
 
-    pub fn set_success(&mut self, data: T) {
-        self.fetch_started_at = None;
-        self.state = QueryState::Success(data);
+    /// Refresh the observer's state from the cache.
+    pub fn update(&mut self) {
+        let data = self.client.get_query_data::<T>(&self.key);
+        let is_stale = self.client.is_stale(&self.key);
+
+        self.state = match (data, is_stale) {
+            (Some(d), true) => QueryState::Stale(d),
+            (Some(d), false) => QueryState::Success(d),
+            (None, _) => QueryState::Idle,
+        };
     }
 
-    pub fn set_error(&mut self, error: QueryError) {
-        self.fetch_started_at = None;
-        let stale_data = self.state.data_cloned();
-        self.state = QueryState::Error { error, stale_data };
-    }
-
-    pub fn set_stale(&mut self) {
-        if let Some(data) = self.state.data_cloned() {
-            self.state = QueryState::Stale(data);
-        }
-    }
-
-    pub fn try_recv(&mut self) -> Option<QueryStateUpdate> {
-        match self.receiver.try_recv() {
-            Ok(update) => Some(update),
-            Err(broadcast::error::TryRecvError::Empty) => None,
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                let mut last = None;
-                for _ in 0..n {
-                    match self.receiver.try_recv() {
-                        Ok(u) => last = Some(u),
-                        Err(_) => break,
+    /// Poll for pending broadcast updates without blocking.
+    ///
+    /// Call this from a GPUI update cycle to react to cache changes.
+    pub fn try_recv(&mut self) {
+        while let Ok(update) = self.receiver.try_recv() {
+            match update.state_variant {
+                QueryStateVariant::Success => {
+                    if let Some(data) = self.client.get_query_data::<T>(&self.key) {
+                        self.state = QueryState::Success(data);
                     }
                 }
-                last
+                QueryStateVariant::Stale => {
+                    if let Some(data) = self.client.get_query_data::<T>(&self.key) {
+                        self.state = QueryState::Stale(data);
+                    }
+                }
+                QueryStateVariant::Loading | QueryStateVariant::Refetching => {
+                    self.set_loading();
+                }
+                QueryStateVariant::Error => {
+                    // Error state is set directly by the executor.
+                }
+                QueryStateVariant::Idle => {
+                    self.state = QueryState::Idle;
+                }
             }
-            Err(broadcast::error::TryRecvError::Closed) => None,
         }
     }
 
-    pub fn refetch(&mut self) {
+    /// Mark the query as stale, triggering a notification to subscribers.
+    ///
+    /// The actual refetch must be initiated separately (e.g., via `spawn_query`).
+    pub fn refetch(&self) {
         self.client.invalidate_queries(&self.key);
     }
 
-    pub fn options(&self) -> &QueryOptions {
-        &self.options
+    /// Returns the query key this observer is tracking.
+    pub fn key(&self) -> &QueryKey {
+        &self.key
     }
 
-    pub fn fetch_started_at(&self) -> Option<Instant> {
-        self.fetch_started_at
+    /// Returns a reference to the underlying query client.
+    pub fn client(&self) -> &QueryClient {
+        &self.client
+    }
+
+    /// Returns the elapsed time since the current fetch started, if any.
+    pub fn fetch_duration(&self) -> Option<std::time::Duration> {
+        self.fetch_started_at.map(|t| t.elapsed())
     }
 }
 
@@ -179,7 +183,79 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn test_new_observer_idle_when_no_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        assert!(observer.state().is_idle());
+    }
 
+    #[test]
+    fn test_new_observer_reads_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "cached".to_string(), QueryOptions::default());
+        let observer: QueryObserver<String> = QueryObserver::new(&client, key.clone());
+        assert!(observer.state().is_success());
+        assert_eq!(observer.state().data(), Some(&"cached".to_string()));
+    }
+
+    #[test]
+    fn test_from_query_applies_initial_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key.clone(), || async { Ok("fetched".to_string()) })
+            .initial_data("initial".to_string());
+
+        let observer = QueryObserver::from_query(&client, &query);
+        assert_eq!(observer.state().data(), Some(&"initial".to_string()));
+        // Verify it was actually inserted into the cache.
+        let cached: Option<String> = client.get_query_data(&key);
+        assert_eq!(cached, Some("initial".to_string()));
+    }
+
+    #[test]
+    fn test_from_query_does_not_overwrite_existing_cache() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "existing".to_string(), QueryOptions::default());
+
+        let query: Query<String> = Query::new(key.clone(), || async { Ok("fetched".to_string()) })
+            .initial_data("initial".to_string());
+
+        let observer = QueryObserver::from_query(&client, &query);
+        assert_eq!(observer.state().data(), Some(&"existing".to_string()));
+    }
+
+    #[test]
+    fn test_set_loading_with_placeholder() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key.clone(), || async { Ok("fetched".to_string()) })
+            .placeholder_data(PlaceholderData::value("ph".to_string()));
+
+        let mut observer = QueryObserver::from_query(&client, &query);
+        observer.set_loading();
+        assert!(matches!(
+            observer.state(),
+            QueryState::LoadingWithPlaceholder(ref s) if s == "ph"
+        ));
+    }
+
+    #[test]
+    fn test_set_loading_refetching_when_has_data() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        client.set_query_data(&key, "data".to_string(), QueryOptions::default());
+
+        let mut observer: QueryObserver<String> = QueryObserver::new(&client, key);
+        observer.set_loading();
+        assert!(matches!(
+            observer.state(),
+            QueryState::Refetching(ref s) if s == "data"
+        ));
+    }
     #[test]
     fn test_observer_new_empty_cache() {
         let client = QueryClient::new();

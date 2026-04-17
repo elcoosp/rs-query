@@ -1,169 +1,274 @@
-// src/state.rs
-//! Query and mutation state types
+// src/query.rs
+//! Query definition with builder pattern for configuring fetch behaviour.
 
-use crate::QueryError;
+use crate::{QueryError, QueryKey, QueryOptions};
+use std::any::Any;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-/// Represents the current state of a query.
-#[derive(Clone, Debug)]
-pub enum QueryState<T> {
-    Idle,
-    Loading,
-    Refetching(T),
-    Success(T),
-    Stale(T),
-    Error {
-        error: QueryError,
-        stale_data: Option<T>,
-    },
+/// Placeholder data that is shown while a query is loading.
+///
+/// Can be a static value or a function that receives the previous data
+/// (if any) and returns placeholder data, mirroring TanStack Query's
+/// `placeholderData` option.
+#[derive(Clone)]
+pub enum PlaceholderData<T: Clone + Send + Sync + 'static> {
+    /// A fixed value used as placeholder.
+    Value(T),
+    /// A function that receives the previous data (if any) and produces placeholder data.
+    Function(Arc<dyn Fn(Option<&T>) -> T + Send + Sync>),
 }
 
-impl<T> QueryState<T> {
-    pub fn data(&self) -> Option<&T> {
+impl<T: Clone + Send + Sync + 'static> std::fmt::Debug for PlaceholderData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            QueryState::Idle => None,
-            QueryState::Loading => None,
-            QueryState::Refetching(d) => Some(d),
-            QueryState::Success(d) => Some(d),
-            QueryState::Stale(d) => Some(d),
-            QueryState::Error { stale_data, .. } => stale_data.as_ref(),
+            Self::Value(_) => f.write_str("PlaceholderData::Value(..)"),
+            Self::Function(_) => f.write_str("PlaceholderData::Function(..)"),
         }
     }
+}
 
-    pub fn data_mut(&mut self) -> Option<&mut T> {
+impl<T: Clone + Send + Sync + 'static> PlaceholderData<T> {
+    /// Create a placeholder from a static value.
+    pub fn value(data: T) -> Self {
+        Self::Value(data)
+    }
+
+    /// Create a placeholder from a function that may use previous data.
+    pub fn function(f: impl Fn(Option<&T>) -> T + Send + Sync + 'static) -> Self {
+        Self::Function(Arc::new(f))
+    }
+
+    /// Resolve the placeholder data, optionally using previous data.
+    pub fn resolve(&self, previous_data: Option<&T>) -> T {
         match self {
-            QueryState::Idle => None,
-            QueryState::Loading => None,
-            QueryState::Refetching(d) => Some(d),
-            QueryState::Success(d) => Some(d),
-            QueryState::Stale(d) => Some(d),
-            QueryState::Error { stale_data, .. } => stale_data.as_mut(),
+            Self::Value(v) => v.clone(),
+            Self::Function(f) => f(previous_data),
         }
     }
+}
 
-    pub fn is_loading(&self) -> bool {
-        matches!(self, QueryState::Loading)
-    }
+/// A query definition: a unique key, an async fetch function, and configuration options.
+///
+/// Use the builder methods to configure stale time, retries, structural sharing, etc.
+pub struct Query<T: Clone + Send + Sync + 'static> {
+    pub key: QueryKey,
+    pub fetch_fn: Arc<
+        dyn Fn()
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, QueryError>> + Send>>
+            + Send
+            + Sync,
+    >,
+    pub select: Option<Arc<dyn Fn(&T) -> T + Send + Sync>>,
+    pub options: QueryOptions,
 
-    pub fn is_refetching(&self) -> bool {
-        matches!(self, QueryState::Refetching(_))
-    }
+    /// Optional initial data that is placed into the cache on first observation.
+    pub initial_data: Option<T>,
+    /// Timestamp when initial data was set (used for stale-time calculations).
+    pub initial_data_updated_at: Option<Instant>,
+    /// Optional placeholder data shown during loading states.
+    pub placeholder_data: Option<PlaceholderData<T>>,
 
-    pub fn is_success(&self) -> bool {
-        matches!(self, QueryState::Success(_))
-    }
+    /// Structural sharing closure, created when `.structural_sharing(true)` is called.
+    /// Captures the `T: PartialEq` bound at construction time so downstream code
+    /// doesn't need the bound.
+    pub(crate) share_fn: Option<
+        Arc<dyn Fn(Arc<dyn Any + Send + Sync>, Arc<T>) -> Arc<dyn Any + Send + Sync> + Send + Sync>,
+    >,
+}
 
-    pub fn is_stale(&self) -> bool {
-        matches!(self, QueryState::Stale(_))
-    }
-
-    pub fn is_error(&self) -> bool {
-        matches!(self, QueryState::Error { .. })
-    }
-
-    pub fn error(&self) -> Option<&QueryError> {
-        match self {
-            QueryState::Error { error, .. } => Some(error),
-            _ => None,
+impl<T: Clone + Send + Sync + 'static> Clone for Query<T> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            fetch_fn: Arc::clone(&self.fetch_fn),
+            select: self.select.clone(),
+            options: self.options.clone(),
+            initial_data: self.initial_data.clone(),
+            initial_data_updated_at: self.initial_data_updated_at,
+            placeholder_data: self.placeholder_data.clone(),
+            share_fn: self.share_fn.clone(),
         }
     }
+}
 
-    pub fn has_data(&self) -> bool {
-        self.data().is_some()
-    }
-
-    pub fn is_idle(&self) -> bool {
-        matches!(self, QueryState::Idle)
-    }
-
-    pub fn map<U, F: FnOnce(&T) -> U>(&self, f: F) -> Option<U> {
-        self.data().map(f)
-    }
-
-    pub fn data_cloned(&self) -> Option<T>
+impl<T: Clone + Send + Sync + 'static> Query<T> {
+    /// Create a new query with a key and async fetch function.
+    pub fn new<F, Fut>(key: QueryKey, fetch_fn: F) -> Self
     where
-        T: Clone,
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<T, QueryError>> + Send + 'static,
     {
-        self.data().cloned()
-    }
-
-    pub fn unwrap(self) -> T {
-        match self {
-            QueryState::Refetching(d) => d,
-            QueryState::Success(d) => d,
-            QueryState::Stale(d) => d,
-            QueryState::Error {
-                stale_data: Some(d),
-                ..
-            } => d,
-            _ => panic!("called unwrap on a QueryState without data"),
-        }
-    }
-}
-
-impl<T: Clone> Default for QueryState<T> {
-    fn default() -> Self {
-        QueryState::Idle
-    }
-}
-
-/// Represents the current state of a mutation.
-#[derive(Clone, Debug)]
-pub enum MutationState<T> {
-    Idle,
-    Loading,
-    Success(T),
-    Error(QueryError),
-}
-
-impl<T> MutationState<T> {
-    pub fn is_idle(&self) -> bool {
-        matches!(self, MutationState::Idle)
-    }
-
-    pub fn is_loading(&self) -> bool {
-        matches!(self, MutationState::Loading)
-    }
-
-    pub fn is_success(&self) -> bool {
-        matches!(self, MutationState::Success(_))
-    }
-
-    pub fn is_error(&self) -> bool {
-        matches!(self, MutationState::Error(_))
-    }
-
-    pub fn data(&self) -> Option<&T> {
-        match self {
-            MutationState::Success(d) => Some(d),
-            _ => None,
+        Self {
+            key,
+            fetch_fn: Arc::new(move || Box::pin(fetch_fn())),
+            select: None,
+            options: QueryOptions::default(),
+            initial_data: None,
+            initial_data_updated_at: None,
+            placeholder_data: None,
+            share_fn: None,
         }
     }
 
-    pub fn error(&self) -> Option<&QueryError> {
-        match self {
-            MutationState::Error(e) => Some(e),
-            _ => None,
-        }
+    /// Set how long data is considered fresh before becoming stale.
+    pub fn stale_time(mut self, duration: Duration) -> Self {
+        self.options.stale_time = duration;
+        self
     }
 
-    pub fn data_cloned(&self) -> Option<T>
+    /// Set how long unused cache entries are kept before garbage collection.
+    pub fn gc_time(mut self, duration: Duration) -> Self {
+        self.options.gc_time = duration;
+        self
+    }
+
+    /// Set custom retry behaviour.
+    pub fn retry(mut self, config: crate::options::RetryConfig) -> Self {
+        self.options.retry = config;
+        self
+    }
+
+    /// Conditionally enable or disable the query.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.options.enabled = enabled;
+        self
+    }
+
+    /// Transform fetched data before it is stored in the cache.
+    pub fn select(mut self, f: impl Fn(&T) -> T + Send + Sync + 'static) -> Self {
+        self.select = Some(Arc::new(f));
+        self
+    }
+
+    /// Set an interval for automatic background refetching.
+    pub fn refetch_interval(mut self, duration: Duration) -> Self {
+        self.options.refetch_interval = duration;
+        self
+    }
+
+    /// Enable or disable refetching when the window regains focus.
+    pub fn refetch_on_window_focus(mut self, enabled: bool) -> Self {
+        self.options.refetch_on_window_focus = enabled;
+        self
+    }
+
+    /// Enable structural sharing.
+    ///
+    /// When enabled, if the newly fetched data is `PartialEq`-equal to the
+    /// existing cached data, the old `Arc` is kept so that downstream
+    /// consumers can skip re-renders via `Arc::ptr_eq`.
+    ///
+    /// **Requires `T: PartialEq`.** This bound is enforced at compile time.
+    pub fn structural_sharing(mut self, enabled: bool) -> Self
     where
-        T: Clone,
+        T: PartialEq,
     {
-        self.data().cloned()
+        if enabled {
+            self.options.structural_sharing = true;
+            self.share_fn = Some(Arc::new(
+                |old_any: Arc<dyn Any + Send + Sync>, new_arc: Arc<T>| {
+                    if let Some(old_typed) = old_any.downcast_ref::<T>() {
+                        if *old_typed == *new_arc {
+                            return old_any;
+                        }
+                    }
+                    new_arc
+                },
+            ));
+        } else {
+            self.options.structural_sharing = false;
+            self.share_fn = None;
+        }
+        self
+    }
+
+    /// Set all options at once.
+    pub fn options(mut self, options: QueryOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Provide initial data that is placed into the cache when the query
+    /// is first observed via [`QueryObserver::from_query`].
+    ///
+    /// This mirrors TanStack Query's `initialData` option.
+    pub fn initial_data(mut self, data: T) -> Self {
+        self.initial_data = Some(data);
+        self.initial_data_updated_at = Some(Instant::now());
+        self
+    }
+
+    /// Provide placeholder data shown while the query is loading.
+    ///
+    /// Accepts a [`PlaceholderData`] which can be a static value or a
+    /// function that receives the previous data (if any).
+    pub fn placeholder_data(mut self, data: PlaceholderData<T>) -> Self {
+        self.placeholder_data = Some(data);
+        self
     }
 }
 
-impl<T> Default for MutationState<T> {
-    fn default() -> Self {
-        MutationState::Idle
-    }
-}
-
-// src/state.rs (tests section only - removed test_display)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_placeholder_data_value() {
+        let ph = PlaceholderData::value("hello".to_string());
+        assert_eq!(ph.resolve(None), "hello");
+        assert_eq!(ph.resolve(Some(&"world".to_string())), "hello");
+    }
+
+    #[test]
+    fn test_placeholder_data_function() {
+        let ph: PlaceholderData<String> =
+            PlaceholderData::function(|prev| prev.map(|s| s.clone()).unwrap_or_default());
+        assert_eq!(ph.resolve(None), "");
+        assert_eq!(ph.resolve(Some(&"world".to_string())), "world");
+    }
+
+    #[test]
+    fn test_query_with_initial_data() {
+        use crate::QueryClient;
+
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key.clone(), || async { Ok("fetched".to_string()) })
+            .initial_data("initial".to_string());
+
+        let observer = crate::QueryObserver::from_query(&client, &query);
+        assert_eq!(observer.state().data(), Some(&"initial".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_placeholder_data_shown_during_loading() {
+        use crate::QueryClient;
+        use std::time::Duration;
+
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+        let query: Query<String> = Query::new(key.clone(), || async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok("fetched".to_string())
+        })
+        .placeholder_data(PlaceholderData::value("placeholder".to_string()));
+
+        let mut observer = crate::QueryObserver::from_query(&client, &query);
+        observer.set_loading();
+        assert!(matches!(
+            observer.state(),
+            QueryState::LoadingWithPlaceholder(ref s) if s == "placeholder"
+        ));
+    }
+
+    #[test]
+    fn test_structural_sharing_requires_partial_eq() {
+        // This test verifies that structural_sharing(true) compiles only when T: PartialEq.
+        let _query: Query<Vec<i32>> =
+            Query::new(QueryKey::new("test"), || async { Ok(vec![1, 2, 3]) })
+                .structural_sharing(true);
+    }
 
     #[test]
     fn test_query_state_idle() {
