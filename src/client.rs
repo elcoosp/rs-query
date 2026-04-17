@@ -41,7 +41,7 @@ pub enum ActivityEvent {
 
 /// Central query client managing cache and query execution.
 pub struct QueryClient {
-    pub(crate) cache: Arc<DashMap<String, CacheEntry>>,
+    pub cache: Arc<DashMap<String, CacheEntry>>,
     /// In-flight tasks keyed by cache key.
     in_flight: Arc<DashMap<String, InFlightTask>>,
     // Broadcast channels for state updates, one per key.
