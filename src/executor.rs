@@ -1,419 +1,227 @@
 // src/executor.rs
-//! Query and mutation execution primitives.
-//!
-//! Provides `spawn_query`, `spawn_mutation`, and `spawn_infinite_query` which
-//! bridge GPUI's foreground executor with Tokio-based async fetch functions.
+//! Query executor - handles async query execution with retries and deduplication
 
-use crate::cancellation::cancellable_fetch;
-use crate::client::QueryClient;
-use crate::infinite::{InfiniteData, InfiniteQuery, InfiniteQueryObserver};
-use crate::mutation::{Mutation, MutationState};
-use crate::observer::QueryObserver;
+use crate::error::QueryError;
+use crate::observer::QueryStateVariant;
 use crate::query::Query;
-use crate::state::{QueryState, QueryStateVariant};
-use crate::QueryError;
-use std::any::TypeId;
+use crate::{MutationState, QueryClient, QueryState};
+use futures_timer::Delay;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 
-// ---------------------------------------------------------------------------
-// Guard types for activity counters
-// ---------------------------------------------------------------------------
-
-/// Guard that decrements the fetching counter when dropped.
-struct FetchingGuard {
-    client: QueryClient,
-}
-
-impl Drop for FetchingGuard {
-    fn drop(&mut self) {
-        self.client.dec_fetching();
-    }
-}
-
-/// Guard that decrements the mutating counter when dropped.
-struct MutatingGuard {
-    client: QueryClient,
-}
-
-impl Drop for MutatingGuard {
-    fn drop(&mut self) {
-        self.client.dec_mutating();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// In-flight task helper
-// ---------------------------------------------------------------------------
-
-use tokio::task::AbortHandle;
-
-/// Stored per in-flight query so it can be cancelled.
-pub(crate) struct InFlightTask {
-    pub abort_handle: AbortHandle,
-    pub cancel_token: CancellationToken,
-}
-
-// ---------------------------------------------------------------------------
-// Public executor functions
-// ---------------------------------------------------------------------------
-
-/// Execute a query on a background thread and deliver state updates to the view.
-///
-/// Uses [`QueryObserver::from_query`] so that `initialData` and `placeholderData`
-/// are applied automatically. Deduplicates concurrent identical queries.
-pub fn spawn_query<V, T, F>(
-    cx: &mut gpui::ViewContext<V>,
-    client: QueryClient,
-    query: Query<T>,
-    callback: F,
-) where
-    V: 'static,
-    T: Clone + Send + Sync + 'static,
-    F: Fn(&mut V, &QueryState<T>, &mut gpui::ViewContext<V>) + Send + Sync + 'static,
-{
-    // Use from_query to apply initialData
-    let mut observer = QueryObserver::from_query(&client, &query);
-
-    if !query.options.enabled {
-        let initial_state = observer.state().clone();
-        cx.spawn(|this, mut cx| async move {
-            let _ = this.update(&mut cx, |view, cx| {
-                callback(view, &initial_state, cx);
-            });
-        })
-        .detach();
-        return;
-    }
-
-    // Deduplication
-    if client.is_in_flight(&query.key) {
-        return;
-    }
-
-    let key = query.key.clone();
-    observer.set_loading();
-    let loading_state = observer.state().clone();
-
-    // Increment fetching counter
-    client.inc_fetching();
-
-    let (tx, rx) = oneshot::channel();
-    let token = CancellationToken::new();
-    let token_clone = token.clone();
-
-    let abort_handle = tokio::spawn(async move {
-        let _guard = FetchingGuard {
-            client: client.clone(),
-        };
-        let state = execute_query(&client, &query, token_clone).await;
-        client.clear_in_flight(&key);
-        let _ = tx.send(state);
-    })
-    .abort_handle();
-
-    client.set_in_flight(
-        &key,
-        InFlightTask {
-            abort_handle,
-            cancel_token: token,
-        },
-    );
-
-    cx.spawn(|this, mut cx| async move {
-        // Deliver loading state
-        let _ = this.update(&mut cx, |view, cx| {
-            callback(view, &loading_state, cx);
-        });
-
-        // Wait for result
-        match rx.await {
-            Ok(final_state) => {
-                let _ = this.update(&mut cx, |view, cx| {
-                    callback(view, &final_state, cx);
-                });
-            }
-            Err(_) => {
-                // Task was cancelled or sender dropped
-                let _ = this.update(&mut cx, |view, cx| {
-                    callback(
-                        view,
-                        &QueryState::Error {
-                            error: QueryError::Cancelled,
-                            stale_data: None,
-                        },
-                        cx,
-                    );
-                });
-            }
-        }
-    })
-    .detach();
-}
-
-/// Core query execution logic: calls the fetch function with retries and cancellation.
+/// Execute a query with retries and deduplication
 pub async fn execute_query<T: Clone + Send + Sync + 'static>(
     client: &QueryClient,
     query: &Query<T>,
-    token: CancellationToken,
 ) -> QueryState<T> {
-    let max_retries = query.options.retry.max_retries;
-    let mut delay = query.options.retry.initial_delay;
+    let cache_key = query.key.cache_key();
 
-    for attempt in 0..=max_retries {
-        // Check cancellation before each attempt
-        if token.is_cancelled() {
-            return QueryState::Error {
-                error: QueryError::Cancelled,
-                stale_data: client.get_query_data(&query.key),
-            };
+    // Check if already in flight (deduplication)
+    if client.is_in_flight(&query.key) {
+        let mut rx = client.subscribe(&cache_key);
+
+        if let Some(data) = client.get_query_data::<T>(&query.key) {
+            let is_stale = client.is_stale(&query.key);
+            if is_stale {
+                return QueryState::Stale(data);
+            } else {
+                return QueryState::Success(data);
+            }
         }
 
-        match cancellable_fetch(token.clone(), || (query.fetch_fn)()).await {
-            Ok(data) => {
-                let final_data = match &query.select {
-                    Some(select_fn) => select_fn(&data),
-                    None => data,
-                };
-
-                // Store in cache, applying structural sharing if configured
-                if let Some(share_fn) = &query.share_fn {
-                    client.set_query_data_shared(
-                        &query.key,
-                        final_data,
-                        query.options.clone(),
-                        share_fn,
-                    );
-                } else {
-                    client.set_query_data(&query.key, final_data, query.options.clone());
+        if let Ok(update) = rx.recv().await {
+            match update.state_variant {
+                QueryStateVariant::Success => {
+                    if let Some(data) = client.get_query_data::<T>(&query.key) {
+                        return QueryState::Success(data);
+                    }
                 }
-
-                return QueryState::Success(client.get_query_data(&query.key).unwrap());
-            }
-            Err(QueryError::Cancelled) => {
-                return QueryState::Error {
-                    error: QueryError::Cancelled,
-                    stale_data: client.get_query_data(&query.key),
-                };
-            }
-            Err(e) => {
-                if attempt == max_retries {
+                QueryStateVariant::Error => {
                     return QueryState::Error {
-                        error: e,
-                        stale_data: client.get_query_data(&query.key),
+                        error: QueryError::custom("Deduplicated request failed"),
+                        stale_data: client.get_query_data::<T>(&query.key),
                     };
                 }
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = token.cancelled() => {
-                        return QueryState::Error {
-                            error: QueryError::Cancelled,
-                            stale_data: client.get_query_data(&query.key),
-                        };
+                QueryStateVariant::Loading => {
+                    return QueryState::Loading;
+                }
+                QueryStateVariant::Stale => {
+                    if let Some(data) = client.get_query_data::<T>(&query.key) {
+                        return QueryState::Stale(data);
                     }
                 }
-                delay = std::cmp::min(delay * 2, query.options.retry.max_delay);
+                QueryStateVariant::Idle | QueryStateVariant::Refetching => {
+                    return QueryState::Idle;
+                }
             }
         }
+
+        return QueryState::Loading;
     }
 
-    unreachable!()
-}
+    let is_refetch = client.get_query_data::<T>(&query.key).is_some();
 
-/// Execute a mutation on a background thread with optional optimistic updates.
-pub fn spawn_mutation<V, T, P, F>(
-    cx: &mut gpui::ViewContext<V>,
-    client: QueryClient,
-    mutation: Mutation<T, P>,
-    params: P,
-    callback: F,
-) where
-    V: 'static,
-    T: Clone + Send + Sync + 'static,
-    P: Send + Sync + 'static,
-    F: Fn(&mut V, &MutationState<T>, &mut gpui::ViewContext<V>) + Send + Sync + 'static,
-{
-    client.inc_mutating();
-
-    let (tx, rx) = oneshot::channel();
-
-    tokio::spawn(async move {
-        let _guard = MutatingGuard {
-            client: client.clone(),
-        };
-
-        // Optimistic update phase
-        let rollback: Option<Box<dyn FnOnce(&QueryClient) + Send>> = match &mutation.on_mutate {
-            Some(on_mutate_fn) => match on_mutate_fn(&client, params) {
-                Ok(rb) => Some(rb),
-                Err(e) => {
-                    let _ = tx.send(MutationState::Error(e));
-                    return;
-                }
-            },
-            None => None,
-        };
-
-        // Execute mutation
-        let result = (mutation.mutate_fn)(params).await;
-
-        match result {
-            Ok(data) => {
-                // Invalidate specified keys on success
-                for key in &mutation.invalidates {
-                    client.invalidate_queries(key);
-                }
-                let _ = tx.send(MutationState::Success(data));
-            }
-            Err(e) => {
-                // Rollback on error
-                if let Some(rb) = rollback {
-                    rb(&client);
-                }
-                let _ = tx.send(MutationState::Error(e));
+    if is_refetch {
+        if let Some(_data) = client.get_query_data::<T>(&query.key) {
+            let is_stale = client.is_stale(&query.key);
+            if is_stale {
+                client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
+            } else {
+                client.notify_subscribers(&cache_key, QueryStateVariant::Stale);
             }
         }
-    });
+    } else {
+        client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
+    }
 
-    cx.spawn(|this, mut cx| async move {
-        if let Ok(state) = rx.await {
-            let _ = this.update(&mut cx, |view, cx| {
-                callback(view, &state, cx);
-            });
-        }
-    })
-    .detach();
-}
-
-/// Execute an infinite query and return an observer for paginated access.
-pub fn spawn_infinite_query<V, T, P, F>(
-    cx: &mut gpui::ViewContext<V>,
-    client: QueryClient,
-    query: InfiniteQuery<T, P>,
-    callback: F,
-) -> InfiniteQueryObserver<T, P>
-where
-    V: 'static,
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + Sync + 'static,
-    F: Fn(&mut V, &QueryState<InfiniteData<T, P>>, &mut gpui::ViewContext<V>)
-        + Send
-        + Sync
-        + 'static,
-{
+    let fetch_fn = Arc::clone(&query.fetch_fn);
+    let select_fn = query.select.clone();
+    let options = query.options.clone();
     let key = query.key.clone();
-    let initial_data = InfiniteData {
-        pages: Vec::new(),
-        page_params: Vec::new(),
-    };
-
-    client.inc_fetching();
-
-    let (tx, rx) = oneshot::channel();
-    let token = CancellationToken::new();
-    let token_clone = token.clone();
-
-    let abort_handle = tokio::spawn({
-        let client = client.clone();
-        let query = query.clone();
-        async move {
-            let _guard = FetchingGuard {
-                client: client.clone(),
-            };
-            let state = execute_infinite_query(&client, &query, token_clone).await;
-            client.clear_in_flight(&key);
-            let _ = tx.send(state);
-        }
-    })
-    .abort_handle();
-
-    client.set_in_flight(
-        &key,
-        InFlightTask {
-            abort_handle,
-            cancel_token: token,
-        },
-    );
-
-    // Notify loading
-    let loading_state = QueryState::Loading;
     let client_clone = client.clone();
-    cx.spawn(|this, mut cx| async move {
-        let _ = this.update(&mut cx, |view, cx| {
-            callback(view, &loading_state, cx);
-        });
-        if let Ok(final_state) = rx.await {
-            let _ = this.update(&mut cx, |view, cx| {
-                callback(view, &final_state, cx);
-            });
-        }
-    })
-    .detach();
 
-    InfiniteQueryObserver::new(client_clone, query, initial_data)
-}
+    // Execute inline (no tokio::spawn - GPUI's executor isn't tokio-based)
+    let mut attempts = 0;
+    let max_attempts = options.retry.max_retries as usize + 1;
 
-async fn execute_infinite_query<T, P>(
-    client: &QueryClient,
-    query: &InfiniteQuery<T, P>,
-    token: CancellationToken,
-) -> QueryState<InfiniteData<T, P>>
-where
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + Sync + 'static,
-{
-    let mut page_param = query.initial_page_param.clone();
+    loop {
+        attempts += 1;
 
-    for _ in 0..=query.options.retry.max_retries {
-        if token.is_cancelled() {
-            return QueryState::Error {
-                error: QueryError::Cancelled,
-                stale_data: client.get_query_data(&query.key),
-            };
-        }
-
-        match cancellable_fetch(token.clone(), || (query.fetch_fn)(page_param.clone())).await {
-            Ok(page_data) => {
-                let mut infinite_data = client
-                    .get_infinite_data::<T, P>(&query.key)
-                    .unwrap_or_else(|| InfiniteData {
-                        pages: Vec::new(),
-                        page_params: Vec::new(),
-                    });
-
-                infinite_data.push_page(page_data, page_param.clone());
-
-                // Apply max_pages limit
-                if let Some(max) = query.max_pages {
-                    while infinite_data.pages.len() > max {
-                        infinite_data.pages.remove(0);
-                        infinite_data.page_params.remove(0);
-                    }
-                }
-
-                client.set_infinite_data(&query.key, infinite_data.clone(), query.options.clone());
-
-                return QueryState::Success(infinite_data);
-            }
-            Err(QueryError::Cancelled) => {
-                return QueryState::Error {
-                    error: QueryError::Cancelled,
-                    stale_data: client.get_query_data(&query.key),
+        match fetch_fn().await {
+            Ok(data) => {
+                let final_data = if let Some(ref select) = select_fn {
+                    select(&data)
+                } else {
+                    data
                 };
+
+                client_clone.set_query_data(&key, final_data, options.clone());
+                return QueryState::Success(
+                    client_clone
+                        .get_query_data::<T>(&key)
+                        .expect("data should be set"),
+                );
             }
             Err(e) => {
+                if attempts < max_attempts && should_retry(&e, &options.retry) {
+                    let delay = options.retry.delay_for_attempt((attempts - 1) as u32);
+                    Delay::new(delay).await;
+                    continue;
+                }
+
+                client_clone.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
+
                 return QueryState::Error {
                     error: e,
-                    stale_data: client.get_query_data(&query.key),
+                    stale_data: client_clone.get_query_data::<T>(&key),
                 };
             }
         }
     }
-
-    unreachable!()
 }
+
+/// Execute a mutation with optimistic update support
+pub async fn execute_mutation<T: Clone + Send + Sync + 'static, P: Clone + Send + 'static>(
+    client: &QueryClient,
+    mutation: &crate::mutation::Mutation<T, P>,
+    params: P,
+) -> Result<T, QueryError> {
+    let mutate_fn = Arc::clone(&mutation.mutate_fn);
+    let params = Arc::new(params);
+
+    let rollback: Option<crate::mutation::RollbackFn> =
+        if let Some(ref on_mutate) = mutation.on_mutate {
+            match on_mutate(client, &*params) {
+                Ok(rollback) => Some(rollback),
+                Err(e) => return Err(e),
+            }
+        } else {
+            None
+        };
+
+    let result = mutate_fn((*params).clone()).await;
+
+    match result {
+        Ok(data) => {
+            for key in &mutation.invalidates_keys {
+                client.invalidate_queries(key);
+            }
+            Ok(data)
+        }
+        Err(e) => {
+            if let Some(rollback) = rollback {
+                rollback(client);
+            }
+            Err(e)
+        }
+    }
+}
+
+fn should_retry(error: &QueryError, _retry: &crate::options::RetryConfig) -> bool {
+    match error {
+        QueryError::Network(_) => true,
+        QueryError::Timeout(_) => true,
+        _ => false,
+    }
+}
+
+/// Spawn a query on GPUI's foreground executor
+pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static>(
+    cx: &mut gpui::Context<V>,
+    client: &QueryClient,
+    query: &Query<T>,
+    callback: impl FnOnce(&mut V, QueryState<T>, &mut gpui::Context<V>) + Send + 'static,
+) {
+    let client = client.clone();
+    let query = query.clone();
+    let entity = cx.entity().downgrade();
+    let mut async_cx = cx.to_async();
+
+    cx.foreground_executor()
+        .spawn(async move {
+            let state = execute_query(&client, &query).await;
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                callback(this, state, cx);
+            });
+        })
+        .detach();
+}
+
+/// Spawn a mutation on GPUI's foreground executor
+pub fn spawn_mutation<
+    V: 'static,
+    T: Clone + Send + Sync + 'static,
+    P: Clone + Send + Sync + 'static,
+>(
+    cx: &mut gpui::Context<V>,
+    client: &QueryClient,
+    mutation: &crate::mutation::Mutation<T, P>,
+    params: P,
+    callback: impl FnOnce(&mut V, MutationState<T>, &mut gpui::Context<V>) + Send + 'static,
+) {
+    let client = client.clone();
+    let mutation = mutation.clone();
+    let entity = cx.entity().downgrade();
+    let mut async_cx = cx.to_async();
+
+    cx.foreground_executor()
+        .spawn(async move {
+            let result = execute_mutation(&client, &mutation, params).await;
+
+            let state = match result {
+                Ok(data) => MutationState::Success(data),
+                Err(e) => MutationState::Error(e),
+            };
+
+            let _ = entity.update(&mut async_cx, |this, cx| {
+                callback(this, state, cx);
+            });
+        })
+        .detach();
+}
+// src/executor.rs - Add test module
+
+#[cfg(test)]
+// src/executor.rs - Replace the test module with this corrected version
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,122 +238,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_execute_query_success() {
-        let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        let query: Query<String> = Query::new(key.clone(), || async { Ok("hello".to_string()) });
-
-        let token = CancellationToken::new();
-        let state = execute_query(&client, &query, token).await;
-        assert!(state.is_success());
-        assert_eq!(state.data(), Some(&"hello".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_with_select() {
-        let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        let query: Query<Vec<i32>> =
-            Query::new(key.clone(), || async { Ok(vec![1, 2, 3]) }).select(|v| v.len());
-
-        let token = CancellationToken::new();
-        let state = execute_query(&client, &query, token).await;
-        assert_eq!(state.data(), Some(&3));
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_retry_on_failure() {
-        let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_clone = attempts.clone();
-
-        let query: Query<String> = Query::new(key.clone(), move || {
-            let a = attempts_clone.clone();
-            async move {
-                let count = a.fetch_add(1, Ordering::SeqCst) + 1;
-                if count < 3 {
-                    Err(QueryError::Message("fail".to_string()))
-                } else {
-                    Ok("retried".to_string())
-                }
-            }
-        })
-        .retry(crate::options::RetryConfig {
-            max_retries: 3,
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(10),
-        });
-
-        let token = CancellationToken::new();
-        let state = execute_query(&client, &query, token).await;
-        assert!(state.is_success());
-        assert_eq!(state.data(), Some(&"retried".to_string()));
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_cancellation() {
-        let client = QueryClient::new();
-        let key = QueryKey::new("test");
-        let query: Query<String> = Query::new(key.clone(), || async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            Ok("done".to_string())
-        });
-
-        let token = CancellationToken::new();
-        let token_cancel = token.clone();
-
-        let handle = tokio::spawn(async move { execute_query(&client, &query, token).await });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        token_cancel.cancel();
-
-        let state = handle.await.unwrap();
-        assert!(matches!(
-            state,
-            QueryState::Error {
-                error: QueryError::Cancelled,
-                ..
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_execute_query_structural_sharing() {
-        let client = QueryClient::new();
-        let key = QueryKey::new("test");
-
-        // First fetch
-        let query1: Query<Vec<i32>> =
-            Query::new(key.clone(), || async { Ok(vec![1, 2, 3]) }).structural_sharing(true);
-        let token1 = CancellationToken::new();
-        let state1 = execute_query(&client, &query1, token1).await;
-
-        // Get the arc from cache
-        let cache_key = key.cache_key().to_string();
-        let arc1 = {
-            let entry = client.cache.get(&cache_key).unwrap();
-            entry.data.clone()
-        };
-
-        // Second fetch with same data
-        let query2: Query<Vec<i32>> =
-            Query::new(key.clone(), || async { Ok(vec![1, 2, 3]) }).structural_sharing(true);
-        let token2 = CancellationToken::new();
-        let state2 = execute_query(&client, &query2, token2).await;
-
-        let arc2 = {
-            let entry = client.cache.get(&cache_key).unwrap();
-            entry.data.clone()
-        };
-
-        // Should be the same Arc due to structural sharing
-        assert!(Arc::ptr_eq(&arc1, &arc2));
-        drop(state1);
-        drop(state2);
-    }
     #[tokio::test]
     async fn test_execute_query_success() {
         let client = QueryClient::new();
