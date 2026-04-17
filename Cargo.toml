@@ -1,6 +1,5 @@
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed" , features = ["default","test-support"]}
-gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
 thiserror = "2"
 tokio ={version ="1",features = ["rt-multi-thread", "time", "sync", "rt", "macros"]}
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -11,10 +10,13 @@ futures = "0.3"
 pretty_assertions = "1.4"
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
+chrono = { version = "0.4", optional = true }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", optional=true }
+
 [features]
 default = []
-serde = ["dep:serde", "serde_json"]
-devtools = ["dep:gpui-component"]
+serde = ["dep:serde", "dep:serde_json"]
+devtools = ["dep:chrono", "dep:gpui-component"]
 
 [lib]
 name = "rs_query"

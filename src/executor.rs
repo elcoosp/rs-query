@@ -540,7 +540,7 @@ mod tests {
     async fn test_execute_query_select_transformation() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-        let query = Query::new(key, || async { Ok("data".to_string()) })
+        let query = Query::new(key.clone(), || async { Ok("data".to_string()) })
             .select(|s: &String| s.to_uppercase());
 
         let state = execute_query(&client, &query, test_token()).await;
@@ -572,7 +572,7 @@ mod tests {
     async fn test_spawn_query_increments_and_decrements_fetching_count() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
-        let query: Query<String> = Query::new(key.clone(), || async {
+        let _query: Query<String> = Query::new(key.clone(), || async {
             tokio::time::sleep(Duration::from_millis(100)).await;
             Ok("data".to_string())
         });

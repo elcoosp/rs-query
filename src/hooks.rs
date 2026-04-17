@@ -192,81 +192,109 @@ pub fn use_mutating_count<V: 'static>(
 mod tests {
     use super::*;
     use crate::QueryClient;
-    use gpui::{TestAppContext, Window};
+    use gpui::{Empty, Render, TestAppContext, Window};
+
+    struct TestView {
+        is_fetching: Entity<UseIsFetching>,
+        is_mutating: Entity<UseIsMutating>,
+        fetching_count: Entity<UseFetchingCount>,
+        mutating_count: Entity<UseMutatingCount>,
+    }
+
+    impl Render for TestView {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            Empty
+        }
+    }
+
+    fn create_test_view(cx: &mut TestAppContext, client: &QueryClient) -> Entity<TestView> {
+        let client = client.clone();
+        cx.add_window_view(move |_window, cx| TestView {
+            is_fetching: use_is_fetching(cx, &client),
+            is_mutating: use_is_mutating(cx, &client),
+            fetching_count: use_fetching_count(cx, &client),
+            mutating_count: use_mutating_count(cx, &client),
+        })
+        .0
+    }
 
     #[gpui::test]
     async fn test_use_is_fetching_reacts_to_activity(cx: &mut TestAppContext) {
         let client = QueryClient::new();
-        let window = cx.add_empty_window();
-        let entity = window.update(cx, |_, cx| use_is_fetching(cx, &client));
+        let view = create_test_view(cx, &client);
+        let entity = view.read_with(cx, |v, _| v.is_fetching.clone());
 
-        assert!(!entity.read_with(cx, |e, _| e.get()));
+        assert!(!entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
 
         client.inc_fetching();
         cx.run_until_parked();
-        assert!(entity.read_with(cx, |e, _| e.get()));
+        assert!(entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
 
         client.dec_fetching();
         cx.run_until_parked();
-        assert!(!entity.read_with(cx, |e, _| e.get()));
+        assert!(!entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
     }
 
     #[gpui::test]
     async fn test_use_is_mutating_reacts_to_activity(cx: &mut TestAppContext) {
         let client = QueryClient::new();
-        let window = cx.add_empty_window();
-        let entity = window.update(cx, |_, cx| use_is_mutating(cx, &client));
+        let view = create_test_view(cx, &client);
+        let entity = view.read_with(cx, |v, _| v.is_mutating.clone());
 
-        assert!(!entity.read_with(cx, |e, _| e.get()));
+        assert!(!entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
 
         client.inc_mutating();
         cx.run_until_parked();
-        assert!(entity.read_with(cx, |e, _| e.get()));
+        assert!(entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
 
         client.dec_mutating();
         cx.run_until_parked();
-        assert!(!entity.read_with(cx, |e, _| e.get()));
+        assert!(!entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
     }
 
     #[gpui::test]
     async fn test_use_fetching_count_reacts_to_activity(cx: &mut TestAppContext) {
         let client = QueryClient::new();
-        let window = cx.add_empty_window();
-        let entity = window.update(cx, |_, cx| use_fetching_count(cx, &client));
+        let view = create_test_view(cx, &client);
+        let entity = view.read_with(cx, |v, _| v.fetching_count.clone());
 
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 0);
-
-        client.inc_fetching();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 1);
+        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 0);
 
         client.inc_fetching();
         cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 2);
+        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 1);
+
+        client.inc_fetching();
+        cx.run_until_parked();
+        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 2);
 
         client.dec_fetching();
         cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 1);
+        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 1);
     }
 
     #[gpui::test]
     async fn test_use_mutating_count_reacts_to_activity(cx: &mut TestAppContext) {
         let client = QueryClient::new();
-        let window = cx.add_empty_window();
-        let entity = window.update(cx, |_, cx| use_mutating_count(cx, &client));
+        let view = create_test_view(cx, &client);
+        let entity = view.read_with(cx, |v, _| v.mutating_count.clone());
 
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 0);
-
-        client.inc_mutating();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 1);
+        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 0);
 
         client.inc_mutating();
         cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 2);
+        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 1);
+
+        client.inc_mutating();
+        cx.run_until_parked();
+        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 2);
 
         client.dec_mutating();
         cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e, _| e.get()), 1);
+        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 1);
     }
 }

@@ -5,8 +5,8 @@
 use crate::{QueryClient, QueryStateVariant};
 use gpui::{
     actions, div, prelude::*, px, relative, rgba, AnyElement, App, Context, Entity, EventEmitter,
-    FontWeight, IconName, KeyBinding, Render, RenderOnce, SharedString, Styled, Subscription,
-    TextStyle, Window,
+    FontWeight, KeyBinding, Render, RenderOnce, SharedString, Styled, Subscription, TextStyle,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -14,7 +14,7 @@ use gpui_component::{
     input::{Input, InputState},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
-    ActiveTheme,
+    ActiveTheme, IconName,
 };
 use std::rc::Rc;
 use std::time::{Duration, Instant};
