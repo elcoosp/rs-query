@@ -12,6 +12,7 @@ use crate::observer::QueryObserver;
 use crate::query::Query;
 use crate::state::{QueryState, QueryStateVariant};
 use crate::QueryError;
+use gpui::AsyncWindowContext;
 use std::any::TypeId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,14 +66,14 @@ pub(crate) struct InFlightTask {
 /// Uses [`QueryObserver::from_query`] so that `initialData` and `placeholderData`
 /// are applied automatically. Deduplicates concurrent identical queries.
 pub fn spawn_query<V, T, F>(
-    cx: &mut gpui::ViewContext<V>,
+    cx: &mut AsyncWindowContext,
     client: QueryClient,
     query: Query<T>,
     callback: F,
 ) where
     V: 'static,
     T: Clone + Send + Sync + 'static,
-    F: Fn(&mut V, &QueryState<T>, &mut gpui::ViewContext<V>) + Send + Sync + 'static,
+    F: Fn(&mut V, &QueryState<T>, &mut AsyncWindowContext) + Send + Sync + 'static,
 {
     // Use from_query to apply initialData
     let mut observer = QueryObserver::from_query(&client, &query);

@@ -1,5 +1,12 @@
 # rs-query
 
+<p align="center">
+  <a href="https://raw.githubusercontent.com/elcoosp/rs-query/main/assets/logos/horizontal.svg">
+      <img src="https://raw.githubusercontent.com/elcoosp/rs-query/main/assets/logos/horizontal.svg" alt="rs-query horizontal logo" width="500">
+  </a>
+</p>
+
+
 **rs-query** is a Rust port of the popular [TanStack Query](https://tanstack.com/query) data‑fetching library, built specifically for the [GPUI](https://www.gpui.rs/) framework. It provides declarative, cache‑aware queries and mutations with automatic background refetching, retries, hierarchical cache invalidation, and reactive observers.
 
 ## Features
@@ -13,10 +20,14 @@
 - **Reactive Observers** – `QueryObserver` subscribes to cache changes for automatic UI updates.
 - **Optimistic Updates** – Mutations support `on_mutate` with automatic rollback on failure.
 - **Infinite Queries** – Paginated data with `fetch_next_page`, `has_next_page`, and `max_pages`.
-- **Query Options** – `staleTime`, `gcTime`, `retry`, `refetchInterval`, `refetchOnWindowFocus`, `structuralSharing` (placeholder), and `select` transformations.
+- **Query Options** – `staleTime`, `gcTime`, `retry`, `refetchInterval`, `refetchOnWindowFocus`, `structuralSharing`, and `select` transformations.
 - **Background Refetch** – Configurable `refetch_interval` and window focus refetching.
 - **Hydration & Persistence** – `dehydrate` and `hydrate` APIs for SSR and offline storage.
 - **Devtools** – Optional GPUI component for inspecting and debugging the query cache.
+- **`initialData` & `placeholderData`** – Seed the cache or show fallback data during loading, matching TanStack Query semantics.
+- **Query Cancellation** – Full cooperative cancellation via `CancellationToken` plus Tokio abort handles.
+- **Structural Sharing** – Opt‑in `PartialEq`‑based sharing that reuses `Arc`s when data is equal, enabling cheap `Arc::ptr_eq` change detection in views.
+- **`useIsFetching` / `useIsMutating`** – Reactive GPUI hooks that track global activity counts via broadcast channels.
 - **Type‑Safe** – Fully generic over your data types with `Send + Sync` bounds for seamless async use.
 - **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`.
 
@@ -81,18 +92,26 @@ fn fetch_users(&mut self, cx: &mut ViewContext<Self>) {
     let client = self.query_client.clone();
     let query = self.users_query.clone();
 
-    let observer = QueryObserver::new(&client, query.key.clone());
-    spawn_query(cx, &client, &query, move |this, state, cx| {
-        // The observer will automatically update its state
+    spawn_query(cx, client, query, move |this, state, cx| {
+        // state is automatically delivered: Loading, Success, Error, etc.
         cx.notify();
     });
-
-    // Store the observer to access state later
-    self.users_observer = Some(observer);
 }
 ```
 
-### 4. Perform Mutations with Optimistic Updates
+### 4. Initial Data and Placeholder Data
+
+```rust
+use rs_query::{Query, QueryKey, PlaceholderData};
+
+let users_query = Query::new(QueryKey::new("users"), fetch_users)
+    // Seed the cache so the observer starts in Success state
+    .initial_data(vec![])
+    // Show this data while the fetch is in-flight (no prior cache)
+    .placeholder_data(PlaceholderData::value(vec![User::placeholder()]));
+```
+
+### 5. Perform Mutations with Optimistic Updates
 
 ```rust
 use rs_query::{Mutation, spawn_mutation, MutationState};
@@ -108,7 +127,6 @@ let create_user = Mutation::new(|params: CreateUserParams| async move {
         users.push(User { id: params.id, name: params.name.clone() });
         users
     });
-    // Return rollback function
     Ok(Box::new(move |client| {
         client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
             old.map(|mut users| {
@@ -129,7 +147,6 @@ fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) 
                 this.show_success("User created");
             }
             MutationState::Error(e) => {
-                // Rollback happens automatically
                 this.show_error(e.to_string());
             }
             _ => {}
@@ -139,7 +156,47 @@ fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) 
 }
 ```
 
-### 5. Infinite Queries
+### 6. Query Cancellation
+
+```rust
+// Cancel a specific in-flight query
+self.query_client.cancel_query(&QueryKey::new("users"));
+
+// Invalidate a family of queries (also cancels in-flight requests)
+self.query_client.invalidate_queries(&QueryKey::new("users"));
+```
+
+### 7. Structural Sharing
+
+```rust
+use rs_query::{Query, QueryKey};
+
+// Structural sharing requires T: PartialEq (enforced at compile time)
+let users_query: Query<Vec<User>> = Query::new(QueryKey::new("users"), fetch_users)
+    .structural_sharing(true);
+
+// When enabled, if the fetched data is PartialEq-equal to the cached data,
+// the same Arc is kept. Views can use Arc::ptr_eq to skip re-renders.
+```
+
+### 8. Global Activity Hooks
+
+```rust
+use rs_query::{use_is_fetching, use_is_mutating, use_fetching_count};
+
+fn render(&mut self, cx: &mut ViewContext<Self>) {
+    let is_fetching = use_is_fetching(cx, &self.query_client);
+    let is_mutating = use_is_mutating(cx, &self.query_client);
+    let count = use_fetching_count(cx, &self.query_client);
+
+    if *is_fetching.read(cx) {
+        // Show global loading indicator
+    }
+    // count.read(cx) gives the exact number of in-flight fetches
+}
+```
+
+### 9. Infinite Queries
 
 ```rust
 use rs_query::{InfiniteQuery, spawn_infinite_query};
@@ -147,7 +204,7 @@ use rs_query::{InfiniteQuery, spawn_infinite_query};
 let projects_query = InfiniteQuery::new(
     QueryKey::new("projects"),
     |cursor| async move { fetch_projects(cursor).await },
-    0, // initial_page_param
+    0,
 )
 .get_next_page_param(|last_page, _pages| last_page.next_cursor)
 .max_pages(3);
@@ -173,11 +230,15 @@ Central cache and query manager.
 
 - `get_query_data<T>(key: &QueryKey) -> Option<T>`
 - `set_query_data<T>(key: &QueryKey, data: T, options: QueryOptions)`
-- `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale
+- `cancel_query(key: &QueryKey)` – cancel an in-flight query via `CancellationToken` + abort
+- `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale and cancels in-flight
 - `refetch_all_stale()` – triggers refetch of all stale queries (e.g., on window focus)
+- `is_fetching() -> bool` / `fetching_count() -> usize` – global fetching activity
+- `is_mutating() -> bool` / `mutating_count() -> usize` – global mutating activity
+- `subscribe_activity() -> Receiver<ActivityEvent>` – raw activity stream
 - `dehydrate() -> DehydratedState` – serializes cache for persistence
-- `hydrate(state: DehydratedState, options: HydrateOptions)` – restores cache from dehydrated state
-- `clear()` – empties the entire cache
+- `hydrate(state: DehydratedState, options: HydrateOptions)` – restores cache
+- `clear()` – empties the entire cache and cancels all in-flight tasks
 - `gc()` – removes entries older than their `gc_time`
 
 ### `Query<T>`
@@ -192,22 +253,24 @@ Definition of a query.
 - `.select(f)` – transform data before returning
 - `.refetch_interval(duration)` – poll at interval
 - `.refetch_on_window_focus(bool)` – refetch when window regains focus
-- `.structural_sharing(bool)` – enable/disable structural sharing (placeholder implementation)
+- `.structural_sharing(bool)` – enable structural sharing (**requires `T: PartialEq`**)
+- `.initial_data(data)` – seed the cache on first observation
+- `.placeholder_data(data)` – show fallback data during loading
 - `.options(options)` – set all options at once
+
+### `PlaceholderData<T>`
+
+- `PlaceholderData::value(data)` – static placeholder
+- `PlaceholderData::function(f: Fn(Option<&T>) -> T)` – dynamic placeholder using previous data
 
 ### `InfiniteQuery<T, P>`
 
-Definition of an infinite query.
-
 - `InfiniteQuery::new(key, fetch_fn, initial_page_param)`
-- `.get_next_page_param(f)` – function to extract next cursor
-- `.get_previous_page_param(f)` – function to extract previous cursor
+- `.get_next_page_param(f)` – extract next cursor
+- `.get_previous_page_param(f)` – extract previous cursor
 - `.max_pages(n)` – limit stored pages
-- Supports same options as `Query<T>`
 
 ### `Mutation<T, P>`
-
-Definition of a mutation.
 
 - `Mutation::new(mutate_fn)` – builder start
 - `.invalidates_key(key)` / `.invalidates(keys)` – keys to invalidate on success
@@ -215,47 +278,48 @@ Definition of a mutation.
 
 ### `QueryObserver<T>`
 
-Reactive observer for a query.
-
-- `QueryObserver::new(client, key)`
+- `QueryObserver::new(client, key)` – simple constructor
+- `QueryObserver::from_query(client, query)` – applies `initialData` and stores `placeholderData`
 - `.state() -> &QueryState<T>` – current state
+- `.set_loading()` – transition to loading (uses placeholder if configured)
 - `.update()` – refresh state from cache
-- `.refetch()` – manually trigger refetch
+- `.try_recv()` – non-blocking poll for broadcast updates
+- `.refetch()` – trigger stale + refetch notification
+
+### `QueryState<T>` & `MutationState<T>`
+
+- `QueryState::Idle` / `Loading` / `LoadingWithPlaceholder(T)` / `Refetching(T)` / `Success(T)` / `Stale(T)` / `Error { error, stale_data }`
+- Convenience methods: `.data()`, `.is_loading()`, `.is_success()`, `.is_error()`, `.map()`
+
+### Hooks
+
+- `use_is_fetching(cx, client) -> Model<bool>`
+- `use_is_mutating(cx, client) -> Model<bool>`
+- `use_fetching_count(cx, client) -> Model<usize>`
+- `use_mutating_count(cx, client) -> Model<usize>`
+
+### Executors
+
+- `spawn_query(cx, client, query, callback)` – executes a query
+- `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation
+- `spawn_infinite_query(cx, client, query, callback) -> InfiniteQueryObserver`
 
 ### `QueryKey`
 
 Hierarchical key system for cache lookups and invalidation.
 
 ```rust
-// Static key
 QueryKey::new("users")
-
-// Parameterised
 QueryKey::new("users").with("id", 42)
-
-// Nested
 QueryKey::new("users").segment("posts").with("id", 100)
 ```
 
-Invalidation is prefix‑based: invalidating `QueryKey::new("users")` will mark `users::id=42` and `users::posts::id=100` as stale.
-
-### `QueryState<T>` & `MutationState<T>`
-
-Enums that carry data alongside the state.
-
-- `QueryState::Idle` / `Loading` / `Refetching(T)` / `Success(T)` / `Stale(T)` / `Error { error, stale_data }`
-- Convenience methods: `.data()`, `.is_loading()`, `.is_success()`, etc.
-
-### Executors
-
-- `spawn_query(cx, client, query, callback)` – executes a query on GPUI’s background executor.
-- `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation with optional optimistic updates.
-- `spawn_infinite_query(cx, client, query, callback) -> InfiniteQueryObserver` – executes an infinite query.
+Invalidation is prefix‑based: invalidating `QueryKey::new("users")` marks `users::id=42` and `users::posts::id=100` as stale.
 
 ### Hydration
 
-- `client.dehydrate() -> DehydratedState` – serializes cache state.
-- `client.hydrate(state, options)` – restores cache from dehydrated state.
+- `client.dehydrate() -> DehydratedState`
+- `client.hydrate(state, options)`
 - Enable `serde` feature for JSON serialization support.
 
 ### Devtools
@@ -265,14 +329,9 @@ Enable the `devtools` feature to use the `QueryDevtools` component:
 ```rust
 #[cfg(feature = "devtools")]
 let devtools = QueryDevtools::new(client.clone(), cx);
-// Add to your window
 ```
 
-The devtools panel shows active queries, a timeline of state changes, and cache inspection.
-
 ## Comparison with TanStack Query
-
-rs‑query aims to provide the core experience of TanStack Query while respecting Rust’s ownership model and GPUI’s async patterns. Below is a summary of what is currently implemented.
 
 | Feature                                   | Status          |
 |-------------------------------------------|-----------------|
@@ -288,20 +347,18 @@ rs‑query aims to provide the core experience of TanStack Query while respectin
 | `refetchInterval` / window focus refetch  | ✅ Implemented  |
 | Hydration / persistence                   | ✅ Implemented  |
 | Devtools                                  | ✅ Implemented  |
-| `placeholderData`                         | ⚠️ Partial (type exists, not integrated) |
-| `initialData`                             | ❌ Not yet     |
-| Structural sharing                        | ⚠️ Placeholder  |
-| Query cancellation                        | ⚠️ Partial (abort handles exist) |
+| `placeholderData`                         | ✅ Implemented  |
+| `initialData`                             | ✅ Implemented  |
+| Structural sharing                        | ✅ Implemented  |
+| Query cancellation                        | ✅ Implemented  |
+| `useIsFetching` / `useIsMutating` helpers | ✅ Implemented  |
 | Suspense integration                      | N/A (GPUI)     |
-| `useIsFetching` / `useIsMutating` helpers | ❌ Not yet     |
 | Full query filters API                    | ❌ Not yet     |
 
 ## Contributing
 
 Contributions are welcome! If you'd like to help improve rs-query, please open an issue or pull request on the [repository](https://github.com/elcoosp/rs-query). Focus areas include:
 
-- Full structural sharing implementation
-- `useIsFetching` / `useIsMutating` helpers
 - Advanced query filters
 - Framework adapters for other Rust UI libraries (Dioxus, Leptos, etc.)
 
