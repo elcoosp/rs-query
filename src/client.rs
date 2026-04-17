@@ -17,13 +17,13 @@ use tokio_util::sync::CancellationToken;
 
 /// Cache entry for type-erased storage
 #[derive(Clone)]
-pub(crate) struct CacheEntry {
-    pub(crate) data: Arc<dyn PartialEqAny + Send + Sync>,
-    pub(crate) type_id: TypeId,
-    pub(crate) fetched_at: Instant,
-    pub(crate) last_accessed: Instant,
-    pub(crate) options: QueryOptions,
-    pub(crate) is_stale: bool,
+pub struct CacheEntry {
+    pub data: Arc<dyn PartialEqAny + Send + Sync>,
+    pub type_id: TypeId,
+    pub fetched_at: Instant,
+    pub last_accessed: Instant,
+    pub options: QueryOptions,
+    pub is_stale: bool,
 }
 
 /// An in-flight task with cancellation support.
