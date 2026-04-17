@@ -1,19 +1,36 @@
 // src/client.rs
-//! QueryClient - central cache and query manager
+//! QueryClient – central cache and query manager.
 
+use crate::executor::InFlightTask;
 use crate::focus_manager::FocusManager;
 use crate::infinite::InfiniteData;
 use crate::observer::{QueryStateUpdate, QueryStateVariant};
-use crate::sharing::replace_equal_deep_any;
 use crate::{QueryKey, QueryOptions};
 use dashmap::DashMap;
 use std::any::{Any, TypeId};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
-use tokio::task::AbortHandle;
 
-/// Cache entry for type-erased storage
+// ---------------------------------------------------------------------------
+// Activity events
+// ---------------------------------------------------------------------------
+
+/// Events emitted when fetching or mutating activity counts change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivityEvent {
+    /// The number of in-flight fetches changed.
+    FetchingCountChanged(usize),
+    /// The number of in-flight mutations changed.
+    MutatingCountChanged(usize),
+}
+
+// ---------------------------------------------------------------------------
+// Cache entry
+// ---------------------------------------------------------------------------
+
+/// Cache entry for type-erased storage.
 #[derive(Clone)]
 pub(crate) struct CacheEntry {
     pub(crate) data: Arc<dyn Any + Send + Sync>,
@@ -24,26 +41,41 @@ pub(crate) struct CacheEntry {
     pub(crate) is_stale: bool,
 }
 
-/// Central query client managing cache and query execution.
+// ---------------------------------------------------------------------------
+// QueryClient
+// ---------------------------------------------------------------------------
+
+/// Central query client managing the cache, in-flight tasks, and subscriptions.
 pub struct QueryClient {
     pub(crate) cache: Arc<DashMap<String, CacheEntry>>,
-    /// Abort handles for in-flight queries, keyed by cache key.
-    abort_handles: Arc<DashMap<String, AbortHandle>>,
-    // Broadcast channels for state updates, one per key.
+    /// In-flight query tasks keyed by cache key.
+    in_flight: Arc<DashMap<String, InFlightTask>>,
+    /// Broadcast channels for per-key state updates.
     subscribers: Arc<DashMap<String, broadcast::Sender<QueryStateUpdate>>>,
-    /// Focus manager for window focus refetching
+    /// Focus manager for window-focus refetching.
     pub focus_manager: FocusManager,
+    /// Number of currently in-flight fetch operations.
+    fetching_count: Arc<AtomicUsize>,
+    /// Number of currently in-flight mutation operations.
+    mutating_count: Arc<AtomicUsize>,
+    /// Broadcast sender for activity-count changes (used by hooks).
+    activity_tx: broadcast::Sender<ActivityEvent>,
 }
 
 impl QueryClient {
+    /// Create a new `QueryClient` with an empty cache.
     pub fn new() -> Self {
+        let (activity_tx, _) = broadcast::channel(16);
         let client = Self {
             cache: Arc::new(DashMap::new()),
-            abort_handles: Arc::new(DashMap::new()),
+            in_flight: Arc::new(DashMap::new()),
             subscribers: Arc::new(DashMap::new()),
             focus_manager: FocusManager::new(),
+            fetching_count: Arc::new(AtomicUsize::new(0)),
+            mutating_count: Arc::new(AtomicUsize::new(0)),
+            activity_tx,
         };
-        // Spawn background garbage collection thread.
+        // Spawn background GC thread.
         let cache = Arc::clone(&client.cache);
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(60));
@@ -52,16 +84,18 @@ impl QueryClient {
         client
     }
 
+    // -----------------------------------------------------------------------
+    // Subscriptions
+    // -----------------------------------------------------------------------
+
     /// Subscribe to state changes for a given cache key.
-    /// Returns a receiver that will receive updates whenever the query state changes.
     pub fn subscribe(&self, cache_key: &str) -> broadcast::Receiver<QueryStateUpdate> {
-        // Get or create a sender for this key.
         let entry = self.subscribers.entry(cache_key.to_string());
         let sender = entry.or_insert_with(|| broadcast::channel(16).0);
         sender.subscribe()
     }
 
-    /// Internal method to notify subscribers of a state change.
+    /// Notify subscribers of a state change.
     pub fn notify_subscribers(&self, cache_key: &str, variant: QueryStateVariant) {
         if let Some(sender) = self.subscribers.get(cache_key) {
             let update = QueryStateUpdate {
@@ -72,29 +106,86 @@ impl QueryClient {
         }
     }
 
-    /// Get cached data if available and not stale
-    pub fn get_query_data<T: Clone + Send + Sync + 'static>(&self, key: &QueryKey) -> Option<T> {
-        let cache_key = key.cache_key();
-        let entry = self.cache.get(cache_key)?;
+    // -----------------------------------------------------------------------
+    // Activity counters
+    // -----------------------------------------------------------------------
 
+    /// Returns `true` if at least one fetch is in flight.
+    pub fn is_fetching(&self) -> bool {
+        self.fetching_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Returns the current number of in-flight fetches.
+    pub fn fetching_count(&self) -> usize {
+        self.fetching_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns `true` if at least one mutation is in flight.
+    pub fn is_mutating(&self) -> bool {
+        self.mutating_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Returns the current number of in-flight mutations.
+    pub fn mutating_count(&self) -> usize {
+        self.mutating_count.load(Ordering::Relaxed)
+    }
+
+    /// Subscribe to activity-count changes (for `use_is_fetching` / `use_is_mutating`).
+    pub fn subscribe_activity(&self) -> broadcast::Receiver<ActivityEvent> {
+        self.activity_tx.subscribe()
+    }
+
+    /// Increment the fetching counter (called by executor).
+    pub(crate) fn inc_fetching(&self) {
+        let new = self.fetching_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self
+            .activity_tx
+            .send(ActivityEvent::FetchingCountChanged(new));
+    }
+
+    /// Decrement the fetching counter (called by FetchingGuard::drop).
+    pub(crate) fn dec_fetching(&self) {
+        let new = self.fetching_count.fetch_sub(1, Ordering::Relaxed) - 1;
+        let _ = self
+            .activity_tx
+            .send(ActivityEvent::FetchingCountChanged(new));
+    }
+
+    /// Increment the mutating counter (called by executor).
+    pub(crate) fn inc_mutating(&self) {
+        let new = self.mutating_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self
+            .activity_tx
+            .send(ActivityEvent::MutatingCountChanged(new));
+    }
+
+    /// Decrement the mutating counter (called by MutatingGuard::drop).
+    pub(crate) fn dec_mutating(&self) {
+        let new = self.mutating_count.fetch_sub(1, Ordering::Relaxed) - 1;
+        let _ = self
+            .activity_tx
+            .send(ActivityEvent::MutatingCountChanged(new));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache read
+    // -----------------------------------------------------------------------
+
+    /// Get cached data if available (returns stale data too).
+    pub fn get_query_data<T: Clone + Send + Sync + 'static>(&self, key: &QueryKey) -> Option<T> {
+        let entry = self.cache.get(key.cache_key())?;
         if entry.type_id != TypeId::of::<T>() {
             return None;
         }
-
-        // NOTE: Stale data is intentionally returned here!
-        // In React-Query, stale data is still shown to the user while a background refetch occurs.
-        // Users should check `client.is_stale(&key)` if they specifically need to know freshness.
-
         entry.data.downcast_ref::<T>().cloned()
     }
 
-    /// Get the options for a query key (if cached).
+    /// Get the options stored for a query key.
     pub fn get_query_options(&self, key: &QueryKey) -> Option<QueryOptions> {
-        let cache_key = key.cache_key();
-        self.cache.get(cache_key).map(|entry| entry.options.clone())
+        self.cache.get(key.cache_key()).map(|e| e.options.clone())
     }
 
-    /// Get cached infinite data if available.
+    /// Get cached infinite query data.
     pub fn get_infinite_data<T, P>(&self, key: &QueryKey) -> Option<InfiniteData<T, P>>
     where
         T: Clone + Send + Sync + 'static,
@@ -105,8 +196,7 @@ impl QueryClient {
 
     /// Check if the data for a key is stale.
     pub fn is_stale(&self, key: &QueryKey) -> bool {
-        let cache_key = key.cache_key();
-        if let Some(entry) = self.cache.get(cache_key) {
+        if let Some(entry) = self.cache.get(key.cache_key()) {
             let time_stale = !entry.options.stale_time.is_zero()
                 && entry.fetched_at.elapsed() > entry.options.stale_time;
             time_stale || entry.is_stale
@@ -115,43 +205,53 @@ impl QueryClient {
         }
     }
 
-    /// Set cached data with optional structural sharing.
+    // -----------------------------------------------------------------------
+    // Cache write
+    // -----------------------------------------------------------------------
+
+    /// Set cached data (no structural sharing).
     pub fn set_query_data<T: Clone + Send + Sync + 'static>(
         &self,
         key: &QueryKey,
         data: T,
         options: QueryOptions,
     ) {
-        let cache_key = key.cache_key().to_string();
-        let new_data_arc = Arc::new(data);
+        self.insert_cache(
+            key.cache_key().to_string(),
+            Arc::new(data) as Arc<dyn Any + Send + Sync>,
+            TypeId::of::<T>(),
+            options,
+        );
+    }
 
-        // Apply structural sharing if enabled and old data exists
-        let final_data = if options.structural_sharing {
+    /// Set cached data with structural sharing.
+    ///
+    /// The `share_fn` captures the `T: PartialEq` bound at query construction
+    /// time, so this method only requires `T: Clone + Send + Sync`.
+    pub(crate) fn set_query_data_shared<T: Clone + Send + Sync + 'static>(
+        &self,
+        key: &QueryKey,
+        data: T,
+        options: QueryOptions,
+        share_fn: &Arc<
+            dyn Fn(Arc<dyn Any + Send + Sync>, Arc<T>) -> Arc<dyn Any + Send + Sync> + Send + Sync,
+        >,
+    ) {
+        let cache_key = key.cache_key().to_string();
+        let new_arc: Arc<T> = Arc::new(data);
+
+        let final_data: Arc<dyn Any + Send + Sync> =
             if let Some(old_entry) = self.cache.get(&cache_key) {
                 if old_entry.type_id == TypeId::of::<T>() {
-                    replace_equal_deep_any(old_entry.data.clone(), new_data_arc.clone())
+                    share_fn(old_entry.data.clone(), new_arc)
                 } else {
-                    new_data_arc
+                    new_arc
                 }
             } else {
-                new_data_arc
-            }
-        } else {
-            new_data_arc
-        };
+                new_arc
+            };
 
-        self.cache.insert(
-            cache_key.clone(),
-            CacheEntry {
-                data: final_data,
-                type_id: TypeId::of::<T>(),
-                fetched_at: Instant::now(),
-                last_accessed: Instant::now(),
-                options,
-                is_stale: false,
-            },
-        );
-        self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+        self.insert_cache(cache_key, final_data, TypeId::of::<T>(), options);
     }
 
     /// Set infinite query data.
@@ -168,7 +268,6 @@ impl QueryClient {
     }
 
     /// Append a new page to existing infinite data.
-    /// Returns the updated data if successful.
     pub fn append_infinite_page<T, P>(
         &self,
         key: &QueryKey,
@@ -201,7 +300,7 @@ impl QueryClient {
         None
     }
 
-    /// Prepend a new page to existing infinite data (for bi-directional).
+    /// Prepend a new page to existing infinite data (bi-directional pagination).
     pub fn prepend_infinite_page<T, P>(
         &self,
         key: &QueryKey,
@@ -235,8 +334,37 @@ impl QueryClient {
         None
     }
 
-    /// Invalidate queries matching the key pattern.
-    /// If `cancel_in_flight` is true, also abort any ongoing requests.
+    // -----------------------------------------------------------------------
+    // In-flight management & cancellation
+    // -----------------------------------------------------------------------
+
+    /// Store an in-flight task (abort handle + cancellation token).
+    pub fn set_in_flight(&self, key: &QueryKey, task: InFlightTask) {
+        self.in_flight.insert(key.cache_key().to_string(), task);
+    }
+
+    /// Remove the in-flight entry for a completed query.
+    pub fn clear_in_flight(&self, key: &QueryKey) {
+        self.in_flight.remove(key.cache_key());
+    }
+
+    /// Check if a query is in flight (for deduplication).
+    pub fn is_in_flight(&self, key: &QueryKey) -> bool {
+        self.in_flight.contains_key(key.cache_key())
+    }
+
+    /// Cancel a specific in-flight query via both the `CancellationToken`
+    /// and the Tokio abort handle.
+    pub fn cancel_query(&self, key: &QueryKey) {
+        if let Some((_, task)) = self.in_flight.remove(key.cache_key()) {
+            task.cancel_token.cancel();
+            task.abort_handle.abort();
+        }
+    }
+
+    /// Invalidate queries matching the key pattern (prefix-based).
+    ///
+    /// Also cancels any in-flight requests for matching keys.
     pub fn invalidate_queries(&self, pattern: &QueryKey) {
         let pattern_str = pattern.cache_key();
         let keys_to_invalidate: Vec<String> = self
@@ -254,8 +382,9 @@ impl QueryClient {
 
         for key in keys_to_invalidate {
             // Cancel in-flight request if present
-            if let Some((_, handle)) = self.abort_handles.remove(&key) {
-                handle.abort();
+            if let Some((_, task)) = self.in_flight.remove(&key) {
+                task.cancel_token.cancel();
+                task.abort_handle.abort();
             }
             if let Some(mut entry_mut) = self.cache.get_mut(&key) {
                 entry_mut.is_stale = true;
@@ -264,56 +393,32 @@ impl QueryClient {
         }
     }
 
-    /// Cancel a specific query if it's in flight.
-    pub fn cancel_query(&self, key: &QueryKey) {
-        let cache_key = key.cache_key();
-        if let Some((_, handle)) = self.abort_handles.remove(cache_key) {
-            handle.abort();
-        }
-    }
+    // -----------------------------------------------------------------------
+    // Cache maintenance
+    // -----------------------------------------------------------------------
 
-    /// Check if a query is in flight (for deduplication)
-    pub fn is_in_flight(&self, key: &QueryKey) -> bool {
-        self.abort_handles.contains_key(key.cache_key())
-    }
-
-    /// Store an abort handle for a query key.
-    pub fn set_abort_handle(&self, key: &QueryKey, handle: AbortHandle) {
-        let cache_key = key.cache_key().to_string();
-        self.abort_handles.insert(cache_key, handle);
-    }
-
-    /// Remove the abort handle for a query key (e.g., when fetch completes).
-    pub fn clear_abort_handle(&self, key: &QueryKey) {
-        let cache_key = key.cache_key();
-        self.abort_handles.remove(cache_key);
-    }
-
-    /// Clear all cached data
+    /// Clear all cached data and abort all in-flight requests.
     pub fn clear(&self) {
-        // Abort all in-flight requests
-        for entry in self.abort_handles.iter() {
-            entry.value().abort();
+        for entry in self.in_flight.iter() {
+            entry.value().cancel_token.cancel();
+            entry.value().abort_handle.abort();
         }
-        self.abort_handles.clear();
+        self.in_flight.clear();
         self.cache.clear();
     }
 
-    /// Run garbage collection on stale entries (public, but also called automatically)
+    /// Run garbage collection on stale entries.
     pub fn gc(&self) {
         Self::gc_internal(&self.cache);
     }
 
     fn gc_internal(cache: &DashMap<String, CacheEntry>) {
-        cache.retain(|_, entry| {
-            let age = entry.last_accessed.elapsed();
-            age < entry.options.gc_time
-        });
+        cache.retain(|_, entry| entry.last_accessed.elapsed() < entry.options.gc_time);
     }
 
     /// Trigger refetch of all active stale queries (e.g., on window focus).
     pub fn refetch_all_stale(&self) {
-        let keys: Vec<String> = self.cache.iter().map(|entry| entry.key().clone()).collect();
+        let keys: Vec<String> = self.cache.iter().map(|e| e.key().clone()).collect();
         for key in keys {
             if let Some(entry) = self.cache.get(&key) {
                 let time_stale = !entry.options.stale_time.is_zero()
@@ -330,6 +435,31 @@ impl QueryClient {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Internal helper
+    // -----------------------------------------------------------------------
+
+    fn insert_cache(
+        &self,
+        cache_key: String,
+        data: Arc<dyn Any + Send + Sync>,
+        type_id: TypeId,
+        options: QueryOptions,
+    ) {
+        self.cache.insert(
+            cache_key.clone(),
+            CacheEntry {
+                data,
+                type_id,
+                fetched_at: Instant::now(),
+                last_accessed: Instant::now(),
+                options,
+                is_stale: false,
+            },
+        );
+        self.notify_subscribers(&cache_key, QueryStateVariant::Success);
+    }
 }
 
 impl Default for QueryClient {
@@ -342,9 +472,12 @@ impl Clone for QueryClient {
     fn clone(&self) -> Self {
         Self {
             cache: Arc::clone(&self.cache),
-            abort_handles: Arc::clone(&self.abort_handles),
+            in_flight: Arc::clone(&self.in_flight),
             subscribers: Arc::clone(&self.subscribers),
             focus_manager: self.focus_manager.clone(),
+            fetching_count: Arc::clone(&self.fetching_count),
+            mutating_count: Arc::clone(&self.mutating_count),
+            activity_tx: self.activity_tx.clone(),
         }
     }
 }

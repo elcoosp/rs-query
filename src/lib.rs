@@ -1,34 +1,33 @@
 // src/lib.rs
-//! rs-query - TanStack Query-inspired async state management for GPUI
 
-mod client;
-mod error;
-mod executor;
-mod focus_manager;
-mod hydration;
-mod infinite;
-mod infinite_executor;
-mod key;
-mod mutation;
-mod observer;
-mod options;
-mod query;
-mod sharing;
-mod state;
-
+pub mod cancellation;
+pub mod client;
 #[cfg(feature = "devtools")]
 pub mod devtools;
+pub mod error;
+pub mod executor;
+pub mod focus_manager;
+pub mod hooks;
+pub mod infinite;
+pub mod infinite_executor;
+pub mod key;
+pub mod mutation;
+pub mod observer;
+pub mod options;
+pub mod query; // ← new file (previously part of state.rs)
+pub mod sharing;
+pub mod state; // ← now contains only QueryState/MutationState definitions
 
+// Re-exports for convenience
 pub use client::QueryClient;
 pub use error::QueryError;
-pub use executor::{spawn_mutation, spawn_query};
-pub use focus_manager::FocusManager;
-pub use hydration::{DehydratedQuery, DehydratedState, HydrateOptions};
-pub use infinite::{InfiniteData, InfiniteQuery};
-pub use infinite_executor::spawn_infinite_query;
+pub use executor::{spawn_infinite_query, spawn_mutation, spawn_query};
+pub use hooks::{use_fetching_count, use_is_fetching, use_is_mutating, use_mutating_count};
+pub use infinite::InfiniteData;
+pub use infinite_executor::InfiniteQueryObserver;
 pub use key::QueryKey;
 pub use mutation::Mutation;
-pub use observer::{QueryObserver, QueryStateUpdate, QueryStateVariant};
-pub use options::{PlaceholderData, QueryOptions, RetryConfig};
-pub use query::Query;
-pub use state::{MutationState, QueryState};
+pub use observer::QueryObserver;
+pub use options::{QueryOptions, RetryConfig};
+pub use query::{PlaceholderData, Query};
+pub use state::{MutationState, QueryState, QueryStateUpdate, QueryStateVariant};

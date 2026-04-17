@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">rs-query Logo</title>
+  <desc id="logo-desc">Three interconnected circles with vibrant gradients, representing data states, with the text rs-query.</desc>
+
+  <defs>
+    <!-- Radial gradient for orange circle - more visible -->
+    <radialGradient id="gradStale" cx="30%" cy="30%" r="70%" fx="30%" fy="30%">
+      <stop offset="0%" stop-color="#FF7A3D" />
+      <stop offset="70%" stop-color="#F46623" />
+      <stop offset="100%" stop-color="#C23B0A" />
+    </radialGradient>
+
+    <!-- Linear gradient for blue dashed circle -->
+    <linearGradient id="gradFetching" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Linear gradient for dark circle -->
+    <linearGradient id="gradActive" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#475569" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+
+    <style>
+      .stale { fill: url(#gradStale); }
+      .fetching { fill: none; stroke: url(#gradFetching); stroke-width: 6; stroke-dasharray: 8 6; }
+      .active { fill: url(#gradActive); }
+      .text-base { font-family: system-ui, -apple-system, sans-serif; font-weight: 800; font-size: 36px; }
+      .text-rs { fill: #F46623; }
+      .text-query { fill: #1E293B; }
+    </style>
+  </defs>
+
+  <!-- Icon: Venn Diagram -->
+  <g transform="translate(10, 10)">
+    <circle class="stale" cx="40" cy="40" r="24" />
+    <circle class="fetching" cx="80" cy="40" r="24" />
+    <circle class="active" cx="60" cy="70" r="24" />
+  </g>
+
+  <!-- Wordmark -->
+  <text class="text-base" x="130" y="75">
+    <tspan class="text-rs">rs</tspan><tspan class="text-query">-query</tspan>
+  </text>
+</svg>
