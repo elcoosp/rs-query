@@ -1,6 +1,7 @@
 // src/lib.rs
 //! rs-query - TanStack Query-inspired async state management for GPUI
 
+mod cancellation;
 mod client;
 mod error;
 mod executor;
