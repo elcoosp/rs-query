@@ -18,7 +18,7 @@ use gpui_component::{
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-actions!(devtools, [ToggleDevtools]);
+actions!(devtools, [ToggleRsQueryDevtools]);
 
 /// Event types for timeline filtering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,8 +98,8 @@ impl EventEmitter<()> for DevtoolsState {}
 
 impl DevtoolsState {
     pub fn new(client: QueryClient, cx: &mut Context<Self>) -> Self {
-        cx.bind_keys([KeyBinding::new("cmd-shift-q", ToggleDevtools, None)]);
-        cx.bind_keys([KeyBinding::new("ctrl-shift-q", ToggleDevtools, None)]);
+        cx.bind_keys([KeyBinding::new("cmd-shift-q", ToggleRsQueryDevtools, None)]);
+        cx.bind_keys([KeyBinding::new("ctrl-shift-q", ToggleRsQueryDevtools, None)]);
 
         // Poll the cache periodically to generate timeline events
         // cx.spawn(|this: WeakEntity<Self>, mut cx| async move {
