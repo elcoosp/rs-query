@@ -6,6 +6,7 @@ mod client;
 mod error;
 mod executor;
 mod focus_manager;
+mod hooks;
 mod hydration;
 mod infinite;
 mod infinite_executor;
