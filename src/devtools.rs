@@ -5,7 +5,7 @@
 use crate::{QueryClient, QueryStateVariant};
 use gpui::{
     actions, div, prelude::*, px, App, Context, Entity, EventEmitter, FontWeight, KeyBinding,
-    Render, RenderOnce, SharedString, Styled, Window,
+    Render, RenderOnce, SharedString, Styled, WeakEntity, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -102,16 +102,16 @@ impl DevtoolsState {
         cx.bind_keys([KeyBinding::new("ctrl-shift-q", ToggleDevtools, None)]);
 
         // Poll the cache periodically to generate timeline events
-        cx.spawn(|this: WeakEntity<Self>, mut cx| async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(500));
-            loop {
-                interval.tick().await;
-                _ = this.update(&mut cx, |this: &mut Self, _cx| {
-                    this.update_timeline();
-                });
-            }
-        })
-        .detach();
+        // cx.spawn(|this: WeakEntity<Self>, mut cx| async move {
+        //     let mut interval = tokio::time::interval(Duration::from_millis(500));
+        //     loop {
+        //         interval.tick().await;
+        //         _ = this.update(cx, |this: &mut Self, _cx| {
+        //             this.update_timeline();
+        //         });
+        //     }
+        // })
+        // .detach();
 
         Self {
             expanded: true,
@@ -238,7 +238,6 @@ impl DevtoolsState {
 
     fn remove_query(&self, key: &str) {
         self.client.cache.remove(key);
-        // The abort handle is cleared automatically when the cache entry is removed.
     }
 
     fn render_queries_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -365,9 +364,8 @@ impl DevtoolsState {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         self.ensure_timeline_search(window, cx);
-        let theme = cx.theme();
 
-        // Filter select state
+        // Create filter state first, before any immutable borrow of cx.
         let items = vec![
             QueryEventType::All,
             QueryEventType::Loading,
@@ -385,7 +383,6 @@ impl DevtoolsState {
         let filter_state_clone = filter_state.clone();
         cx.subscribe(
             &filter_state,
-            // Correct callback signature: (this, emitter_entity, event, cx)
             move |this: &mut Self,
                   _emitter: Entity<gpui_component::select::SelectState<_>>,
                   _event: &gpui_component::select::SelectEvent<_>,
@@ -398,6 +395,8 @@ impl DevtoolsState {
         )
         .detach();
 
+        // Now we can safely borrow cx immutably.
+        let theme = cx.theme();
         let mut filtered = self.filtered_events(cx);
         filtered.reverse(); // newest first
         let item_count = filtered.len();
