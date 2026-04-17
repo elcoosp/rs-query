@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 /// Configuration for automatic retry behaviour.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (not counting the initial request).
     pub max_retries: u32,

@@ -111,6 +111,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::RetryConfig;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
@@ -130,16 +131,18 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_query_clone() {
+    #[tokio::test]
+    async fn test_query_clone() {
         let query: Query<String> =
             Query::new(QueryKey::new("test"), || async { Ok("data".to_string()) });
         let cloned = query.clone();
         assert_eq!(cloned.key.cache_key(), "test");
+        let result = (cloned.fetch_fn)().await.unwrap();
+        assert_eq!(result, "data");
     }
 
-    #[test]
-    fn test_query_builder() {
+    #[tokio::test]
+    async fn test_query_builder() {
         let query: Query<String> =
             Query::new(QueryKey::new("test"), || async { Ok("data".to_string()) })
                 .stale_time(std::time::Duration::from_secs(60))
@@ -153,10 +156,13 @@ mod tests {
         assert!(query.options.enabled);
         assert!(!query.options.refetch_on_window_focus);
         assert!(!query.options.structural_sharing);
+
+        let result = (query.fetch_fn)().await.unwrap();
+        assert_eq!(result, "data");
     }
 
-    #[test]
-    fn test_query_select() {
+    #[tokio::test]
+    async fn test_query_select() {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = Arc::clone(&counter);
 
@@ -173,10 +179,13 @@ mod tests {
         let result = select(&"hello".to_string());
         assert_eq!(result, "HELLO");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        let fetched = (query.fetch_fn)().await.unwrap();
+        assert_eq!(fetched, "data");
     }
 
-    #[test]
-    fn test_query_options_builder() {
+    #[tokio::test]
+    async fn test_query_options_builder() {
         let opts = QueryOptions {
             stale_time: std::time::Duration::from_secs(120),
             ..Default::default()
@@ -188,5 +197,35 @@ mod tests {
             query.options.stale_time,
             std::time::Duration::from_secs(120)
         );
+
+        let result = (query.fetch_fn)().await.unwrap();
+        assert_eq!(result, "data");
+    }
+
+    #[tokio::test]
+    async fn test_query_retry() {
+        let query: Query<String> =
+            Query::new(QueryKey::new("test"), || async { Ok("data".to_string()) })
+                .retry(RetryConfig::default());
+
+        assert_eq!(query.options.retry, RetryConfig::default());
+
+        let result = (query.fetch_fn)().await.unwrap();
+        assert_eq!(result, "data");
+    }
+
+    #[tokio::test]
+    async fn test_query_refetch_interval() {
+        let query: Query<String> =
+            Query::new(QueryKey::new("test"), || async { Ok("data".to_string()) })
+                .refetch_interval(std::time::Duration::from_secs(30));
+
+        assert_eq!(
+            query.options.refetch_interval,
+            std::time::Duration::from_secs(30)
+        );
+
+        let result = (query.fetch_fn)().await.unwrap();
+        assert_eq!(result, "data");
     }
 }

@@ -13,7 +13,7 @@
 - **Reactive Observers** – `QueryObserver` subscribes to cache changes for automatic UI updates.
 - **Optimistic Updates** – Mutations support `on_mutate` with automatic rollback on failure.
 - **Infinite Queries** – Paginated data with `fetch_next_page`, `has_next_page`, and `max_pages`.
-- **Query Options** – `initialData`, `placeholderData`, and `select` transformations.
+- **Query Options** – `staleTime`, `gcTime`, `retry`, `refetchInterval`, `refetchOnWindowFocus`, `structuralSharing` (placeholder), and `select` transformations.
 - **Background Refetch** – Configurable `refetch_interval` and window focus refetching.
 - **Hydration & Persistence** – `dehydrate` and `hydrate` APIs for SSR and offline storage.
 - **Devtools** – Optional GPUI component for inspecting and debugging the query cache.
@@ -176,7 +176,7 @@ Central cache and query manager.
 - `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale
 - `refetch_all_stale()` – triggers refetch of all stale queries (e.g., on window focus)
 - `dehydrate() -> DehydratedState` – serializes cache for persistence
-- `hydrate(state: DehydratedState)` – restores cache from dehydrated state
+- `hydrate(state: DehydratedState, options: HydrateOptions)` – restores cache from dehydrated state
 - `clear()` – empties the entire cache
 - `gc()` – removes entries older than their `gc_time`
 
@@ -189,11 +189,11 @@ Definition of a query.
 - `.gc_time(duration)` – inactive cache lifetime
 - `.retry(config)` – custom retry behaviour
 - `.enabled(bool)` – conditionally disable the query
-- `.initial_data(data)` / `.initial_data_fn(f)` – populate cache if empty
-- `.placeholder_data(data)` / `.placeholder_data_fn(f)` – show while loading
 - `.select(f)` – transform data before returning
 - `.refetch_interval(duration)` – poll at interval
 - `.refetch_on_window_focus(bool)` – refetch when window regains focus
+- `.structural_sharing(bool)` – enable/disable structural sharing (placeholder implementation)
+- `.options(options)` – set all options at once
 
 ### `InfiniteQuery<T, P>`
 
@@ -284,13 +284,14 @@ rs‑query aims to provide the core experience of TanStack Query while respectin
 | Query observers (reactive state)          | ✅ Implemented  |
 | Optimistic updates with rollback          | ✅ Implemented  |
 | Infinite queries / pagination             | ✅ Implemented  |
-| `initialData` / `placeholderData`         | ✅ Implemented  |
 | `select` transformation                   | ✅ Implemented  |
 | `refetchInterval` / window focus refetch  | ✅ Implemented  |
 | Hydration / persistence                   | ✅ Implemented  |
 | Devtools                                  | ✅ Implemented  |
+| `placeholderData`                         | ⚠️ Partial (type exists, not integrated) |
+| `initialData`                             | ❌ Not yet     |
 | Structural sharing                        | ⚠️ Placeholder  |
-| Query cancellation                        | ✅ Implemented  |
+| Query cancellation                        | ⚠️ Partial (abort handles exist) |
 | Suspense integration                      | N/A (GPUI)     |
 | `useIsFetching` / `useIsMutating` helpers | ❌ Not yet     |
 | Full query filters API                    | ❌ Not yet     |

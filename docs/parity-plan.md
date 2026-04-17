@@ -1,228 +1,693 @@
-I have generated a comprehensive implementation plan for the rewritten `rs-query` library. The plan is structured into manageable chunks, each covering a specific feature area and containing actionable tasks.
+I'll create a revised, comprehensive implementation plan that addresses the review feedback and aligns with the current codebase structure.
 
 ---
 
-## 📋 rs‑query – Complete Implementation Plan
+# Complete rs-query TanStack Query Port Implementation Plan
 
-### Current State Assessment
+> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-The rewritten `rs-query` library provides a solid foundation:
+**Goal:** Achieve feature parity with TanStack Query core functionality, completing remaining items: `placeholderData`/`initialData` integration, full query cancellation with abort signals, structural sharing with opt‑in `PartialEq` requirement, and `useIsFetching`/`useIsMutating` reactive helpers.
 
-- **QueryClient** uses `DashMap` for concurrent cache access and a background thread for garbage collection.
-- **QueryKey** pre‑computes its cache key string for efficient lookups and hashing.
-- **Executor** uses GPUI’s `background_executor()` and `futures_timer::Delay` for retry backoff, avoiding a separate Tokio runtime.
-- **Core features** implemented: cache, stale‑while‑revalidate, automatic retries, request deduplication, hierarchical invalidation.
+**Architecture:** Extend `Query<T>` with type‑specific options; use a `QueryObserver::from_query` factory to apply initial/placeholder data uniformly; integrate `CancellationToken` for cancellation; implement structural sharing behind a `PartialEq`‑required builder method; add activity counters with a broadcast channel for reactive hooks.
 
-The following features from TanStack Query are **not yet implemented**:
-
-- Query / mutation observers
-- Optimistic updates
-- Infinite queries / pagination
-- `placeholderData` / `initialData` / `select` transformation
-- `refetchInterval` / window focus refetch
-- Hydration / persistence
-- Devtools
-- Structural sharing
-- Full query cancellation (partial abort support exists)
+**Tech Stack:** Rust, GPUI framework, Tokio (with `sync`, `time`, `rt`), DashMap, existing `rs-query` codebase.
 
 ---
 
-## 🧱 Implementation Chunks
+## Chunk 1: PlaceholderData and InitialData Integration
 
-### Chunk 1: Observers & Reactive Query State
+### Task 1: Extend Query<T> with initial/placeholder data and builder methods
 
-**Objective:** Enable components to subscribe to query state changes and react to background refetches or cache updates.
+**Files:**
+- Modify: `src/query.rs`
+- Modify: `src/options.rs` (no changes needed here; options remain type‑agnostic)
+- Modify: `src/observer.rs`
+- Modify: `src/executor.rs`
+- Test: Add tests in modified files
 
-**Tasks:**
+- [ ] **Step 1: Add fields to `Query<T>` for initial and placeholder data**
 
-- [ ] **1.1** Define a `QueryObserver<T>` struct that holds a `QueryKey`, a reference to the `QueryClient`, and a cached `QueryState<T>`.
-  - The observer will be cloneable and can be stored in a GPUI `Model` to drive reactive UI updates.
-- [ ] **1.2** Implement a subscription system within `QueryClient`.
-  - Add a `broadcast::Sender<QueryStateUpdate>` (or a callback registry) to `QueryClient` that notifies subscribers when a query’s state changes.
-  - Changes include: cache updates (`set_query_data`), invalidation, fetch start/success/error, garbage collection.
-  - Since `DashMap` does not natively support watching, we will add a `tokio::sync::broadcast` channel per `QueryKey` lazily created on first subscription.
-- [ ] **1.3** Update `QueryObserver` to subscribe to the channel for its key on creation and unsubscribe on drop.
-- [ ] **1.4** Provide a GPUI‑friendly helper:
-  - `fn use_query<V: 'static, T: Clone + Send + Sync + 'static>(cx: &mut Context<V>, query: &Query<T>) -> Model<QueryObserver<T>>`
-  - This creates an observer and wraps it in a `Model` that updates automatically when the observer’s state changes.
-- [ ] **1.5** Refactor `spawn_query` to integrate with observers:
-  - Instead of a one‑time callback, the function now returns (or provides) an observer that the caller can hold.
-  - (Optional) Deprecate the callback‑based API in favor of the observer pattern.
-- [ ] **1.6** Write unit tests verifying subscription notifications and proper cleanup.
+In `src/query.rs`, update the `Query` struct definition:
 
-**Expected Outcome:** Components can hold a reactive query state that updates on cache changes, enabling UI to reflect background refetches and manual cache updates.
+```rust
+pub struct Query<T: Clone + Send + Sync + 'static> {
+    pub key: QueryKey,
+    pub fetch_fn: Arc<...>,
+    pub select: Option<Arc<dyn Fn(&T) -> T + Send + Sync>>,
+    pub options: QueryOptions,
+    // New fields
+    pub initial_data: Option<T>,
+    pub initial_data_updated_at: Option<std::time::Instant>,
+    pub placeholder_data: Option<PlaceholderData<T>>,
+}
+```
+
+Update the `Clone` impl accordingly.
+
+- [ ] **Step 2: Add builder methods to `Query<T>`**
+
+```rust
+pub fn initial_data(mut self, data: T) -> Self {
+    self.initial_data = Some(data);
+    self.initial_data_updated_at = Some(std::time::Instant::now());
+    self
+}
+
+pub fn placeholder_data(mut self, data: PlaceholderData<T>) -> Self {
+    self.placeholder_data = Some(data);
+    self
+}
+```
+
+- [ ] **Step 3: Add a `QueryObserver::from_query` factory method**
+
+In `src/observer.rs`, add:
+
+```rust
+impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
+    pub fn from_query(client: &QueryClient, query: &Query<T>) -> Self {
+        let key = query.key.clone();
+        let cache_key = key.cache_key().to_string();
+        let receiver = client.subscribe(&cache_key);
+
+        let mut state = if let Some(data) = client.get_query_data::<T>(&key) {
+            if client.is_stale(&key) {
+                QueryState::Stale(data)
+            } else {
+                QueryState::Success(data)
+            }
+        } else if let Some(initial) = &query.initial_data {
+            // Insert initial data into cache
+            client.set_query_data(&key, initial.clone(), query.options.clone());
+            QueryState::Success(initial.clone())
+        } else {
+            QueryState::Idle
+        };
+
+        // If placeholder is set and we're in Idle, we could show placeholder,
+        // but placeholder is typically applied during loading state.
+        // We'll handle that in `set_loading`.
+
+        Self {
+            key,
+            state,
+            client: client.clone(),
+            receiver,
+            options: query.options.clone(),
+            fetch_started_at: None,
+            _marker: PhantomData,
+            // Store query reference? Not needed for now.
+        }
+    }
+
+    // Existing `new` remains for backward compat, but may not apply initial data.
+}
+```
+
+- [ ] **Step 4: Modify `QueryObserver::set_loading` to apply placeholder data**
+
+Add a field to `QueryObserver` to store the `Query` reference or the `PlaceholderData` directly. Simpler: pass `placeholder_data` to `set_loading` as an optional parameter, or store it in the observer during construction.
+
+Update `QueryObserver` struct:
+
+```rust
+pub struct QueryObserver<T> {
+    // ... existing fields
+    placeholder_data: Option<PlaceholderData<T>>,
+}
+```
+
+In `from_query`, set `placeholder_data: query.placeholder_data.clone()`.
+
+In `set_loading(&mut self)`:
+
+```rust
+pub fn set_loading(&mut self) {
+    self.fetch_started_at = Some(Instant::now());
+    if let Some(data) = self.state.data_cloned() {
+        self.state = QueryState::Refetching(data);
+    } else if let Some(placeholder) = &self.placeholder_data {
+        let resolved = placeholder.resolve(None);
+        self.state = QueryState::LoadingWithPlaceholder(resolved);
+    } else {
+        self.state = QueryState::Loading;
+    }
+}
+```
+
+We need a new `QueryState` variant `LoadingWithPlaceholder(T)` or add a flag to `Loading`. To minimize changes, add a variant:
+
+```rust
+pub enum QueryState<T> {
+    // ...
+    LoadingWithPlaceholder(T),
+}
+```
+
+Update all methods (`data()`, `is_loading()`, etc.) to handle this variant correctly (return the placeholder data, consider it loading).
+
+- [ ] **Step 5: Update `spawn_query` to use `from_query`**
+
+In `src/executor.rs`, replace the inline observer creation with `QueryObserver::from_query(&client, &query)`. This ensures initial data is applied automatically.
+
+- [ ] **Step 6: Write tests for initial data**
+
+In `src/query.rs` test module:
+
+```rust
+#[test]
+fn test_query_with_initial_data() {
+    let client = QueryClient::new();
+    let key = QueryKey::new("test");
+    let query: Query<String> = Query::new(key.clone(), || async { Ok("fetched".to_string()) })
+        .initial_data("initial".to_string());
+
+    let observer = QueryObserver::from_query(&client, &query);
+    assert_eq!(observer.state().data(), Some(&"initial".to_string()));
+}
+```
+
+- [ ] **Step 7: Write tests for placeholder data**
+
+```rust
+#[tokio::test]
+async fn test_placeholder_data_shown_during_loading() {
+    let client = QueryClient::new();
+    let key = QueryKey::new("test");
+    let query: Query<String> = Query::new(key.clone(), || async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        Ok("fetched".to_string())
+    })
+    .placeholder_data(PlaceholderData::value("placeholder".to_string()));
+
+    let mut observer = QueryObserver::from_query(&client, &query);
+    observer.set_loading();
+    assert!(matches!(observer.state(), QueryState::LoadingWithPlaceholder(ref s) if s == "placeholder"));
+}
+```
+
+- [ ] **Step 8: Run all tests and verify they pass**
+
+```bash
+cargo test --lib
+```
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/query.rs src/observer.rs src/executor.rs src/state.rs
+git commit -m "feat: add initialData and placeholderData support with QueryObserver::from_query"
+```
 
 ---
 
-### Chunk 2: Optimistic Updates & Mutation Enhancements
+## Chunk 2: Full Query Cancellation with CancellationToken
 
-**Objective:** Support optimistic cache updates with automatic rollback on mutation failure.
+### Task 1: Integrate CancellationToken into query execution
 
-**Tasks:**
+**Files:**
+- Modify: `src/client.rs`
+- Modify: `src/executor.rs`
+- Create: `src/cancellation.rs`
+- Test: Add tests in `src/executor.rs`
 
-- [ ] **2.1** Extend the `Mutation` struct with an optional `on_mutate` callback.
-  - Signature: `Fn(&mut QueryClient, &P) -> Result<RollbackContext, QueryError>`
-  - The callback receives mutable access to the `QueryClient` to perform optimistic updates (e.g., via `set_query_data`).
-  - Returns a `RollbackContext` that contains enough information to revert the changes (e.g., a closure or snapshot).
-- [ ] **2.2** Modify `spawn_mutation` to:
-  - Call `on_mutate` (if provided) **before** executing the mutation function.
-  - If `on_mutate` succeeds, store the rollback context and proceed with the mutation.
-  - On mutation error, invoke the rollback logic using the stored context.
-- [ ] **2.3** Ensure that cache invalidations triggered after a successful mutation do not interfere with the optimistic update.
-- [ ] **2.4** Expose mutation state (e.g., `is_pending`, `variables`) via a `MutationObserver` similar to queries, allowing UI to render temporary items.
-- [ ] **2.5** Write tests for successful and failed optimistic updates, verifying that the cache is correctly rolled back on error.
+- [ ] **Step 1: Add `CancellationToken` storage per query key in `QueryClient`**
 
-**Expected Outcome:** Mutations can modify the cache optimistically, improving perceived performance, with safe rollback on errors.
+In `src/client.rs`, add:
 
----
+```rust
+use tokio_util::sync::CancellationToken;
 
-### Chunk 3: Infinite Queries
+pub(crate) struct InFlightTask {
+    pub abort_handle: AbortHandle,
+    pub cancel_token: CancellationToken,
+}
 
-**Objective:** Implement `useInfiniteQuery` semantics, including paginated data and load‑more functionality.
+pub struct QueryClient {
+    // ...
+    in_flight: Arc<DashMap<String, InFlightTask>>,
+}
+```
 
-**Tasks:**
+Update methods:
+- `is_in_flight` checks `in_flight.contains_key`.
+- `set_abort_handle` replaced by `set_in_flight` that stores both handle and token.
+- `clear_abort_handle` removes entry.
+- `cancel_query` calls `token.cancel()` and `handle.abort()`.
 
-- [ ] **3.1** Define `InfiniteQuery<T, P>` struct:
-  - Contains `QueryKey`, a `fetch_fn` that receives `page_param: P`, `initial_page_param: P`, and functions `get_next_page_param` and `get_previous_page_param`.
-- [ ] **3.2** Extend `QueryClient` cache to store `InfiniteData<T>`:
-  - `InfiniteData` holds `pages: Vec<T>` and `page_params: Vec<P>`.
-- [ ] **3.3** Implement `spawn_infinite_query` executor:
-  - Similar to `spawn_query`, but manages page fetching.
-  - Provides `fetch_next_page` and `fetch_previous_page` methods on the observer.
-  - Maintains `has_next_page` / `has_previous_page` flags derived from the page param functions.
-- [ ] **3.4** Add `max_pages` option to limit stored pages (evict oldest pages when limit exceeded).
-- [ ] **3.5** Support `select` transformation on infinite query data (apply to the entire `pages` vector).
-- [ ] **3.6** Write tests for basic pagination, bi‑directional fetching, and `max_pages`.
+- [ ] **Step 2: Create cancellation helper in `src/cancellation.rs`**
 
-**Expected Outcome:** Applications can implement infinite scroll / pagination with automatic caching of pages.
+```rust
+use tokio_util::sync::CancellationToken;
+use crate::QueryError;
 
----
+pub async fn cancellable_fetch<T, F, Fut>(
+    token: CancellationToken,
+    fetch_fn: F,
+) -> Result<T, QueryError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, QueryError>>,
+{
+    tokio::select! {
+        _ = token.cancelled() => Err(QueryError::Cancelled),
+        result = fetch_fn() => result,
+    }
+}
+```
 
-### Chunk 4: Query Options (`placeholderData`, `initialData`, `select`)
+- [ ] **Step 3: Modify `spawn_query` to create task and store token**
 
-**Objective:** Enhance `Query` configuration with options that mirror TanStack Query.
+In `src/executor.rs`, inside `spawn_query`:
 
-**Tasks:**
+```rust
+let token = CancellationToken::new();
+let token_clone = token.clone();
+let fetch_task = tokio::spawn(async move {
+    execute_query(&client, &query, token_clone).await
+});
+client.set_in_flight(&query.key, InFlightTask {
+    abort_handle: fetch_task.abort_handle(),
+    cancel_token: token,
+});
+```
 
-- [ ] **4.1** Add `initial_data: Option<T>` and `initial_data_updated_at: Option<Instant>` to `QueryOptions`.
-  - On query creation, if cache is empty and `initial_data` is present, insert it as the initial cached value.
-  - The `initial_data_updated_at` timestamp is used to calculate staleness correctly.
-- [ ] **4.2** Add `placeholder_data: Option<PlaceholderData<T>>` (an enum that can be a value or a function `(prev: Option<T>) -> T`).
-  - When a query is in `pending` state, return placeholder data to the observer while fetching.
-  - Mark `is_placeholder_data` flag in `QueryState`.
-- [ ] **4.3** Add `select: Option<Box<dyn Fn(&T) -> R + Send + Sync>>` to `QueryOptions`.
-  - Apply transformation to the data before returning it to observers.
-  - Ensure the transformed data is memoized and only recomputed when source data changes (e.g., using a cached hash of the input).
-- [ ] **4.4** Update `get_query_data` and observer to respect these options.
-- [ ] **4.5** Write tests for each option.
+- [ ] **Step 4: Update `execute_query` signature to accept `CancellationToken`**
 
-**Expected Outcome:** Queries can be initialized with existing data, show placeholder content while loading, and transform data for UI.
+```rust
+pub async fn execute_query<T: Clone + Send + Sync + 'static>(
+    client: &QueryClient,
+    query: &Query<T>,
+    token: CancellationToken,
+) -> QueryState<T> {
+    // ...
+    loop {
+        if token.is_cancelled() {
+            return QueryState::Error {
+                error: QueryError::Cancelled,
+                stale_data: client.get_query_data(&query.key),
+            };
+        }
+        // existing retry logic, but wrap fetch_fn call with cancellable_fetch
+        match cancellable_fetch(token.clone(), || (query.fetch_fn)()).await {
+            Ok(data) => { ... }
+            Err(QueryError::Cancelled) => { ... }
+            Err(e) => { ... }
+        }
+    }
+}
+```
 
----
+- [ ] **Step 5: Ensure `invalidate_queries` cancels in‑flight tasks**
 
-### Chunk 5: Refetch Interval & Focus Refetch (Optional)
+Already calls `abort_handles.remove(...).abort()`. Update to use `in_flight` and call both `cancel_token.cancel()` and `abort_handle.abort()`.
 
-**Objective:** Implement periodic background refetching and (optionally) refetch on window/app focus.
+- [ ] **Step 6: Write tests for cancellation**
 
-**Tasks:**
+In `src/executor.rs` test module:
 
-- [ ] **5.1** Add `refetch_interval: Option<Duration>` to `QueryOptions`.
-  - When a query has active observers, spawn a timer that calls `refetch` at the given interval.
-  - Use `tokio::time::interval` for the timer; ensure it is cancelled when the last observer unsubscribes.
-- [ ] **5.2** Add `refetch_interval_in_background: bool` to control whether the timer continues when the app is not focused (if focus detection is available).
-- [ ] **5.3** (Optional) Implement a platform‑agnostic `FocusManager` trait.
-  - For GPUI, expose a way for the application to notify the `QueryClient` of focus changes (e.g., via `cx.on_app_focus`).
-  - Add `refetch_on_window_focus: bool` option that triggers a refetch of all active stale queries when focus is regained.
-- [ ] **5.4** Write tests for interval refetch (using fake time via `tokio::time::pause`).
+```rust
+#[tokio::test]
+async fn test_query_cancellation() {
+    let client = QueryClient::new();
+    let key = QueryKey::new("test");
+    let query: Query<String> = Query::new(key.clone(), || async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok("done".to_string())
+    });
 
-**Expected Outcome:** Data stays fresh automatically with periodic polling and optional focus‑based refresh.
+    let handle = tokio::spawn({
+        let client = client.clone();
+        let query = query.clone();
+        async move {
+            let token = CancellationToken::new();
+            execute_query(&client, &query, token).await
+        }
+    });
 
----
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.cancel_query(&key);
+    let state = handle.await.unwrap();
+    assert!(matches!(state, QueryState::Error { error: QueryError::Cancelled, .. }));
+}
+```
 
-### Chunk 6: Structural Sharing
+- [ ] **Step 7: Run all tests**
 
-**Objective:** Reduce unnecessary clones and improve cache efficiency by sharing unchanged parts of data structures.
+```bash
+cargo test --lib
+```
 
-**Tasks:**
+- [ ] **Step 8: Commit**
 
-- [ ] **6.1** Implement a `replace_equal_deep` function similar to TanStack Query’s.
-  - Recursively compare old and new data (using `PartialEq` where possible) and keep references to unchanged portions.
-- [ ] **6.2** Integrate structural sharing into `set_query_data`.
-  - When updating cache with new data, use `replace_equal_deep(old, new)` to produce a value that shares as much as possible.
-- [ ] **6.3** Add `structural_sharing: bool` option to `QueryOptions` (default `true`).
-- [ ] **6.4** Write tests to verify that unchanged nested objects retain the same pointer/reference (e.g., via `Arc` reference equality).
-
-**Expected Outcome:** Cache updates are more memory‑efficient and components relying on `PartialEq` re‑render less often.
-
----
-
-### Chunk 7: Query Cancellation Improvements
-
-**Objective:** Fully support cancelling in‑flight queries when they are invalidated or no longer needed.
-
-**Tasks:**
-
-- [ ] **7.1** Replace the current `in_flight` tracking with `AbortHandle` storage.
-  - When spawning a query task, obtain an `AbortHandle` from the task and store it keyed by `QueryKey`.
-- [ ] **7.2** On `invalidate_queries` or when the last observer unsubscribes, call `abort()` on the handle to cancel the in‑flight fetch.
-- [ ] **7.3** Ensure the `query_fn` receives an `AbortSignal` equivalent (e.g., a `tokio::sync::watch::Receiver` that indicates cancellation).
-  - Provide a helper `async fn with_cancellation<F, T>(cancel: watch::Receiver<bool>, fut: F) -> Result<T, Cancelled>`.
-- [ ] **7.4** Update retry logic to respect cancellation and not retry aborted requests.
-- [ ] **7.5** Write tests for cancellation during fetch and retry.
-
-**Expected Outcome:** Queries can be cleanly aborted, freeing resources and preventing stale data from overwriting cache.
-
----
-
-### Chunk 8: Hydration & Persistence (Dehydrate/Hydrate)
-
-**Objective:** Allow the query cache to be serialized and restored, enabling SSR‑like patterns and offline persistence.
-
-**Tasks:**
-
-- [ ] **8.1** Define `DehydratedState` and `HydrateOptions` structs.
-  - `DehydratedState` contains serializable representations of cached queries and mutations (e.g., key, data, timestamps).
-- [ ] **8.2** Implement `QueryClient::dehydrate(&self) -> DehydratedState`.
-  - Only include successful queries by default (configurable via `should_dehydrate_query` closure).
-- [ ] **8.3** Implement `QueryClient::hydrate(&mut self, state: DehydratedState)`.
-  - Merge dehydrated state into existing cache, respecting timestamps (only overwrite if dehydrated data is newer).
-- [ ] **8.4** Provide a `HydrationBoundary` equivalent for GPUI (e.g., a component that hydrates a client before rendering children).
-- [ ] **8.5** Add support for custom serialization via a `Serializer` trait (allowing `serde` integration) and error redaction.
-- [ ] **8.6** Write tests for hydration and merging logic.
-
-**Expected Outcome:** Cache can be persisted to disk or transferred from server to client, enabling fast startup and offline support.
-
----
-
-### Chunk 9: Devtools (Optional)
-
-**Objective:** Provide a developer tool to inspect and manipulate the query cache during development.
-
-**Tasks:**
-
-- [ ] **9.1** Create a separate crate `rs-query-devtools` that integrates with GPUI.
-- [ ] **9.2** Implement a `QueryDevtools` component that displays:
-  - List of active queries with their keys, status, data, and timestamps.
-  - Buttons to refetch, invalidate, or remove queries.
-  - A toggle to simulate offline mode (by pausing network requests via a custom `NetworkManager`).
-- [ ] **9.3** Use the observer system (Chunk 1) to subscribe to all cache changes.
-- [ ] **9.4** Provide a way to attach the devtools to a `QueryClient` instance (e.g., `cx.spawn(|mut cx| { ... })`).
-- [ ] **9.5** (Optional) Add a browser‑extension style floating button to toggle the panel.
-
-**Expected Outcome:** Developers can debug cache behavior visually, accelerating development.
+```bash
+git add src/client.rs src/executor.rs src/cancellation.rs Cargo.toml  # add tokio-util if not present
+git commit -m "feat: implement full query cancellation with CancellationToken"
+```
 
 ---
 
-## 🔄 Implementation Order & Dependencies
+## Chunk 3: Structural Sharing with Opt‑in PartialEq
 
-1. **Chunk 1 (Observers)** – foundational for reactive UI and later features.
-2. **Chunk 2 (Optimistic Updates)** – can be done in parallel with Chunk 3.
-3. **Chunk 3 (Infinite Queries)** – requires observer system for state updates.
-4. **Chunk 4 (Query Options)** – enhances existing query functionality.
-5. **Chunk 5 (Refetch Interval)** – independent, can be done anytime.
-6. **Chunk 6 (Structural Sharing)** – optimizes cache performance.
-7. **Chunk 7 (Cancellation)** – improves resource management.
-8. **Chunk 8 (Hydration)** – useful for SSR/persistence.
-9. **Chunk 9 (Devtools)** – final polish, depends on observers.
+### Task 1: Implement `replace_equal_deep` using a custom trait with fallback
 
-Each chunk should be implemented in a separate pull request, and the plan chunk should be reviewed before coding begins. This ensures focused, testable increments and minimizes integration issues.
+**Files:**
+- Modify: `src/sharing.rs`
+- Modify: `src/client.rs`
+- Modify: `src/query.rs` (to enforce PartialEq bound when structural sharing is enabled)
+- Test: Add tests in `src/sharing.rs`
+
+- [ ] **Step 1: Define `PartialEqAny` trait in `src/sharing.rs`**
+
+```rust
+use std::any::Any;
+
+pub trait PartialEqAny: Any {
+    fn as_any(&self) -> &dyn Any;
+    fn eq_any(&self, other: &dyn Any) -> bool;
+}
+
+impl<T: PartialEq + 'static> PartialEqAny for T {
+    fn as_any(&self) -> &dyn Any { self }
+    fn eq_any(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<T>().map_or(false, |o| self == o)
+    }
+}
+```
+
+- [ ] **Step 2: Change `CacheEntry` data type to `Arc<dyn PartialEqAny + Send + Sync>`**
+
+In `src/client.rs`:
+
+```rust
+pub(crate) struct CacheEntry {
+    pub(crate) data: Arc<dyn PartialEqAny + Send + Sync>,
+    // ...
+}
+```
+
+Update all methods that manipulate `data` to use this new type. For `set_query_data`, wrap `T` in a struct that implements `PartialEqAny`. Since `T` may not implement `PartialEq`, we need a wrapper that can store either a comparable or non‑comparable value.
+
+Alternative: Keep `Arc<dyn Any + Send + Sync>` and in `replace_equal_deep_any`, attempt downcast to `dyn PartialEqAny` (by checking if the type implements the trait). That's safer and doesn't force all types to be comparable.
+
+Define a helper trait `MaybePartialEqAny` with a blanket impl for all `T` that checks `TypeId` and attempts to downcast.
+
+Simpler: In `set_query_data`, if `structural_sharing` is true, we **require** that `T` implements `PartialEq`. We'll enforce this at the `Query` builder level.
+
+- [ ] **Step 3: Enforce `PartialEq` bound on `.structural_sharing(true)` in `Query<T>`**
+
+In `src/query.rs`:
+
+```rust
+pub fn structural_sharing(mut self, enabled: bool) -> Self
+where
+    T: PartialEq,
+{
+    self.options.structural_sharing = enabled;
+    self
+}
+```
+
+This ensures that only queries whose data type implements `PartialEq` can enable structural sharing. This is a compile‑time guarantee, so we can safely downcast in `set_query_data`.
+
+- [ ] **Step 4: Implement `replace_equal_deep_any` with type‑safe comparison**
+
+In `src/sharing.rs`:
+
+```rust
+pub(crate) fn replace_equal_deep_any<T: PartialEq + 'static>(
+    old: Arc<T>,
+    new: Arc<T>,
+) -> Arc<T> {
+    if *old == *new {
+        old
+    } else {
+        new
+    }
+}
+```
+
+In `client.rs`, inside `set_query_data`:
+
+```rust
+if options.structural_sharing {
+    if let Some(old_entry) = self.cache.get(&cache_key) {
+        if old_entry.type_id == TypeId::of::<T>() {
+            // Safe because T: PartialEq is guaranteed by structural_sharing = true
+            if let (Some(old), Some(new)) = (
+                old_entry.data.downcast_ref::<T>(),
+                final_data.downcast_ref::<T>(),
+            ) {
+                let old_arc: Arc<T> = /* extract from old_entry */;
+                let new_arc: Arc<T> = /* from final_data */;
+                final_data = replace_equal_deep_any(old_arc, new_arc);
+            }
+        }
+    }
+}
+```
+
+This approach avoids global trait changes and uses the compiler‑enforced `PartialEq` bound.
+
+- [ ] **Step 5: Write tests for structural sharing**
+
+In `src/sharing.rs`:
+
+```rust
+#[test]
+fn test_structural_sharing_keeps_same_arc_when_equal() {
+    let old = Arc::new(vec![1, 2, 3]);
+    let new = Arc::new(vec![1, 2, 3]);
+    let result = replace_equal_deep_any(old.clone(), new);
+    assert!(Arc::ptr_eq(&old, &result));
+}
+
+#[test]
+fn test_structural_sharing_replaces_when_not_equal() {
+    let old = Arc::new(vec![1, 2, 3]);
+    let new = Arc::new(vec![4, 5, 6]);
+    let result = replace_equal_deep_any(old.clone(), new.clone());
+    assert!(!Arc::ptr_eq(&old, &result));
+    assert_eq!(*result, *new);
+}
+```
+
+Also add integration tests in `src/client.rs` that verify cache updates with structural sharing enabled and disabled.
+
+- [ ] **Step 6: Run tests**
+
+```bash
+cargo test --lib
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/sharing.rs src/client.rs src/query.rs
+git commit -m "feat: implement structural sharing with opt-in PartialEq requirement"
+```
+
+---
+
+## Chunk 4: Helper Hooks – useIsFetching and useIsMutating
+
+### Task 1: Add activity counters and broadcast channel to QueryClient
+
+**Files:**
+- Modify: `src/client.rs`
+- Create: `src/hooks.rs`
+- Modify: `src/lib.rs`
+- Test: Add tests in `src/hooks.rs`
+
+- [ ] **Step 1: Add atomic counters and broadcast sender to `QueryClient`**
+
+In `src/client.rs`:
+
+```rust
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::broadcast;
+
+#[derive(Clone, Debug)]
+pub enum ActivityEvent {
+    FetchingCountChanged(usize),
+    MutatingCountChanged(usize),
+}
+
+pub struct QueryClient {
+    // ... existing fields
+    fetching_count: Arc<AtomicUsize>,
+    mutating_count: Arc<AtomicUsize>,
+    activity_tx: broadcast::Sender<ActivityEvent>,
+}
+```
+
+Initialize with a channel capacity (e.g., 16). Add methods:
+
+```rust
+pub fn is_fetching(&self) -> bool {
+    self.fetching_count.load(Ordering::Relaxed) > 0
+}
+
+pub fn fetching_count(&self) -> usize {
+    self.fetching_count.load(Ordering::Relaxed)
+}
+
+pub fn subscribe_activity(&self) -> broadcast::Receiver<ActivityEvent> {
+    self.activity_tx.subscribe()
+}
+
+fn inc_fetching(&self) {
+    let new = self.fetching_count.fetch_add(1, Ordering::Relaxed) + 1;
+    let _ = self.activity_tx.send(ActivityEvent::FetchingCountChanged(new));
+}
+
+fn dec_fetching(&self) {
+    let new = self.fetching_count.fetch_sub(1, Ordering::Relaxed) - 1;
+    let _ = self.activity_tx.send(ActivityEvent::FetchingCountChanged(new));
+}
+// Similar for mutations.
+```
+
+- [ ] **Step 2: Integrate counter updates in `spawn_query` and `spawn_mutation`**
+
+In `src/executor.rs`:
+
+For `spawn_query`, increment before spawning the Tokio task, and decrement in a `finally` block (e.g., using a guard struct that impls `Drop`).
+
+Create a guard type:
+
+```rust
+struct FetchingGuard {
+    client: QueryClient,
+}
+impl Drop for FetchingGuard {
+    fn drop(&mut self) {
+        self.client.dec_fetching();
+    }
+}
+```
+
+In `spawn_query`:
+
+```rust
+client.inc_fetching();
+let guard = FetchingGuard { client: client.clone() };
+// spawn task, move guard into the async block so it lives until completion.
+```
+
+Similarly for mutations.
+
+- [ ] **Step 3: Implement GPUI hook `use_is_fetching`**
+
+In `src/hooks.rs`:
+
+```rust
+use gpui::{Context, Model, Subscription};
+use crate::{QueryClient, ActivityEvent};
+
+pub fn use_is_fetching<V: 'static>(
+    cx: &mut Context<V>,
+    client: &QueryClient,
+) -> Model<bool> {
+    let model = cx.new_model(|_| client.is_fetching());
+    let mut rx = client.subscribe_activity();
+    let client = client.clone();
+    cx.spawn(|model, mut cx| async move {
+        while let Ok(event) = rx.recv().await {
+            if let ActivityEvent::FetchingCountChanged(_) = event {
+                model.update(&mut cx, |value, cx| {
+                    *value = client.is_fetching();
+                    cx.notify();
+                }).ok();
+            }
+        }
+    }).detach();
+    model
+}
+
+pub fn use_is_mutating<V: 'static>(cx: &mut Context<V>, client: &QueryClient) -> Model<bool> {
+    // similar
+}
+```
+
+- [ ] **Step 4: Write tests for counter increments**
+
+In `src/client.rs` test module:
+
+```rust
+#[tokio::test]
+async fn test_fetching_counter() {
+    let client = QueryClient::new();
+    assert!(!client.is_fetching());
+    // spawn a query that takes a while
+    // verify counter increments and decrements.
+}
+```
+
+For hooks, test that the model updates when activity changes (may require a simple GPUI test setup).
+
+- [ ] **Step 5: Run tests**
+
+```bash
+cargo test --lib
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/client.rs src/executor.rs src/hooks.rs src/lib.rs
+git commit -m "feat: add useIsFetching and useIsMutating reactive hooks"
+```
+
+---
+
+## Chunk 5: Final Polish and Documentation
+
+### Task 1: Update README, API docs, and ensure all public items are documented
+
+**Files:**
+- Modify: `README.md`
+- Modify: `src/lib.rs`
+- Modify: Any other public modules missing docs
+
+- [ ] **Step 1: Update README with new features**
+
+Add sections for:
+- `initialData` and `placeholderData`
+- Query cancellation
+- Structural sharing (with `PartialEq` requirement)
+- `useIsFetching` / `useIsMutating` hooks
+
+Update the comparison table to mark these items as ✅ Implemented.
+
+- [ ] **Step 2: Add doc examples for new APIs**
+
+In `src/lib.rs` or individual modules, add code examples for:
+- `Query::initial_data()`
+- `Query::placeholder_data()`
+- `QueryObserver::from_query()`
+- `QueryClient::cancel_query()`
+- `use_is_fetching`
+
+- [ ] **Step 3: Run `cargo doc` to verify no broken links**
+
+```bash
+cargo doc --no-deps --open
+```
+
+- [ ] **Step 4: Run full test suite again**
+
+```bash
+cargo test --lib
+```
+
+- [ ] **Step 5: Commit final changes**
+
+```bash
+git add README.md src/lib.rs src/*.rs
+git commit -m "docs: finalize documentation and README for completed TanStack Query port"
+```
+
+---
+
+**Plan complete and saved. Ready to execute?**
