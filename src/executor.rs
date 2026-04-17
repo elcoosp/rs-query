@@ -280,6 +280,12 @@ mod tests {
     use super::*;
     use crate::{query::Query, QueryClient, QueryError, QueryKey, QueryOptions};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_util::sync::CancellationToken;
+
+    // Helper to create a default token for tests
+    fn test_token() -> CancellationToken {
+        CancellationToken::new()
+    }
 
     fn make_retry_options(max_retries: u32) -> QueryOptions {
         QueryOptions {
@@ -297,7 +303,7 @@ mod tests {
         let key = QueryKey::new("test");
         let query = Query::new(key, || async { Ok("data".to_string()) });
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_success());
         assert_eq!(state.data(), Some(&"data".to_string()));
     }
@@ -309,7 +315,7 @@ mod tests {
         let query: Query<String> =
             Query::new(key, || async { Err(QueryError::custom("immediate fail")) });
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_error());
         assert!(state.data().is_none());
     }
@@ -334,7 +340,7 @@ mod tests {
         })
         .options(make_retry_options(3));
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_success());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
@@ -359,7 +365,7 @@ mod tests {
         })
         .options(make_retry_options(3));
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_success());
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
@@ -373,7 +379,7 @@ mod tests {
         })
         .options(make_retry_options(2));
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_error());
     }
 
@@ -393,7 +399,7 @@ mod tests {
         })
         .options(make_retry_options(3));
 
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_error());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
@@ -404,7 +410,7 @@ mod tests {
         let key = QueryKey::new("test");
         let query = Query::new(key.clone(), || async { Ok("data".to_string()) });
 
-        let _ = execute_query(&client, &query).await;
+        let _ = execute_query(&client, &query, test_token()).await;
 
         let cached: Option<String> = client.get_query_data(&key);
         assert_eq!(cached, Some("data".to_string()));
@@ -421,7 +427,7 @@ mod tests {
         let query = Query::new(key.clone(), || async { Ok("new".to_string()) });
 
         // Execute should complete and update cache
-        let state = execute_query(&client, &query).await;
+        let state = execute_query(&client, &query, test_token()).await;
         assert!(state.is_success());
         assert_eq!(state.data(), Some(&"new".to_string()));
 
@@ -429,6 +435,7 @@ mod tests {
         let cached: Option<String> = client.get_query_data(&key);
         assert_eq!(cached, Some("new".to_string()));
     }
+
     #[test]
     fn test_should_retry_network() {
         assert!(should_retry(

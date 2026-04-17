@@ -557,21 +557,24 @@ mod tests {
 
         assert!(!client.is_in_flight(&key));
 
-        // Simulate setting an abort handle
-        let (tx, _rx) = tokio::sync::oneshot::channel::<()>();
-        let handle = tokio::spawn(async {
-            let _ = tx.send(());
-        });
-        let abort_handle = handle.abort_handle();
-        client.set_abort_handle(&key, abort_handle);
+        // Simulate setting an in-flight task
+        let handle = tokio::spawn(async {});
+        let token = CancellationToken::new();
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: token,
+            },
+        );
 
         assert!(client.is_in_flight(&key));
 
-        client.clear_abort_handle(&key);
+        client.clear_in_flight(&key);
         assert!(!client.is_in_flight(&key));
     }
 
-    // --- NEW TESTS FOR 100% COVERAGE ---
+    // --- TESTS FOR 100% COVERAGE ---
 
     #[test]
     fn test_get_query_options() {
@@ -868,9 +871,16 @@ mod tests {
         let key = QueryKey::new("test");
         client.set_query_data(&key, "data".to_string(), QueryOptions::default());
 
-        // Set an abort handle
+        // Set an in-flight task
         let handle = tokio::spawn(async {});
-        client.set_abort_handle(&key, handle.abort_handle());
+        let token = CancellationToken::new();
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: token,
+            },
+        );
 
         assert!(client.is_in_flight(&key));
 
@@ -880,6 +890,7 @@ mod tests {
         assert!(!client.is_in_flight(&key));
         assert!(client.is_stale(&key));
     }
+
     #[tokio::test]
     async fn test_cancel_query_with_handle() {
         let client = QueryClient::new();
@@ -890,8 +901,14 @@ mod tests {
             // Long running task
             tokio::time::sleep(std::time::Duration::from_secs(100)).await;
         });
-
-        client.set_abort_handle(&key, handle.abort_handle());
+        let token = CancellationToken::new();
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: token,
+            },
+        );
 
         // Should be in flight
         assert!(client.is_in_flight(&key));
@@ -925,8 +942,22 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(100)).await;
         });
 
-        client.set_abort_handle(&key1, handle1.abort_handle());
-        client.set_abort_handle(&key2, handle2.abort_handle());
+        let token1 = CancellationToken::new();
+        let token2 = CancellationToken::new();
+        client.set_in_flight(
+            &key1,
+            InFlightTask {
+                abort_handle: handle1.abort_handle(),
+                cancel_token: token1,
+            },
+        );
+        client.set_in_flight(
+            &key2,
+            InFlightTask {
+                abort_handle: handle2.abort_handle(),
+                cancel_token: token2,
+            },
+        );
 
         // Both should be in flight
         assert!(client.is_in_flight(&key1));
@@ -939,6 +970,7 @@ mod tests {
         assert!(!client.is_in_flight(&key1));
         assert!(!client.is_in_flight(&key2));
     }
+
     #[test]
     fn test_clear_empty() {
         let client = QueryClient::new();
