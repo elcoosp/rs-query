@@ -280,9 +280,10 @@ impl QueryClient {
         if let Some((_, task)) = self.in_flight.remove(cache_key) {
             task.cancel_token.cancel();
             task.abort_handle.abort();
+            // Wake up any waiting subscribers so they don't hang.
+            self.notify_subscribers(cache_key, QueryStateVariant::Error);
         }
     }
-
     /// Check if a query is in flight (for deduplication)
     pub fn is_in_flight(&self, key: &QueryKey) -> bool {
         self.in_flight.contains_key(key.cache_key())

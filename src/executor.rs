@@ -42,6 +42,7 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static + PartialEq>(
     // Deduplication: if already in flight, wait for result.
     if client.is_in_flight(&query.key) {
         let mut rx = client.subscribe(&cache_key);
+        // First, check if data is already cached (could have been set while we waited)
         if let Some(data) = client.get_query_data::<T>(&query.key) {
             let is_stale = client.is_stale(&query.key);
             return if is_stale {
@@ -50,11 +51,18 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static + PartialEq>(
                 QueryState::Success(data)
             };
         }
-        if let Ok(update) = rx.recv().await {
+
+        // Wait for the in-flight query to complete.
+        while let Ok(update) = rx.recv().await {
             match update.state_variant {
                 QueryStateVariant::Success => {
                     if let Some(data) = client.get_query_data::<T>(&query.key) {
                         return QueryState::Success(data);
+                    }
+                }
+                QueryStateVariant::Stale => {
+                    if let Some(data) = client.get_query_data::<T>(&query.key) {
+                        return QueryState::Stale(data);
                     }
                 }
                 QueryStateVariant::Error => {
@@ -63,9 +71,11 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static + PartialEq>(
                         stale_data: client.get_query_data::<T>(&query.key),
                     };
                 }
+                // Keep waiting for Loading/Refetching updates.
                 _ => {}
             }
         }
+        // If the channel closed unexpectedly, fall back to loading state.
         return QueryState::Loading;
     }
 
@@ -467,51 +477,61 @@ mod tests {
         }
         assert_eq!(client.mutating_count(), 0);
     }
-
     #[tokio::test]
     async fn test_execute_query_deduplication_waits_for_in_flight() {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
 
-        // First, set an in-flight task that runs for a long time to simulate an ongoing request.
-        let token = CancellationToken::new();
-        let token_clone = token.clone();
-        let long_task = tokio::spawn(async move {
-            // This will block until aborted.
-            tokio::time::sleep(Duration::from_secs(100)).await;
+        let fetch_called = Arc::new(AtomicUsize::new(0));
+        let fetch_called_clone = fetch_called.clone();
+
+        let query: Query<String> = Query::new(key.clone(), move || {
+            let fetch_called = fetch_called_clone.clone();
+            async move {
+                fetch_called.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok("data".to_string())
+            }
         });
+
+        // Simulate an already in‑flight query.
+        let token = CancellationToken::new();
+        let handle = tokio::spawn(async {});
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: long_task.abort_handle(),
+                abort_handle: handle.abort_handle(),
                 cancel_token: token,
             },
         );
 
-        // Now execute the same query; it should hit deduplication path.
-        let query: Query<String> = Query::new(key.clone(), || async { Ok("data".to_string()) });
-
-        // Because the query is already in flight, the dedup path will subscribe and then wait.
-        // We'll spawn the second query and then cancel the original after a short delay.
-        let client_clone = client.clone();
-        let query_clone = query.clone();
-        let handle = tokio::spawn(async move {
-            execute_query(&client_clone, &query_clone, CancellationToken::new()).await
+        // Spawn two queries that will hit the deduplication path.
+        let client1 = client.clone();
+        let query1 = query.clone();
+        let handle1 = tokio::spawn(async move {
+            execute_query(&client1, &query1, CancellationToken::new()).await
         });
 
-        // Wait a bit to ensure it enters the dedup branch and starts waiting.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let client2 = client.clone();
+        let query2 = query.clone();
+        let handle2 = tokio::spawn(async move {
+            execute_query(&client2, &query2, CancellationToken::new()).await
+        });
 
-        // Cancel the original in-flight task to unblock the dedup waiter.
-        client.cancel_query(&key);
+        // Give them time to enter the dedup loop, then clear the in‑flight flag and notify.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        client.clear_in_flight(&key);
+        client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
 
-        let state = tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("timeout")
-            .expect("join error");
+        let state1 = handle1.await.unwrap();
+        let state2 = handle2.await.unwrap();
 
-        // The dedup path should have returned Loading or Idle since it never got a success/error from the original.
-        assert!(state.is_loading() || state.is_idle());
+        // Both should have waited and eventually returned an error (or loading).
+        assert!(state1.is_loading() || state1.is_error());
+        assert!(state2.is_loading() || state2.is_error());
+
+        // The fetch function was never called because we never actually ran it.
+        assert_eq!(fetch_called.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn test_execute_query_cancellation_during_fetch() {

@@ -4,9 +4,8 @@
 
 use crate::{QueryClient, QueryStateVariant};
 use gpui::{
-    actions, div, prelude::*, px, relative, rgba, AnyElement, App, Context, Entity, EventEmitter,
-    FontWeight, KeyBinding, Render, RenderOnce, SharedString, Styled, Subscription, TextStyle,
-    Window,
+    actions, div, prelude::*, px, App, Context, Entity, EventEmitter, FontWeight, KeyBinding,
+    Render, RenderOnce, SharedString, Styled, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -14,7 +13,7 @@ use gpui_component::{
     input::{Input, InputState},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
-    ActiveTheme, IconName,
+    ActiveTheme, IconName, Sizable,
 };
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -35,7 +34,7 @@ pub enum QueryEventType {
 impl QueryEventType {
     fn from_variant(variant: &QueryStateVariant) -> Self {
         match variant {
-            QueryStateVariant::Idle => Self::All, // Idle not typically logged
+            QueryStateVariant::Idle => Self::All,
             QueryStateVariant::Loading => Self::Loading,
             QueryStateVariant::Refetching => Self::Refetching,
             QueryStateVariant::Success => Self::Success,
@@ -91,7 +90,6 @@ pub struct DevtoolsState {
     timeline_events: Vec<TimelineEvent>,
     timeline_search: Option<Entity<InputState>>,
     filter_event_type: QueryEventType,
-    _subscription: Subscription,
     last_snapshot: Vec<(String, QueryStateVariant, Instant)>,
     highlight_new_count: usize,
 }
@@ -104,15 +102,16 @@ impl DevtoolsState {
         cx.bind_keys([KeyBinding::new("ctrl-shift-q", ToggleDevtools, None)]);
 
         // Poll the cache periodically to generate timeline events
-        let subscription = cx.spawn(|this, mut cx| async move {
+        cx.spawn(|this: WeakEntity<Self>, mut cx| async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 interval.tick().await;
-                _ = this.update(&mut cx, |this, _cx| {
+                _ = this.update(&mut cx, |this: &mut Self, _cx| {
                     this.update_timeline();
                 });
             }
-        });
+        })
+        .detach();
 
         Self {
             expanded: true,
@@ -121,7 +120,6 @@ impl DevtoolsState {
             timeline_events: Vec::new(),
             timeline_search: None,
             filter_event_type: QueryEventType::All,
-            _subscription: subscription.detach(),
             last_snapshot: Vec::new(),
             highlight_new_count: 0,
         }
@@ -166,7 +164,6 @@ impl DevtoolsState {
     }
 
     fn update_timeline(&mut self) {
-        let now = Instant::now();
         let mut new_snapshot = Vec::new();
         for entry in self.client.cache.iter() {
             let key = entry.key().clone();
@@ -241,7 +238,7 @@ impl DevtoolsState {
 
     fn remove_query(&self, key: &str) {
         self.client.cache.remove(key);
-        self.client.clear_abort_handle(&crate::QueryKey::new(key));
+        // The abort handle is cleared automatically when the cache entry is removed.
     }
 
     fn render_queries_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -258,9 +255,9 @@ impl DevtoolsState {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .text_color(theme.info)
+                    .text_color(theme.colors.accent)
                     .font_weight(FontWeight::MEDIUM)
-                    .child(IconName::Database)
+                    .child(IconName::Folder)
                     .child("Active Queries"),
             )
             .child(
@@ -277,23 +274,15 @@ impl DevtoolsState {
                             } else {
                                 QueryStateVariant::Success
                             };
-                            let data_preview = if let Some(s) = entry.data.downcast_ref::<String>()
-                            {
-                                s.clone()
-                            } else if let Some(v) = entry.data.downcast_ref::<Vec<String>>() {
-                                format!("Vec<String> (len {})", v.len())
-                            } else {
-                                "<unknown>".to_string()
-                            };
                             let age = entry.fetched_at.elapsed();
                             let age_str = format!("{:.1}s ago", age.as_secs_f32());
 
                             div()
                                 .px_2()
                                 .py_1()
-                                .bg(theme.secondary.opacity(0.5))
+                                .bg(theme.colors.secondary.opacity(0.5))
                                 .rounded(px(4.0))
-                                .hover(|s| s.bg(theme.secondary))
+                                .hover(|s| s.bg(theme.colors.secondary))
                                 .child(
                                     div()
                                         .flex()
@@ -312,21 +301,15 @@ impl DevtoolsState {
                                                 .child(
                                                     div()
                                                         .text_xs()
-                                                        .text_color(theme.muted_foreground)
+                                                        .text_color(theme.colors.muted_foreground)
                                                         .child(format!("{:?}", variant)),
                                                 )
                                                 .child(
                                                     div()
                                                         .text_xs()
-                                                        .text_color(theme.muted_foreground)
+                                                        .text_color(theme.colors.muted_foreground)
                                                         .child(age_str),
                                                 ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(theme.muted_foreground)
-                                                .child(data_preview),
                                         )
                                         .child(
                                             div()
@@ -402,7 +385,11 @@ impl DevtoolsState {
         let filter_state_clone = filter_state.clone();
         cx.subscribe(
             &filter_state,
-            move |this: &mut Self, _event, _window, cx| {
+            // Correct callback signature: (this, emitter_entity, event, cx)
+            move |this: &mut Self,
+                  _emitter: Entity<gpui_component::select::SelectState<_>>,
+                  _event: &gpui_component::select::SelectEvent<_>,
+                  cx| {
                 if let Some(selected) = filter_state_clone.read(cx).selected_value().cloned() {
                     this.filter_event_type = selected;
                     cx.notify();
@@ -449,9 +436,9 @@ impl DevtoolsState {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .text_color(theme.info)
+                            .text_color(theme.colors.accent)
                             .font_weight(FontWeight::MEDIUM)
-                            .child(IconName::History)
+                            .child(IconName::Calendar)
                             .child("Event Timeline"),
                     )
                     .child(
@@ -470,7 +457,7 @@ impl DevtoolsState {
                             )
                             .child(
                                 Button::new("clear-timeline")
-                                    .icon(IconName::Trash)
+                                    .icon(IconName::Close)
                                     .ghost()
                                     .xsmall()
                                     .tooltip("Clear timeline")
@@ -490,7 +477,7 @@ impl DevtoolsState {
                 div()
                     .flex_1()
                     .border_1()
-                    .border_color(theme.border)
+                    .border_color(theme.colors.border)
                     .rounded(px(6.0))
                     .overflow_hidden()
                     .child(if filtered.is_empty() {
@@ -501,7 +488,7 @@ impl DevtoolsState {
                             .justify_center()
                             .child(
                                 div()
-                                    .text_color(theme.muted_foreground)
+                                    .text_color(theme.colors.muted_foreground)
                                     .child("No events recorded yet"),
                             )
                             .into_any_element()
@@ -536,19 +523,22 @@ impl DevtoolsState {
                                                     .items_center()
                                                     .gap_3()
                                                     .bg(if is_new {
-                                                        theme.success.opacity(0.2)
+                                                        theme.colors.accent.opacity(0.2)
                                                     } else if even {
-                                                        theme.background
+                                                        theme.colors.background
                                                     } else {
-                                                        theme.secondary.opacity(0.3)
+                                                        theme.colors.secondary.opacity(0.3)
                                                     })
                                                     .hover(|style| {
-                                                        style.bg(theme.secondary.opacity(0.6))
+                                                        style
+                                                            .bg(theme.colors.secondary.opacity(0.6))
                                                     })
                                                     .child(
                                                         div()
                                                             .min_w(px(80.0))
-                                                            .text_color(theme.muted_foreground)
+                                                            .text_color(
+                                                                theme.colors.muted_foreground,
+                                                            )
                                                             .font_family("monospace")
                                                             .text_sm()
                                                             .child(timestamp),
@@ -558,15 +548,15 @@ impl DevtoolsState {
                                                             .min_w(px(80.0))
                                                             .text_color(match event.variant {
                                                                 QueryStateVariant::Error => {
-                                                                    theme.error
+                                                                    theme.colors.accent
                                                                 }
                                                                 QueryStateVariant::Stale => {
-                                                                    theme.warning
+                                                                    theme.colors.accent
                                                                 }
                                                                 QueryStateVariant::Success => {
-                                                                    theme.success
+                                                                    theme.colors.accent
                                                                 }
-                                                                _ => theme.foreground,
+                                                                _ => theme.colors.foreground,
                                                             })
                                                             .child(variant_str),
                                                     )
@@ -597,14 +587,14 @@ impl DevtoolsState {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .text_color(theme.info)
+                    .text_color(theme.colors.accent)
                     .font_weight(FontWeight::MEDIUM)
-                    .child(IconName::Database)
+                    .child(IconName::File)
                     .child("Cache Inspector"),
             )
             .child(
                 div()
-                    .text_color(theme.muted_foreground)
+                    .text_color(theme.colors.muted_foreground)
                     .child("Detailed cache inspection coming soon."),
             )
     }
@@ -614,7 +604,7 @@ impl Render for DevtoolsState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.expanded {
             return Button::new("devtools-toggle")
-                .icon(IconName::Activity)
+                .icon(IconName::Settings)
                 .rounded_full()
                 .size(px(40.0))
                 .shadow_md()
@@ -636,10 +626,10 @@ impl Render for DevtoolsState {
             .right_0()
             .w(panel_width)
             .h(panel_height)
-            .bg(theme.background)
-            .text_color(theme.foreground)
+            .bg(theme.colors.background)
+            .text_color(theme.colors.foreground)
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.colors.border)
             .rounded_tl(px(8.0))
             .shadow_lg()
             .flex()
@@ -652,16 +642,16 @@ impl Render for DevtoolsState {
                     .justify_between()
                     .px_2()
                     .py_1()
-                    .bg(theme.secondary)
+                    .bg(theme.colors.secondary)
                     .rounded_tl(px(8.0))
                     .border_b_1()
-                    .border_color(theme.border)
+                    .border_color(theme.colors.border)
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(IconName::Activity)
+                            .child(IconName::Settings)
                             .child(" Query Devtools"),
                     )
                     .child(
@@ -678,8 +668,8 @@ impl Render for DevtoolsState {
                     .on_click(cx.listener(|this, index, _, cx| {
                         this.set_selected_tab(this.tab_from_index(*index), cx);
                     }))
-                    .child(Tab::new().label("Queries").prefix(IconName::Database))
-                    .child(Tab::new().label("Timeline").prefix(IconName::History))
+                    .child(Tab::new().label("Queries").prefix(IconName::Folder))
+                    .child(Tab::new().label("Timeline").prefix(IconName::Calendar))
                     .child(Tab::new().label("Cache").prefix(IconName::File)),
             )
             .child(
