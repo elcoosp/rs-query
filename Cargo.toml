@@ -1,5 +1,5 @@
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
+gpui = { git = "https://github.com/zed-industries/zed" , features = ["default","test-support"]}
 gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
 thiserror = "2"
 tokio ={version ="1",features = ["rt-multi-thread", "time", "sync", "rt", "macros"]}
