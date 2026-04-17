@@ -8,6 +8,8 @@ use crate::QueryError;
 pub enum QueryState<T> {
     Idle,
     Loading,
+    /// Loading but with placeholder data shown.
+    LoadingWithPlaceholder(T),
     Refetching(T),
     Success(T),
     Stale(T),
@@ -22,6 +24,7 @@ impl<T> QueryState<T> {
         match self {
             QueryState::Idle => None,
             QueryState::Loading => None,
+            QueryState::LoadingWithPlaceholder(d) => Some(d),
             QueryState::Refetching(d) => Some(d),
             QueryState::Success(d) => Some(d),
             QueryState::Stale(d) => Some(d),
@@ -33,6 +36,7 @@ impl<T> QueryState<T> {
         match self {
             QueryState::Idle => None,
             QueryState::Loading => None,
+            QueryState::LoadingWithPlaceholder(d) => Some(d),
             QueryState::Refetching(d) => Some(d),
             QueryState::Success(d) => Some(d),
             QueryState::Stale(d) => Some(d),
@@ -41,7 +45,10 @@ impl<T> QueryState<T> {
     }
 
     pub fn is_loading(&self) -> bool {
-        matches!(self, QueryState::Loading)
+        matches!(
+            self,
+            QueryState::Loading | QueryState::LoadingWithPlaceholder(_)
+        )
     }
 
     pub fn is_refetching(&self) -> bool {
@@ -88,6 +95,7 @@ impl<T> QueryState<T> {
 
     pub fn unwrap(self) -> T {
         match self {
+            QueryState::LoadingWithPlaceholder(d) => d,
             QueryState::Refetching(d) => d,
             QueryState::Success(d) => d,
             QueryState::Stale(d) => d,
@@ -159,8 +167,6 @@ impl<T> Default for MutationState<T> {
         MutationState::Idle
     }
 }
-
-// src/state.rs (tests section only - removed test_display)
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,12 +1,13 @@
 // src/query.rs
 //! Query definition and builder
 
-use crate::options::QueryOptions;
+use crate::options::{PlaceholderData, QueryOptions};
 use crate::QueryError;
 use crate::QueryKey;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Definition of a query.
 pub struct Query<T: Clone + Send + Sync + 'static> {
@@ -22,6 +23,12 @@ pub struct Query<T: Clone + Send + Sync + 'static> {
     pub select: Option<Arc<dyn Fn(&T) -> T + Send + Sync>>,
     /// Query options.
     pub options: QueryOptions,
+    /// Initial data to seed the cache.
+    pub initial_data: Option<T>,
+    /// Timestamp when initial data was set (used for staleness).
+    pub initial_data_updated_at: Option<Instant>,
+    /// Placeholder data shown during loading.
+    pub placeholder_data: Option<PlaceholderData<T>>,
 }
 
 impl<T: Clone + Send + Sync + 'static> Clone for Query<T> {
@@ -31,6 +38,9 @@ impl<T: Clone + Send + Sync + 'static> Clone for Query<T> {
             fetch_fn: Arc::clone(&self.fetch_fn),
             select: self.select.clone(),
             options: self.options.clone(),
+            initial_data: self.initial_data.clone(),
+            initial_data_updated_at: self.initial_data_updated_at,
+            placeholder_data: self.placeholder_data.clone(),
         }
     }
 }
@@ -47,7 +57,23 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
             fetch_fn: Arc::new(move || Box::pin(fetch_fn())),
             select: None,
             options: QueryOptions::default(),
+            initial_data: None,
+            initial_data_updated_at: None,
+            placeholder_data: None,
         }
+    }
+
+    /// Set initial data to seed the cache.
+    pub fn initial_data(mut self, data: T) -> Self {
+        self.initial_data = Some(data);
+        self.initial_data_updated_at = Some(Instant::now());
+        self
+    }
+
+    /// Set placeholder data shown during loading.
+    pub fn placeholder_data(mut self, data: PlaceholderData<T>) -> Self {
+        self.placeholder_data = Some(data);
+        self
     }
 
     /// Set stale time.
@@ -95,8 +121,11 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
         self
     }
 
-    /// Set structural sharing.
-    pub fn structural_sharing(mut self, enabled: bool) -> Self {
+    /// Set structural sharing (requires `T: PartialEq`).
+    pub fn structural_sharing(mut self, enabled: bool) -> Self
+    where
+        T: PartialEq,
+    {
         self.options.structural_sharing = enabled;
         self
     }

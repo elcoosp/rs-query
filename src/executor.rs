@@ -1,33 +1,55 @@
 // src/executor.rs
 //! Query executor - handles async query execution with retries and deduplication
 
+use crate::cancellation::cancellable_fetch;
 use crate::error::QueryError;
+use crate::mutation::Mutation;
 use crate::observer::QueryStateVariant;
 use crate::query::Query;
 use crate::{MutationState, QueryClient, QueryState};
 use futures_timer::Delay;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
-/// Execute a query with retries and deduplication
-pub async fn execute_query<T: Clone + Send + Sync + 'static>(
+/// Guard that decrements the fetching count on drop.
+struct FetchingGuard {
+    client: QueryClient,
+}
+impl Drop for FetchingGuard {
+    fn drop(&mut self) {
+        self.client.dec_fetching();
+    }
+}
+
+/// Guard that decrements the mutating count on drop.
+struct MutatingGuard {
+    client: QueryClient,
+}
+impl Drop for MutatingGuard {
+    fn drop(&mut self) {
+        self.client.dec_mutating();
+    }
+}
+
+/// Execute a query with retries and deduplication, respecting cancellation.
+pub async fn execute_query<T: Clone + Send + Sync + 'static + PartialEq>(
     client: &QueryClient,
     query: &Query<T>,
+    token: CancellationToken,
 ) -> QueryState<T> {
     let cache_key = query.key.cache_key();
 
-    // Check if already in flight (deduplication)
+    // Deduplication: if already in flight, wait for result.
     if client.is_in_flight(&query.key) {
         let mut rx = client.subscribe(&cache_key);
-
         if let Some(data) = client.get_query_data::<T>(&query.key) {
             let is_stale = client.is_stale(&query.key);
-            if is_stale {
-                return QueryState::Stale(data);
+            return if is_stale {
+                QueryState::Stale(data)
             } else {
-                return QueryState::Success(data);
-            }
+                QueryState::Success(data)
+            };
         }
-
         if let Ok(update) = rx.recv().await {
             match update.state_variant {
                 QueryStateVariant::Success => {
@@ -41,34 +63,15 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static>(
                         stale_data: client.get_query_data::<T>(&query.key),
                     };
                 }
-                QueryStateVariant::Loading => {
-                    return QueryState::Loading;
-                }
-                QueryStateVariant::Stale => {
-                    if let Some(data) = client.get_query_data::<T>(&query.key) {
-                        return QueryState::Stale(data);
-                    }
-                }
-                QueryStateVariant::Idle | QueryStateVariant::Refetching => {
-                    return QueryState::Idle;
-                }
+                _ => {}
             }
         }
-
         return QueryState::Loading;
     }
 
     let is_refetch = client.get_query_data::<T>(&query.key).is_some();
-
     if is_refetch {
-        if let Some(_data) = client.get_query_data::<T>(&query.key) {
-            let is_stale = client.is_stale(&query.key);
-            if is_stale {
-                client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
-            } else {
-                client.notify_subscribers(&cache_key, QueryStateVariant::Stale);
-            }
-        }
+        client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
     } else {
         client.notify_subscribers(&cache_key, QueryStateVariant::Loading);
     }
@@ -79,21 +82,25 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static>(
     let key = query.key.clone();
     let client_clone = client.clone();
 
-    // Execute inline (no tokio::spawn - GPUI's executor isn't tokio-based)
     let mut attempts = 0;
     let max_attempts = options.retry.max_retries as usize + 1;
 
     loop {
-        attempts += 1;
+        if token.is_cancelled() {
+            return QueryState::Error {
+                error: QueryError::Cancelled,
+                stale_data: client_clone.get_query_data::<T>(&key),
+            };
+        }
 
-        match fetch_fn().await {
+        attempts += 1;
+        match cancellable_fetch(token.clone(), || fetch_fn()).await {
             Ok(data) => {
                 let final_data = if let Some(ref select) = select_fn {
                     select(&data)
                 } else {
                     data
                 };
-
                 client_clone.set_query_data(&key, final_data, options.clone());
                 return QueryState::Success(
                     client_clone
@@ -101,15 +108,19 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static>(
                         .expect("data should be set"),
                 );
             }
+            Err(QueryError::Cancelled) => {
+                return QueryState::Error {
+                    error: QueryError::Cancelled,
+                    stale_data: client_clone.get_query_data::<T>(&key),
+                };
+            }
             Err(e) => {
                 if attempts < max_attempts && should_retry(&e, &options.retry) {
                     let delay = options.retry.delay_for_attempt((attempts - 1) as u32);
                     Delay::new(delay).await;
                     continue;
                 }
-
                 client_clone.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
-
                 return QueryState::Error {
                     error: e,
                     stale_data: client_clone.get_query_data::<T>(&key),
@@ -119,10 +130,10 @@ pub async fn execute_query<T: Clone + Send + Sync + 'static>(
     }
 }
 
-/// Execute a mutation with optimistic update support
+/// Execute a mutation with optimistic update support.
 pub async fn execute_mutation<T: Clone + Send + Sync + 'static, P: Clone + Send + 'static>(
     client: &QueryClient,
-    mutation: &crate::mutation::Mutation<T, P>,
+    mutation: &Mutation<T, P>,
     params: P,
 ) -> Result<T, QueryError> {
     let mutate_fn = Arc::clone(&mutation.mutate_fn);
@@ -145,11 +156,17 @@ pub async fn execute_mutation<T: Clone + Send + Sync + 'static, P: Clone + Send 
             for key in &mutation.invalidates_keys {
                 client.invalidate_queries(key);
             }
+            if let Some(on_success) = &mutation.on_success {
+                on_success(&data, &*params);
+            }
             Ok(data)
         }
         Err(e) => {
             if let Some(rollback) = rollback {
                 rollback(client);
+            }
+            if let Some(on_error) = &mutation.on_error {
+                on_error(&e, &*params);
             }
             Err(e)
         }
@@ -164,8 +181,8 @@ fn should_retry(error: &QueryError, _retry: &crate::options::RetryConfig) -> boo
     }
 }
 
-/// Spawn a query on GPUI's foreground executor
-pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static>(
+/// Spawn a query on GPUI's foreground executor.
+pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static + PartialEq>(
     cx: &mut gpui::Context<V>,
     client: &QueryClient,
     query: &Query<T>,
@@ -176,9 +193,45 @@ pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static>(
     let entity = cx.entity().downgrade();
     let mut async_cx = cx.to_async();
 
+    // Increment fetching count and set up guard.
+    client.inc_fetching();
+    let guard = FetchingGuard {
+        client: client.clone(),
+    };
+
+    // Create cancellation token and store in-flight task.
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+    let client_for_task = client.clone();
+    let query_for_task = query.clone();
+    let fetch_task = tokio::spawn(async move {
+        let _guard = guard; // ensure decrement on drop
+        execute_query(&client_for_task, &query_for_task, token_clone).await
+    });
+    client.set_in_flight(
+        &query.key,
+        crate::client::InFlightTask {
+            abort_handle: fetch_task.abort_handle(),
+            cancel_token: token,
+        },
+    );
+
     cx.foreground_executor()
         .spawn(async move {
-            let state = execute_query(&client, &query).await;
+            let state = fetch_task.await.unwrap_or_else(|e| {
+                if e.is_cancelled() {
+                    QueryState::Error {
+                        error: QueryError::Cancelled,
+                        stale_data: client.get_query_data(&query.key),
+                    }
+                } else {
+                    QueryState::Error {
+                        error: QueryError::custom(e.to_string()),
+                        stale_data: client.get_query_data(&query.key),
+                    }
+                }
+            });
+            client.clear_in_flight(&query.key);
             let _ = entity.update(&mut async_cx, |this, cx| {
                 callback(this, state, cx);
             });
@@ -186,7 +239,7 @@ pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static>(
         .detach();
 }
 
-/// Spawn a mutation on GPUI's foreground executor
+/// Spawn a mutation on GPUI's foreground executor.
 pub fn spawn_mutation<
     V: 'static,
     T: Clone + Send + Sync + 'static,
@@ -194,7 +247,7 @@ pub fn spawn_mutation<
 >(
     cx: &mut gpui::Context<V>,
     client: &QueryClient,
-    mutation: &crate::mutation::Mutation<T, P>,
+    mutation: &Mutation<T, P>,
     params: P,
     callback: impl FnOnce(&mut V, MutationState<T>, &mut gpui::Context<V>) + Send + 'static,
 ) {
@@ -203,25 +256,25 @@ pub fn spawn_mutation<
     let entity = cx.entity().downgrade();
     let mut async_cx = cx.to_async();
 
+    client.inc_mutating();
+    let guard = MutatingGuard {
+        client: client.clone(),
+    };
+
     cx.foreground_executor()
         .spawn(async move {
+            let _guard = guard;
             let result = execute_mutation(&client, &mutation, params).await;
-
             let state = match result {
                 Ok(data) => MutationState::Success(data),
                 Err(e) => MutationState::Error(e),
             };
-
             let _ = entity.update(&mut async_cx, |this, cx| {
                 callback(this, state, cx);
             });
         })
         .detach();
 }
-// src/executor.rs - Add test module
-
-#[cfg(test)]
-// src/executor.rs - Replace the test module with this corrected version
 #[cfg(test)]
 mod tests {
     use super::*;

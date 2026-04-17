@@ -2,19 +2,33 @@
 //! Infinite query support for paginated data
 
 use crate::options::QueryOptions;
-use crate::QueryError;
-use crate::QueryKey;
+use crate::{QueryError, QueryKey};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 /// Data structure for infinite query results.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InfiniteData<T, P> {
     /// All fetched pages.
     pub pages: Vec<T>,
     /// Page parameters for each page.
     pub page_params: Vec<P>,
+}
+
+impl<T: Clone, P: Clone> Clone for InfiniteData<T, P> {
+    fn clone(&self) -> Self {
+        Self {
+            pages: self.pages.clone(),
+            page_params: self.page_params.clone(),
+        }
+    }
+}
+
+impl<T: PartialEq, P: PartialEq> PartialEq for InfiniteData<T, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pages == other.pages && self.page_params == other.page_params
+    }
 }
 
 impl<T, P> InfiniteData<T, P> {
@@ -148,7 +162,6 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Infinit
         self
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

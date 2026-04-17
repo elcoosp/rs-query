@@ -66,7 +66,7 @@ impl QueryClient {
             let key = entry.key().clone();
             let value = entry.value();
 
-            if let Some(data) = value.data.downcast_ref::<String>() {
+            if let Some(data) = value.data.as_any().downcast_ref::<String>() {
                 state.queries.insert(
                     key.clone(),
                     DehydratedQuery {

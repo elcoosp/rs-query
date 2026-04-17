@@ -1,6 +1,7 @@
 // src/observer.rs
 //! Query observer for reactive state updates
 
+use crate::options::PlaceholderData;
 use crate::{QueryClient, QueryError, QueryKey, QueryOptions, QueryState};
 use std::marker::PhantomData;
 use std::time::Instant;
@@ -25,19 +26,19 @@ pub struct QueryStateUpdate {
 }
 
 /// Reactive observer for a query key.
-pub struct QueryObserver<T> {
+pub struct QueryObserver<T: Clone + Send + Sync + 'static> {
     pub key: QueryKey,
     state: QueryState<T>,
     client: QueryClient,
     receiver: broadcast::Receiver<QueryStateUpdate>,
     options: QueryOptions,
     fetch_started_at: Option<Instant>,
+    placeholder_data: Option<PlaceholderData<T>>,
     _marker: PhantomData<T>,
 }
 
 impl<T: Clone + Send + Sync + 'static> Clone for QueryObserver<T> {
     fn clone(&self) -> Self {
-        // broadcast::Receiver doesn't implement Clone, so we create a new subscription
         let receiver = self.client.subscribe(self.key.cache_key());
         Self {
             key: self.key.clone(),
@@ -46,12 +47,14 @@ impl<T: Clone + Send + Sync + 'static> Clone for QueryObserver<T> {
             receiver,
             options: self.options.clone(),
             fetch_started_at: self.fetch_started_at,
+            placeholder_data: self.placeholder_data.clone(),
             _marker: PhantomData,
         }
     }
 }
 
 impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
+    /// Create a new observer for a key.
     pub fn new(client: &QueryClient, key: QueryKey) -> Self {
         let cache_key = key.cache_key().to_string();
         let receiver = client.subscribe(&cache_key);
@@ -73,6 +76,41 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
             receiver,
             options: QueryOptions::default(),
             fetch_started_at: None,
+            placeholder_data: None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create an observer from a query definition, applying initial/placeholder data.
+    pub fn from_query(client: &QueryClient, query: &crate::query::Query<T>) -> Self
+    where
+        T: PartialEq, // required because set_query_data needs PartialEq
+    {
+        let key = query.key.clone();
+        let cache_key = key.cache_key().to_string();
+        let receiver = client.subscribe(&cache_key);
+
+        let state = if let Some(data) = client.get_query_data::<T>(&key) {
+            if client.is_stale(&key) {
+                QueryState::Stale(data)
+            } else {
+                QueryState::Success(data)
+            }
+        } else if let Some(initial) = &query.initial_data {
+            client.set_query_data(&key, initial.clone(), query.options.clone());
+            QueryState::Success(initial.clone())
+        } else {
+            QueryState::Idle
+        };
+
+        Self {
+            key,
+            state,
+            client: client.clone(),
+            receiver,
+            options: query.options.clone(),
+            fetch_started_at: None,
+            placeholder_data: query.placeholder_data.clone(),
             _marker: PhantomData,
         }
     }
@@ -104,6 +142,13 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
                     QueryState::Success(data)
                 }
             }
+            (QueryState::LoadingWithPlaceholder(_), Some(data), _) => {
+                if is_stale {
+                    QueryState::Stale(data)
+                } else {
+                    QueryState::Success(data)
+                }
+            }
             (QueryState::Refetching(_), Some(data), _) => {
                 if is_stale {
                     QueryState::Stale(data)
@@ -118,10 +163,11 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
 
     pub fn set_loading(&mut self) {
         self.fetch_started_at = Some(Instant::now());
-        let has_data = self.state.data().is_some();
-        if has_data {
-            let data = self.state.data_cloned().unwrap();
+        if let Some(data) = self.state.data_cloned() {
             self.state = QueryState::Refetching(data);
+        } else if let Some(placeholder) = &self.placeholder_data {
+            let resolved = placeholder.resolve(None);
+            self.state = QueryState::LoadingWithPlaceholder(resolved);
         } else {
             self.state = QueryState::Loading;
         }
@@ -174,7 +220,6 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
         self.fetch_started_at
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

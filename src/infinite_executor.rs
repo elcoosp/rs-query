@@ -1,12 +1,14 @@
 // src/infinite_executor.rs
 //! Infinite query execution
 
+use crate::client::InFlightTask;
 use crate::error::QueryError;
 use crate::infinite::{InfiniteData, InfiniteQuery};
 use crate::observer::{QueryObserver, QueryStateVariant};
 use crate::{QueryClient, QueryState};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Observer for an infinite query with fetch-next/previous capabilities.
 pub struct InfiniteQueryObserver<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
@@ -47,20 +49,17 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
     }
 
     /// Request fetching the next page.
-    /// If a fetch is already in progress or the channel is full, the request is ignored.
     pub fn fetch_next_page(&self) {
         let _ = self.next_page_tx.try_send(());
     }
 
     /// Request fetching the previous page.
-    /// If a fetch is already in progress or the channel is full, the request is ignored.
     pub fn fetch_previous_page(&self) {
         let _ = self.prev_page_tx.try_send(());
     }
 }
 
 /// Core infinite query execution loop.
-/// Extracted from `spawn_infinite_query` for testability.
 pub(crate) async fn run_infinite_query_loop<T, P>(
     client: QueryClient,
     key: crate::QueryKey,
@@ -81,8 +80,8 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
     mut next_page_rx: mpsc::Receiver<()>,
     mut prev_page_rx: mpsc::Receiver<()>,
 ) where
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static + PartialEq,
+    P: Clone + Send + Sync + 'static + PartialEq,
 {
     observer.set_loading();
     let result = fetch_fn(initial_param.clone()).await;
@@ -108,7 +107,11 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                         if let Some(last_page) = data.last_page() {
                             if let Some(next_param) = get_next(last_page, &data.pages) {
                                 let handle = tokio::spawn(async {}).abort_handle();
-                                client.set_abort_handle(&key, handle);
+                                let token = CancellationToken::new();
+                                client.set_in_flight(&key, InFlightTask {
+                                    abort_handle: handle,
+                                    cancel_token: token,
+                                });
                                 match fetch_fn(next_param.clone()).await {
                                     Ok(page) => {
                                         client.append_infinite_page(&key, page, next_param, max_pages);
@@ -118,7 +121,7 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                                         client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
                                     }
                                 }
-                                client.clear_abort_handle(&key);
+                                client.clear_in_flight(&key);
                             }
                         }
                     }
@@ -132,7 +135,11 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                         if let Some(first_page) = data.first_page() {
                             if let Some(prev_param) = get_prev(first_page, &data.pages) {
                                 let handle = tokio::spawn(async {}).abort_handle();
-                                client.set_abort_handle(&key, handle);
+                                let token = CancellationToken::new();
+                                client.set_in_flight(&key, InFlightTask {
+                                    abort_handle: handle,
+                                    cancel_token: token,
+                                });
                                 match fetch_fn(prev_param.clone()).await {
                                     Ok(page) => {
                                         client.prepend_infinite_page(&key, page, prev_param, max_pages);
@@ -142,7 +149,7 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                                         client.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
                                     }
                                 }
-                                client.clear_abort_handle(&key);
+                                client.clear_in_flight(&key);
                             }
                         }
                     }
@@ -155,8 +162,8 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
 
 /// Execute an infinite query.
 pub fn spawn_infinite_query<
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static + PartialEq,
+    P: Clone + Send + Sync + 'static + PartialEq,
     V: 'static,
 >(
     _cx: &mut gpui::Context<V>,
@@ -210,7 +217,6 @@ pub fn spawn_infinite_query<
         prev_page_tx,
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
