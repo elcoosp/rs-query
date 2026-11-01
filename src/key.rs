@@ -1,5 +1,5 @@
 // src/key.rs
-//! QueryKey - hierarchical key system for cache lookups and invalidation
+//! `QueryKey` - hierarchical key system for cache lookups and invalidation
 
 use std::fmt;
 
@@ -22,6 +22,7 @@ impl QueryKey {
     }
 
     /// Add a parameter segment (e.g., `"id=42"`).
+    #[must_use]
     pub fn with(mut self, label: impl Into<String>, value: impl std::fmt::Display) -> Self {
         let param = format!("{}={}", label.into(), value);
         self.cache_key = format!("{}::{}", self.cache_key, param);
@@ -30,6 +31,7 @@ impl QueryKey {
     }
 
     /// Add a plain segment (no key=value format).
+    #[must_use]
     pub fn segment(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
         self.cache_key = format!("{}::{}", self.cache_key, name);
@@ -38,13 +40,43 @@ impl QueryKey {
     }
 
     /// Get the pre-computed cache key string.
+    #[must_use]
     pub fn cache_key(&self) -> &str {
         &self.cache_key
     }
 
     /// Get the individual segments.
+    #[must_use]
     pub fn segments(&self) -> &[String] {
         &self.segments
+    }
+
+    /// Prefix check used by filters: `self` starts with `prefix` segment-wise.
+    ///
+    /// Mirrors `TanStack`'s partial key matching: `"users"` matches
+    /// `"users::id=1"`, but not the reverse.
+    #[must_use]
+    pub fn starts_with(&self, prefix: &QueryKey) -> bool {
+        let prefix_segments = prefix.segments();
+        self.segments.len() >= prefix_segments.len()
+            && self.segments[..prefix_segments.len()] == prefix_segments[..]
+    }
+
+    /// Build a key from raw segments.
+    #[must_use]
+    pub fn from_segments<I, S>(segments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut iter = segments.into_iter();
+        match iter.next() {
+            None => Self {
+                segments: Vec::new(),
+                cache_key: String::new(),
+            },
+            Some(first) => iter.fold(Self::new(first), QueryKey::segment),
+        }
     }
 }
 
@@ -90,7 +122,7 @@ mod tests {
     #[test]
     fn test_key_display() {
         let key = QueryKey::new("test").with("x", "y");
-        assert_eq!(format!("{}", key), "test::x=y");
+        assert_eq!(format!("{key}"), "test::x=y");
     }
 
     #[test]
@@ -121,7 +153,7 @@ mod tests {
     #[test]
     fn test_key_debug() {
         let key = QueryKey::new("test");
-        let debug = format!("{:?}", key);
+        let debug = format!("{key:?}");
         assert!(debug.contains("test"));
     }
 
@@ -150,5 +182,47 @@ mod tests {
             "org::id=abc::projects::id=123::tasks::status=open"
         );
         assert_eq!(key.segments().len(), 6);
+    }
+
+    #[test]
+    fn test_starts_with_prefix_matches() {
+        let prefix = QueryKey::new("users");
+        let full = QueryKey::new("users").with("id", 1);
+        assert!(full.starts_with(&prefix));
+        assert!(!prefix.starts_with(&full));
+    }
+
+    #[test]
+    fn test_starts_with_exact_match() {
+        let key = QueryKey::new("users").with("id", 1);
+        assert!(key.starts_with(&key));
+    }
+
+    #[test]
+    fn test_starts_with_different_branch() {
+        let a = QueryKey::new("users").segment("a");
+        let b = QueryKey::new("users").segment("b");
+        assert!(!b.starts_with(&a));
+    }
+
+    #[test]
+    fn test_starts_with_shorter_candidate() {
+        let prefix = QueryKey::new("users").segment("a").segment("b");
+        let short = QueryKey::new("users");
+        assert!(!short.starts_with(&prefix));
+    }
+
+    #[test]
+    fn test_from_segments() {
+        let key = QueryKey::from_segments(["users", "id=1", "posts"]);
+        assert_eq!(key.cache_key(), "users::id=1::posts");
+        assert_eq!(key.segments().len(), 3);
+    }
+
+    #[test]
+    fn test_from_segments_empty() {
+        let key = QueryKey::from_segments(Vec::<String>::new());
+        assert_eq!(key.cache_key(), "");
+        assert_eq!(key.segments(), [] as [String; 0]);
     }
 }
