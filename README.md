@@ -6,30 +6,89 @@
   </a>
 </p>
 
+**rs-query** is a Rust port of [TanStack Query](https://tanstack.com/query), built for the
+[GPUI](https://www.gpui.rs/) framework. It gives GPUI applications declarative, cache-aware
+async state management: queries and mutations with retries, deduplication, cancellation,
+invalidation, offline pause/resume, persistence, hydration and reactive observers.
 
-**rs-query** is a Rust port of the popular [TanStack Query](https://tanstack.com/query) data‑fetching library, built specifically for the [GPUI](https://www.gpui.rs/) framework. It provides declarative, cache‑aware queries and mutations with automatic background refetching, retries, hierarchical cache invalidation, and reactive observers.
+This crate targets **TanStack Query v5 parity** — the porting contract lives in
+[`docs/port-plan.md`](docs/port-plan.md) and the audited upstream semantics behind every
+module in [`docs/research/`](docs/research/).
 
-## Features
+| | |
+|---|---|
+| CI | GitHub Actions: `cargo fmt`, `clippy --all-features -- -D warnings` (pedantic, zero `#[allow]`), tests on default + all features, `cargo-llvm-cov` coverage |
+| Tests | 704 tests (`cargo test --all-features`), 671 on default features |
+| Coverage | **98.46 %** line coverage (`cargo llvm-cov --all-features --lib`); the remainder is devtools UI render code that cannot execute headless |
+| Edition | Rust 2024, `clippy::pedantic` clean |
 
-- **Declarative Queries** – Define a query once with a unique key and async fetch function.
-- **Automatic Caching** – Data is stored by key and served instantly while background updates occur.
-- **Stale‑While‑Revalidate** – Show cached (stale) data immediately and refresh in the background.
-- **Smart Retries** – Exponential backoff for transient failures, configurable per query.
-- **Request Deduplication** – Identical concurrent queries are coalesced into a single network call.
-- **Hierarchical Invalidation** – Invalidate whole families of queries using key prefix matching.
-- **Reactive Observers** – `QueryObserver` subscribes to cache changes for automatic UI updates.
-- **Optimistic Updates** – Mutations support `on_mutate` with automatic rollback on failure.
-- **Infinite Queries** – Paginated data with `fetch_next_page`, `has_next_page`, and `max_pages`.
-- **Query Options** – `staleTime`, `gcTime`, `retry`, `refetchInterval`, `refetchOnWindowFocus`, `structuralSharing`, and `select` transformations.
-- **Background Refetch** – Configurable `refetch_interval` and window focus refetching.
-- **Hydration & Persistence** – `dehydrate` and `hydrate` APIs for SSR and offline storage.
-- **Devtools** – Optional GPUI component for inspecting and debugging the query cache.
-- **`initialData` & `placeholderData`** – Seed the cache or show fallback data during loading, matching TanStack Query semantics.
-- **Query Cancellation** – Full cooperative cancellation via `CancellationToken` plus Tokio abort handles.
-- **Structural Sharing** – Opt‑in `PartialEq`‑based sharing that reuses `Arc`s when data is equal, enabling cheap `Arc::ptr_eq` change detection in views.
-- **`useIsFetching` / `useIsMutating`** – Reactive GPUI hooks that track global activity counts via broadcast channels.
-- **Type‑Safe** – Fully generic over your data types with `Send + Sync` bounds for seamless async use.
-- **GPUI Native** – Integrates directly with GPUI’s `Context` and `BackgroundExecutor`.
+## Feature overview
+
+### Core query engine
+- **Declarative queries** — `Query::new(key, fetch_fn)` with a `QueryKey` hierarchy and
+  stable `cache_key()` hashing; `initial_data`, `placeholder_data` (incl.
+  `keep_previous_data`-style placeholders) and `select` transformations.
+- **Caching** — stale-while-revalidate cache with `staleTime` / `staleTime: 'static'`,
+  `gcTime`, freshness by time, manual invalidation, `structural sharing`
+  (`Arc` reuse when data is equal, `Arc::ptr_eq` change detection in views).
+- **Retries** — TanStack-exact backoff `min(1000 · 2^n, 30 s)` (no jitter), `RetryDecision`
+  (never / count / always / closure), `failure_count` + `failure_reason` surfaced in
+  observer flags.
+- **Deduplication & cancellation** — concurrent fetches for a key coalesce; cooperative
+  cancellation via `CancellationToken` plus tokio abort handles; `cancelQueries`-style
+  revert semantics (`QueryError::Cancelled { revert, silent }`).
+- **Invalidation with filters** — `QueryFilters` (key prefix/exact, active/inactive, stale,
+  status, fetch status, predicates), `invalidate_queries_filtered` with TanStack's
+  `refetchType` matrix (`all | active | inactive | none`), `refetch_queries`,
+  `cancel_queries`, `reset_queries`, `remove_queries`.
+- **Imperative API** — `fetch_query` (retry-forced-off, TanStack `query()` semantics),
+  `prefetch_query` (fire-and-forget), `ensure_query_data` (fresh data short-circuit).
+- **Network modes** — `NetworkMode::Online | Always | OfflineFirst`, `OnlineManager`
+  with watch-based connectivity, offline pause/resume, refetch-on-reconnect triggers,
+  `mount()`/`unmount()` lifecycle.
+- **Managers** — `NotifyManager` (batch collapsing, nested batches), injectable
+  `TimeoutManager` (deterministic tests), `FocusManager`.
+
+### Mutations
+- `Mutation<T, P>` with `on_mutate` (+ rollback), `on_success`, `on_error`, `on_settled`,
+  `retry` (default 0), `mutation_key`, `scope { id }` serialization (scoped mutations run
+  one at a time), `network_mode`, invalidation of query keys.
+- **`MutationCache`** — filter-aware `find`/`find_all`, event broadcast
+  (added/removed/updated/scope-resumed), cache-level callbacks, `resume_paused_mutations`.
+- TanStack-exact side-effect ordering: cache `on_mutate` → options `on_mutate` → pending
+  dispatch → mutation fn → cache/options `on_success`/`on_error` → per-call `MutateOptions`
+  (fire last) → settle chain.
+
+### Observers & GPUI integration
+- `QueryObserver<T>` with `QueryResultFlags` — TanStack `QueryObserverResult` parity:
+  `data_updated_at`, `error_updated_at`, `error_update_count`, `failure_count`,
+  `failure_reason`, `is_fetched`, `is_fetched_after_mount`, `is_loading_error`,
+  `is_refetch_error`, `is_placeholder_data`, `is_paused`, `is_enabled`.
+- `use_query`-style `spawn_query` / `spawn_mutation` callbacks on GPUI's foreground
+  executor, with an `is_restoring` gate for hydration-driven apps.
+- Hooks: `use_is_fetching`, `use_is_mutating`, `use_fetching_count`, `use_mutating_count`,
+  `use_queries` (dynamic multi-query observer), `use_any_fetching`, `use_activity_feed`.
+- `QueriesObserver` with TanStack `combine` support; `InfiniteQuery` with bidirectional
+  pagination, `max_pages`, `has_next_page` / `has_previous_page`, direction-tracked
+  `is_fetching_next_page` / `is_fetching_previous_page`.
+- **Devtools** (feature-gated) — GPUI panel for inspecting the cache, timeline and filters.
+
+### Persistence & hydration
+- `dehydrate` / `hydrate` with TanStack semantics: `dehydrated_at`, error redaction
+  (`should_redact_errors`), `should_dehydrate_query` / `should_dehydrate_mutation`
+  predicates, newer-data guard on hydrate, `fetchStatus` reset, default options.
+- Fine-grained **query persister** (`experimental_createQueryPersister` port):
+  `QueryStorage` trait + in-memory impl, `max_age` expiry, `buster` versioning,
+  GC, selective restore.
+- Whole-client persistence: `ClientPersister`, `persist_query_client_restore/save/subscribe`,
+  `remove_oldest_query` retry strategy.
+- **Broadcast sync** — `broadcast_query_client` keeps multiple client instances in sync
+  with a re-entrancy guard (remote updates are never re-broadcast).
+
+### Utilities
+- `streamed_query` with `RefetchMode::{Replace, Append, Reset}`.
+- `Updater<T>` value-or-function updates (`functional_update`).
+- `cancellable_fetch` helper.
 
 ## Installation
 
@@ -39,17 +98,20 @@ Add `rs-query` as a Git dependency in your `Cargo.toml`:
 [dependencies]
 rs-query = { git = "https://github.com/elcoosp/rs-query" }
 
-# Optional: enable devtools
-# rs-query = { git = "...", features = ["devtools"] }
+# Optional feature gates:
+#   serde     — JSON persistence/hydration of query data
+#   devtools  — GPUI devtools panel (pulls gpui-component + chrono)
 ```
 
-Make sure your project already depends on `gpui` and `tokio` (with `rt-multi-thread`, `time`, and `sync` features).
+Your project needs a `tokio` runtime (features `rt-multi-thread`, `time`, `sync`,
+`macros`) alongside `gpui`.
 
-## Quick Start
+## Quick start
 
-### 1. Create a QueryClient
+### 1. Create a `QueryClient`
 
-Hold a `QueryClient` in your application state (e.g., in a GPUI `struct`). It manages the cache and can be cloned cheaply.
+Hold a `QueryClient` in your application state; it is cheap to clone and shares the
+cache across clones.
 
 ```rust
 use rs_query::QueryClient;
@@ -57,315 +119,158 @@ use rs_query::QueryClient;
 struct AppState {
     query_client: QueryClient,
 }
-
-impl AppState {
-    fn new() -> Self {
-        Self {
-            query_client: QueryClient::new(),
-        }
-    }
-}
 ```
 
-### 2. Define a Query
+### 2. Run a query
 
 ```rust
-use rs_query::{Query, QueryKey, QueryError};
+use std::time::Duration;
+use rs_query::{Query, QueryClient, QueryState, QueryKey, spawn_query, options::QueryOptions};
 
-async fn fetch_users() -> Result<Vec<User>, QueryError> {
-    // Your actual API call
-    Ok(vec![])
-}
+let client = QueryClient::new();
+let key = QueryKey::new("users").with("id", 42);
 
-let users_query = Query::new(QueryKey::new("users"), fetch_users)
-    .stale_time(std::time::Duration::from_secs(60));
-```
-
-### 3. Observe and Execute the Query
-
-Use `QueryObserver` to get reactive state updates:
-
-```rust
-use rs_query::{QueryObserver, spawn_query};
-
-fn fetch_users(&mut self, cx: &mut ViewContext<Self>) {
-    let client = self.query_client.clone();
-    let query = self.users_query.clone();
-
-    spawn_query(cx, client, query, move |this, state, cx| {
-        // state is automatically delivered: Loading, Success, Error, etc.
-        cx.notify();
-    });
-}
-```
-
-### 4. Initial Data and Placeholder Data
-
-```rust
-use rs_query::{Query, QueryKey, PlaceholderData};
-
-let users_query = Query::new(QueryKey::new("users"), fetch_users)
-    // Seed the cache so the observer starts in Success state
-    .initial_data(vec![])
-    // Show this data while the fetch is in-flight (no prior cache)
-    .placeholder_data(PlaceholderData::value(vec![User::placeholder()]));
-```
-
-### 5. Perform Mutations with Optimistic Updates
-
-```rust
-use rs_query::{Mutation, spawn_mutation, MutationState};
-
-let create_user = Mutation::new(|params: CreateUserParams| async move {
-    api::create_user(params).await
+let query = Query::new(key.clone(), || async {
+    Ok(vec!["Ada", "Alan"])
 })
-.invalidates_key(QueryKey::new("users"))
-.on_mutate(|client, params| {
-    // Optimistically add to cache
-    client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
-        let mut users = old.unwrap_or_default();
-        users.push(User { id: params.id, name: params.name.clone() });
-        users
-    });
+.stale_time(Duration::from_secs(30));
+
+// From inside a GPUI component context:
+// spawn_query(cx, &client, &query, |this, state: QueryState<Vec<&str>>, cx| {
+//     match state {
+//         QueryState::Success(users) => { /* render */ }
+//         QueryState::Loading => { /* spinner */ }
+//         QueryState::Error { error, .. } => { /* error UI */ }
+//         _ => {}
+//     }
+// });
+```
+
+### 3. Invalidate with filters
+
+```rust
+use rs_query::{QueryFilters, InvalidateQueryFilters, RefetchType};
+
+// Mark every "users" query stale; refetch only the active ones (TanStack default).
+client.invalidate_queries_filtered(
+    InvalidateQueryFilters::new()
+        .filters(QueryFilters::with_key(QueryKey::new("users")))
+        .refetch_type(RefetchType::Active),
+);
+```
+
+### 4. Mutations with optimistic updates
+
+```rust
+use rs_query::{Mutation, MutationScope, execute_mutation_full, MutationCache};
+
+let cache = MutationCache::default();
+let mutation = Mutation::<User, UserPatch>::new(|patch| async move {
+    save_user(patch).await
+})
+.mutation_key(QueryKey::new("save-user"))
+.scope(MutationScope { id: "save-user".into() }) // serialize concurrent saves
+.on_mutate(|client, patch| {
+    // optimistic write; return a rollback closure
+    let previous = client.get_query_data::<User>(&user_key(patch.id));
+    client.set_query_data(&user_key(patch.id), patch.preview(), QueryOptions::default());
     Ok(Box::new(move |client| {
-        client.set_query_data(&QueryKey::new("users"), |old: Option<Vec<User>>| {
-            old.map(|mut users| {
-                users.retain(|u| u.id != params.id);
-                users
-            })
-        });
+        if let Some(previous) = previous {
+            client.set_query_data(&user_key(patch.id), previous, QueryOptions::default());
+        }
     }))
-});
-
-fn create_user(&mut self, cx: &mut ViewContext<Self>, params: CreateUserParams) {
-    let client = self.query_client.clone();
-    let mutation = self.create_user_mutation.clone();
-
-    spawn_mutation(cx, &client, &mutation, params, move |this, state, cx| {
-        match state {
-            MutationState::Success(user) => {
-                this.show_success("User created");
-            }
-            MutationState::Error(e) => {
-                this.show_error(e.to_string());
-            }
-            _ => {}
-        }
-        cx.notify();
-    });
-}
+})
+.invalidates_key(user_key(42));
 ```
 
-### 6. Query Cancellation
+### 5. Offline-aware fetching
 
 ```rust
-// Cancel a specific in-flight query
-self.query_client.cancel_query(&QueryKey::new("users"));
+use rs_query::{NetworkMode, OnlineManager, QueryOptions};
 
-// Invalidate a family of queries (also cancels in-flight requests)
-self.query_client.invalidate_queries(&QueryKey::new("users"));
+let online = OnlineManager::new(); // starts online
+let options = QueryOptions::default()
+    .network_mode(NetworkMode::OfflineFirst) // attempt 1 runs offline, retries pause
+    .refetch_on_reconnect(rs_query::RefetchTrigger::Always);
+
+// Connectivity callbacks drive pause/resume:
+online.set_online(false); // in-flight retries pause; resume happens on set_online(true)
 ```
 
-### 7. Structural Sharing
+### 6. Persistence
 
 ```rust
-use rs_query::{Query, QueryKey};
+use std::sync::Arc;
+use rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions,
+               persist_query_client, PersistQueryClientOptions, InMemoryClientPersister};
 
-// Structural sharing requires T: PartialEq (enforced at compile time)
-let users_query: Query<Vec<User>> = Query::new(QueryKey::new("users"), fetch_users)
-    .structural_sharing(true);
+// Per-query persistence
+let persister = QueryPersister::new(
+    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))
+        .with_buster("v1".into()),
+);
 
-// When enabled, if the fetched data is PartialEq-equal to the cached data,
-// the same Arc is kept. Views can use Arc::ptr_eq to skip re-renders.
+// Whole-client persistence (restore + throttled save loop)
+let handle = persist_query_client(
+    &client,
+    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),
+).await?;
 ```
 
-### 8. Global Activity Hooks
+## Architecture
 
-```rust
-use rs_query::{use_is_fetching, use_is_mutating, use_fetching_count};
-
-fn render(&mut self, cx: &mut ViewContext<Self>) {
-    let is_fetching = use_is_fetching(cx, &self.query_client);
-    let is_mutating = use_is_mutating(cx, &self.query_client);
-    let count = use_fetching_count(cx, &self.query_client);
-
-    if *is_fetching.read(cx) {
-        // Show global loading indicator
-    }
-    // count.read(cx) gives the exact number of in-flight fetches
-}
+```
+src/
+├── lib.rs               public re-exports
+├── key.rs               QueryKey hierarchy + prefix matching
+├── state.rs             QueryState/MutationState + status enums
+├── options.rs           QueryOptions (TanStack option surface)
+├── filters.rs           QueryFilters / MutationFilters + match_query/match_mutation
+├── retryer.rs           retry decisions + min(1000·2^n, 30 s) backoff
+├── network.rs           NetworkMode + OnlineManager
+├── notify_manager.rs    batched notifications
+├── timeout_manager.rs   injectable timer source
+├── query.rs             Query<T> builder
+├── client.rs            QueryClient: cache, dedup, cancellation, bulk operations
+├── executor.rs          fetch/mutation execution (retry, pause, restore gate)
+├── observer.rs          QueryObserver + result flags
+├── infinite.rs          InfiniteData / InfiniteQuery
+├── infinite_executor.rs paginated fetch loop (max_pages, direction)
+├── mutation.rs          Mutation<T, P> + full lifecycle
+├── mutation_cache.rs    MutationCache + scope serialization
+├── mutation_observer.rs MutationObserver
+├── queries_observer.rs  QueriesObserver (useQueries core)
+├── hooks.rs             GPUI reactive hooks
+├── sharing.rs           structural sharing (PartialEqAny)
+├── cancellation.rs      cancellable_fetch
+├── hydration.rs         dehydrate/hydrate with TanStack semantics
+├── persister.rs         per-query persistence
+├── persist_client.rs    whole-client persistence
+├── broadcast.rs         cross-instance cache sync
+├── streamed_query.rs    streamedQuery port
+└── devtools.rs          GPUI devtools panel (feature "devtools")
 ```
 
-### 9. Infinite Queries
+## Testing & quality gates
 
-```rust
-use rs_query::{InfiniteQuery, spawn_infinite_query};
-
-let projects_query = InfiniteQuery::new(
-    QueryKey::new("projects"),
-    |cursor| async move { fetch_projects(cursor).await },
-    0,
-)
-.get_next_page_param(|last_page, _pages| last_page.next_cursor)
-.max_pages(3);
-
-let observer = spawn_infinite_query(cx, &client, &query, |this, state, cx| {
-    match state {
-        QueryState::Success(data) => {
-            this.projects = data.pages.into_iter().flatten().collect();
-        }
-        _ => {}
-    }
-    cx.notify();
-});
-
-// Later: observer.fetch_next_page();
+```bash
+cargo test --all-features          # 704 tests (671 on default features)
+cargo clippy --all-features --all-targets -- -D warnings   # pedantic, zero allows
+cargo llvm-cov --all-features --lib --summary-only         # 98.46 % lines
+cargo doc --no-deps                # every public item documented
 ```
 
-## API Overview
+CI (`.github/workflows/ci.yml`) runs formatting, clippy (pedantic, warnings-as-errors),
+tests on default + all features, and coverage uploaded to Codecov. Releases
+(`.github/workflows/release.yml`) verify tests, regenerate `CHANGELOG.md` with
+[git-cliff](https://git-cliff.org) from Conventional Commits (`cliff.toml`) and publish
+GitHub release notes on `v*` tags.
 
-### `QueryClient`
+## Versioning & changelog
 
-Central cache and query manager.
-
-- `get_query_data<T>(key: &QueryKey) -> Option<T>`
-- `set_query_data<T>(key: &QueryKey, data: T, options: QueryOptions)`
-- `cancel_query(key: &QueryKey)` – cancel an in-flight query via `CancellationToken` + abort
-- `invalidate_queries(pattern: &QueryKey)` – marks matching entries as stale and cancels in-flight
-- `refetch_all_stale()` – triggers refetch of all stale queries (e.g., on window focus)
-- `is_fetching() -> bool` / `fetching_count() -> usize` – global fetching activity
-- `is_mutating() -> bool` / `mutating_count() -> usize` – global mutating activity
-- `subscribe_activity() -> Receiver<ActivityEvent>` – raw activity stream
-- `dehydrate() -> DehydratedState` – serializes cache for persistence
-- `hydrate(state: DehydratedState, options: HydrateOptions)` – restores cache
-- `clear()` – empties the entire cache and cancels all in-flight tasks
-- `gc()` – removes entries older than their `gc_time`
-
-### `Query<T>`
-
-Definition of a query.
-
-- `Query::new(key, fetch_fn)` – builder starts here
-- `.stale_time(duration)` – how long data is considered fresh
-- `.gc_time(duration)` – inactive cache lifetime
-- `.retry(config)` – custom retry behaviour
-- `.enabled(bool)` – conditionally disable the query
-- `.select(f)` – transform data before returning
-- `.refetch_interval(duration)` – poll at interval
-- `.refetch_on_window_focus(bool)` – refetch when window regains focus
-- `.structural_sharing(bool)` – enable structural sharing (**requires `T: PartialEq`**)
-- `.initial_data(data)` – seed the cache on first observation
-- `.placeholder_data(data)` – show fallback data during loading
-- `.options(options)` – set all options at once
-
-### `PlaceholderData<T>`
-
-- `PlaceholderData::value(data)` – static placeholder
-- `PlaceholderData::function(f: Fn(Option<&T>) -> T)` – dynamic placeholder using previous data
-
-### `InfiniteQuery<T, P>`
-
-- `InfiniteQuery::new(key, fetch_fn, initial_page_param)`
-- `.get_next_page_param(f)` – extract next cursor
-- `.get_previous_page_param(f)` – extract previous cursor
-- `.max_pages(n)` – limit stored pages
-
-### `Mutation<T, P>`
-
-- `Mutation::new(mutate_fn)` – builder start
-- `.invalidates_key(key)` / `.invalidates(keys)` – keys to invalidate on success
-- `.on_mutate(f)` – optimistic update with rollback
-
-### `QueryObserver<T>`
-
-- `QueryObserver::new(client, key)` – simple constructor
-- `QueryObserver::from_query(client, query)` – applies `initialData` and stores `placeholderData`
-- `.state() -> &QueryState<T>` – current state
-- `.set_loading()` – transition to loading (uses placeholder if configured)
-- `.update()` – refresh state from cache
-- `.try_recv()` – non-blocking poll for broadcast updates
-- `.refetch()` – trigger stale + refetch notification
-
-### `QueryState<T>` & `MutationState<T>`
-
-- `QueryState::Idle` / `Loading` / `LoadingWithPlaceholder(T)` / `Refetching(T)` / `Success(T)` / `Stale(T)` / `Error { error, stale_data }`
-- Convenience methods: `.data()`, `.is_loading()`, `.is_success()`, `.is_error()`, `.map()`
-
-### Hooks
-
-- `use_is_fetching(cx, client) -> Model<bool>`
-- `use_is_mutating(cx, client) -> Model<bool>`
-- `use_fetching_count(cx, client) -> Model<usize>`
-- `use_mutating_count(cx, client) -> Model<usize>`
-
-### Executors
-
-- `spawn_query(cx, client, query, callback)` – executes a query
-- `spawn_mutation(cx, client, mutation, params, callback)` – executes a mutation
-- `spawn_infinite_query(cx, client, query, callback) -> InfiniteQueryObserver`
-
-### `QueryKey`
-
-Hierarchical key system for cache lookups and invalidation.
-
-```rust
-QueryKey::new("users")
-QueryKey::new("users").with("id", 42)
-QueryKey::new("users").segment("posts").with("id", 100)
-```
-
-Invalidation is prefix‑based: invalidating `QueryKey::new("users")` marks `users::id=42` and `users::posts::id=100` as stale.
-
-### Hydration
-
-- `client.dehydrate() -> DehydratedState`
-- `client.hydrate(state, options)`
-- Enable `serde` feature for JSON serialization support.
-
-### Devtools
-
-Enable the `devtools` feature to use the `QueryDevtools` component:
-
-```rust
-#[cfg(feature = "devtools")]
-let devtools = QueryDevtools::new(client.clone(), cx);
-```
-
-## Comparison with TanStack Query
-
-| Feature                                   | Status          |
-|-------------------------------------------|-----------------|
-| Query cache & GC                          | ✅ Implemented  |
-| Stale‑while‑revalidate                    | ✅ Implemented  |
-| Automatic retries (exponential backoff)   | ✅ Implemented  |
-| Request deduplication                     | ✅ Implemented  |
-| Hierarchical key invalidation             | ✅ Implemented  |
-| Query observers (reactive state)          | ✅ Implemented  |
-| Optimistic updates with rollback          | ✅ Implemented  |
-| Infinite queries / pagination             | ✅ Implemented  |
-| `select` transformation                   | ✅ Implemented  |
-| `refetchInterval` / window focus refetch  | ✅ Implemented  |
-| Hydration / persistence                   | ✅ Implemented  |
-| Devtools                                  | ✅ Implemented  |
-| `placeholderData`                         | ✅ Implemented  |
-| `initialData`                             | ✅ Implemented  |
-| Structural sharing                        | ✅ Implemented  |
-| Query cancellation                        | ✅ Implemented  |
-| `useIsFetching` / `useIsMutating` helpers | ✅ Implemented  |
-| Suspense integration                      | N/A (GPUI)     |
-| Full query filters API                    | ❌ Not yet     |
-
-## Contributing
-
-Contributions are welcome! If you'd like to help improve rs-query, please open an issue or pull request on the [repository](https://github.com/elcoosp/rs-query). Focus areas include:
-
-- Advanced query filters
-- Framework adapters for other Rust UI libraries (Dioxus, Leptos, etc.)
+Releases follow SemVer; `CHANGELOG.md` is generated from Conventional Commits by
+git-cliff on each `v*` tag (see `cliff.toml`).
 
 ## License
 
-This project is licensed under the MIT License.
-
-## Acknowledgements
-
-This project is heavily inspired by [TanStack Query](https://tanstack.com/query) and built for the [GPUI](https://www.gpui.rs/) ecosystem. Thanks to the maintainers of both projects for their excellent work.
+MIT — see the repository metadata.
