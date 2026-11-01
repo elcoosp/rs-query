@@ -1,10 +1,25 @@
-# rs-query
+<div align="center">
+  <img src="docs/logo.png" alt="rs-query" width="300"/>
+  <h1>rs-query</h1>
+  <p><strong>TanStack Query v5 parity for Rust & GPUI.</strong></p>
+  <p>
+    <a href="https://github.com/elcoosp/rs-query/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-Linux%20%7C%20macOS%20%7C%20Windows-9D4EDD?style=flat-square&logo=github" alt="CI"/></a>
+    <a href="https://github.com/elcoosp/rs-query/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License"/></a>
+    <a href="https://crates.io/crates/rs-query"><img src="https://img.shields.io/badge/Rust-stable%20%7C%20edition%202024-000000?style=flat-square&logo=rust" alt="Rust"/></a>
+    <a href="#observers--gpui-integration"><img src="https://img.shields.io/badge/Framework-GPUI-007ACC?style=flat-square" alt="Framework"/></a>
+    <a href="#testing--quality-gates"><img src="https://img.shields.io/badge/Tests-704%20Rust%20%7C%2098.46%25%20Coverage-brightgreen?style=flat-square" alt="Tests"/></a>
+  </p>
+  <p>
+    <a href="#installation">Install</a> ·
+    <a href="#feature-overview">Features</a> ·
+    <a href="#architecture">Architecture</a> ·
+    <a href="#quick-start">Quick Start</a> ·
+    <a href="#testing--quality-gates">Testing</a> ·
+    <a href="#license">License</a>
+  </p>
+</div>
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/elcoosp/rs-query/main/assets/logos/horizontal.svg">
-      <img src="https://raw.githubusercontent.com/elcoosp/rs-query/main/assets/logos/horizontal.svg" alt="rs-query horizontal logo" width="500">
-  </a>
-</p>
+<br/>
 
 **rs-query** is a Rust port of [TanStack Query](https://tanstack.com/query), built for the
 [GPUI](https://www.gpui.rs/) framework. It gives GPUI applications declarative, cache-aware
@@ -29,7 +44,7 @@ module in [`docs/research/`](docs/research/).
   stable `cache_key()` hashing; `initial_data`, `placeholder_data` (incl.
   `keep_previous_data`-style placeholders) and `select` transformations.
 - **Caching** — stale-while-revalidate cache with `staleTime` / `staleTime: 'static'`,
-  `gcTime`, freshness by time, manual invalidation, `structural sharing`
+  `gcTime`, freshness by time, manual invalidation, `structural_sharing`
   (`Arc` reuse when data is equal, `Arc::ptr_eq` change detection in views).
 - **Retries** — TanStack-exact backoff `min(1000 · 2^n, 30 s)` (no jitter), `RetryDecision`
   (never / count / always / closure), `failure_count` + `failure_reason` surfaced in
@@ -219,7 +234,7 @@ let handle = persist_query_client(
 
 ## Architecture
 
-```
+```text
 src/
 ├── lib.rs               public re-exports
 ├── key.rs               QueryKey hierarchy + prefix matching
