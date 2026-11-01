@@ -16,6 +16,6 @@ impl<T: PartialEq + 'static> PartialEqAny for T {
     }
 
     fn eq_any(&self, other: &dyn Any) -> bool {
-        other.downcast_ref::<T>().map_or(false, |o| self == o)
+        other.downcast_ref::<T>() == Some(self)
     }
 }
