@@ -1,17 +1,20 @@
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" , features = ["default","test-support"]}
+gpui = { git = "https://github.com/zed-industries/zed", features = ["default", "test-support"] }
 thiserror = "2"
-tokio ={version ="1.52",features = ["rt-multi-thread", "time", "sync", "rt", "macros"]}
+tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 dashmap = "6"
 futures-timer = "3.0"
 futures = "0.3"
-pretty_assertions = "1.4"
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
-chrono = { version = "0.4.44", optional = true }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", optional=true }
+pretty_assertions = "1"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+chrono = { version = "0.4", optional = true }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros", "test-util"] }
 
 [features]
 default = []
@@ -21,6 +24,17 @@ devtools = ["dep:chrono", "dep:gpui-component"]
 [lib]
 name = "rs_query"
 path = "src/lib.rs"
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+multiple_crate_versions = "allow"
+# `QueryOptions` and `QueryResultFlags` mirror TanStack Query's flat boolean
+# option/result surfaces 1:1; regrouping fields would break API parity.
+struct_excessive_bools = "allow"
 
 [package]
 authors = ["elcoosp"]
@@ -33,10 +47,10 @@ build = false
 categories = ["asynchronous", "caching", "gui"]
 description = "TanStack Query-inspired async state management for GPUI"
 documentation = "https://docs.rs/rs-query"
-edition = "2021"
+edition = "2024"
 exclude = ["docs/*", ".github/*", ".DS_Store"]
 keywords = ["gpui", "query", "async", "cache", "tanstack"]
 license = "MIT"
 name = "rs-query"
 readme = "README.md"
-version = "0.0.1"
+version = "0.1.0"
