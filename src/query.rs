@@ -1,26 +1,38 @@
 // src/query.rs
 //! Query definition and builder
 
-use crate::options::{PlaceholderData, QueryOptions};
 use crate::QueryError;
 use crate::QueryKey;
+use crate::options::{PlaceholderData, QueryOptions};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// Boxed future returned by a [`Query`]'s fetch function.
+///
+/// Resolves to the fetched data or a [`QueryError`]. The future is `Send +
+/// Sync` so it can be polled from any task.
+pub type FetchFuture<T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send + Sync>>;
+
+/// Thread-safe, cloneable fetch function producing a [`FetchFuture`].
+///
+/// # `TanStack` parity: `Query`'s `queryFn`.
+pub type FetchFn<T> = Arc<dyn Fn() -> FetchFuture<T> + Send + Sync>;
+
+/// Thread-safe, cloneable select transformation applied to fetched data.
+///
+/// # `TanStack` parity: `Query`'s `select` option.
+pub type SelectFn<T> = Arc<dyn Fn(&T) -> T + Send + Sync>;
 
 /// Definition of a query.
 pub struct Query<T: Clone + Send + Sync + 'static> {
     /// Query key.
     pub key: QueryKey,
     /// Function to fetch data.
-    pub fetch_fn: Arc<
-        dyn Fn() -> Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send + Sync>>
-            + Send
-            + Sync,
-    >,
+    pub fetch_fn: FetchFn<T>,
     /// Optional select transformation.
-    pub select: Option<Arc<dyn Fn(&T) -> T + Send + Sync>>,
+    pub select: Option<SelectFn<T>>,
     /// Query options.
     pub options: QueryOptions,
     /// Initial data to seed the cache.
@@ -64,6 +76,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     }
 
     /// Set initial data to seed the cache.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn initial_data(mut self, data: T) -> Self {
         self.initial_data = Some(data);
         self.initial_data_updated_at = Some(Instant::now());
@@ -71,36 +84,42 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     }
 
     /// Set placeholder data shown during loading.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn placeholder_data(mut self, data: PlaceholderData<T>) -> Self {
         self.placeholder_data = Some(data);
         self
     }
 
     /// Set stale time.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn stale_time(mut self, duration: std::time::Duration) -> Self {
         self.options.stale_time = duration;
         self
     }
 
     /// Set GC time.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn gc_time(mut self, duration: std::time::Duration) -> Self {
         self.options.gc_time = duration;
         self
     }
 
     /// Set retry options.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn retry(mut self, retry: crate::options::RetryConfig) -> Self {
         self.options.retry = retry;
         self
     }
 
     /// Set whether query is enabled.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.options.enabled = enabled;
         self
     }
 
     /// Set select transformation.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn select<F>(mut self, f: F) -> Self
     where
         F: Fn(&T) -> T + Send + Sync + 'static,
@@ -110,18 +129,21 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     }
 
     /// Set refetch interval.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn refetch_interval(mut self, duration: std::time::Duration) -> Self {
         self.options.refetch_interval = duration;
         self
     }
 
     /// Set refetch on window focus.
-    pub fn refetch_on_window_focus(mut self, enabled: bool) -> Self {
-        self.options.refetch_on_window_focus = enabled;
+    #[must_use = "builder methods do nothing unless the result is used"]
+    pub fn refetch_on_window_focus(mut self, trigger: crate::options::RefetchTrigger) -> Self {
+        self.options.refetch_on_window_focus = trigger;
         self
     }
 
     /// Set structural sharing (requires `T: PartialEq`).
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn structural_sharing(mut self, enabled: bool) -> Self
     where
         T: PartialEq,
@@ -131,6 +153,7 @@ impl<T: Clone + Send + Sync + 'static> Query<T> {
     }
 
     /// Set full query options.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn options(mut self, options: QueryOptions) -> Self {
         self.options = options;
         self
@@ -177,13 +200,16 @@ mod tests {
                 .stale_time(std::time::Duration::from_secs(60))
                 .gc_time(std::time::Duration::from_secs(300))
                 .enabled(true)
-                .refetch_on_window_focus(false)
+                .refetch_on_window_focus(crate::options::RefetchTrigger::Disabled)
                 .structural_sharing(false);
 
         assert_eq!(query.options.stale_time, std::time::Duration::from_secs(60));
         assert_eq!(query.options.gc_time, std::time::Duration::from_secs(300));
         assert!(query.options.enabled);
-        assert!(!query.options.refetch_on_window_focus);
+        assert_eq!(
+            query.options.refetch_on_window_focus,
+            crate::options::RefetchTrigger::Disabled
+        );
         assert!(!query.options.structural_sharing);
 
         let result = (query.fetch_fn)().await.unwrap();
