@@ -2,13 +2,18 @@
 //! Infinite query execution
 
 use crate::client::InFlightTask;
-use crate::error::QueryError;
-use crate::infinite::{InfiniteData, InfiniteQuery};
+use crate::infinite::{InfiniteData, InfiniteQuery, PageFetchFn, PageParamFn};
 use crate::observer::{QueryObserver, QueryStateVariant};
 use crate::{QueryClient, QueryState};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Direction marker for forward (next-page) fetch requests.
+const DIRECTION_FORWARD: u8 = 0;
+/// Direction marker for backward (previous-page) fetch requests.
+const DIRECTION_BACKWARD: u8 = 1;
 
 /// Observer for an infinite query with fetch-next/previous capabilities.
 pub struct InfiniteQueryObserver<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
@@ -17,6 +22,10 @@ pub struct InfiniteQueryObserver<T: Clone + Send + Sync + 'static, P: Clone + Se
     query: Arc<InfiniteQuery<T, P>>,
     next_page_tx: mpsc::Sender<()>,
     prev_page_tx: mpsc::Sender<()>,
+    /// Direction of the most recent page-fetch request; stands in for
+    /// `TanStack`'s `fetchMeta.fetchMore.direction` (only one page fetch can be
+    /// in flight at a time in this port).
+    fetch_direction: Arc<AtomicU8>,
 }
 
 impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
@@ -27,55 +36,108 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static>
     }
 
     pub fn has_next_page(&self) -> bool {
-        if let Some(data) = self.observer.state().data() {
-            if let Some(ref get_next) = self.query.get_next_page_param {
-                if let Some(last_page) = data.last_page() {
-                    return get_next(last_page, &data.pages).is_some();
-                }
-            }
+        if let Some(data) = self.observer.state().data()
+            && let Some(ref get_next) = self.query.get_next_page_param
+            && let Some(last_page) = data.last_page()
+        {
+            return get_next(last_page, &data.pages).is_some();
         }
         false
     }
 
     pub fn has_previous_page(&self) -> bool {
-        if let Some(data) = self.observer.state().data() {
-            if let Some(ref get_prev) = self.query.get_previous_page_param {
-                if let Some(first_page) = data.first_page() {
-                    return get_prev(first_page, &data.pages).is_some();
-                }
-            }
+        if let Some(data) = self.observer.state().data()
+            && let Some(ref get_prev) = self.query.get_previous_page_param
+            && let Some(first_page) = data.first_page()
+        {
+            return get_prev(first_page, &data.pages).is_some();
         }
         false
     }
 
     /// Request fetching the next page.
     pub fn fetch_next_page(&self) {
+        self.fetch_direction
+            .store(DIRECTION_FORWARD, Ordering::Relaxed);
         let _ = self.next_page_tx.try_send(());
     }
 
     /// Request fetching the previous page.
     pub fn fetch_previous_page(&self) {
+        self.fetch_direction
+            .store(DIRECTION_BACKWARD, Ordering::Relaxed);
         let _ = self.prev_page_tx.try_send(());
     }
+
+    /// Whether a page fetch (either direction) is currently in flight.
+    pub fn is_fetching(&self) -> bool {
+        self.observer.client().is_in_flight(&self.query.key)
+    }
+
+    /// Whether the in-flight fetch is a forward page fetch (`TanStack`
+    /// `isFetchingNextPage`); the direction is the one of the most recent
+    /// page-fetch request.
+    pub fn is_fetching_next_page(&self) -> bool {
+        self.is_fetching() && self.fetch_direction.load(Ordering::Relaxed) == DIRECTION_FORWARD
+    }
+
+    /// Whether the in-flight fetch is a backward page fetch (`TanStack`
+    /// `isFetchingPreviousPage`).
+    pub fn is_fetching_previous_page(&self) -> bool {
+        self.is_fetching() && self.fetch_direction.load(Ordering::Relaxed) == DIRECTION_BACKWARD
+    }
+
+    /// TanStack-style `fetchNextPage({ cancelRefetch, throwOnError })`.
+    ///
+    /// With `cancel_refetch` (the `TanStack` default) a running page fetch is
+    /// cancelled through the client first so the loop accepts the new
+    /// request; with `cancel_refetch == false` an in-flight fetch is reused
+    /// and the request is dropped (this port has no shared promise to
+    /// return). `throw_on_error` is accepted for API parity: page-fetch
+    /// errors surface through the query key's error notification inside
+    /// `run_infinite_query_loop`, not through a thrown value.
+    pub fn fetch_next_page_with(&self, cancel_refetch: bool, throw_on_error: bool) {
+        self.fetch_page_with(cancel_refetch, throw_on_error, true);
+    }
+
+    /// TanStack-style `fetchPreviousPage({ cancelRefetch, throwOnError })`.
+    pub fn fetch_previous_page_with(&self, cancel_refetch: bool, throw_on_error: bool) {
+        self.fetch_page_with(cancel_refetch, throw_on_error, false);
+    }
+
+    fn fetch_page_with(&self, cancel_refetch: bool, throw_on_error: bool, forward: bool) {
+        let _ = throw_on_error; // errors surface via the Error notification (see run_infinite_query_loop)
+        if self.is_fetching() {
+            if !cancel_refetch {
+                return;
+            }
+            self.observer.client().cancel_query(&self.query.key);
+        }
+        if forward {
+            self.fetch_next_page();
+        } else {
+            self.fetch_previous_page();
+        }
+    }
+}
+
+/// Bundled inputs for [`run_infinite_query_loop`], grouping the query
+/// definition pieces (key, options, initial page param and the fetch /
+/// page-param functions) so the loop signature stays lean.
+pub(crate) struct InfiniteLoopParams<T, P> {
+    key: crate::QueryKey,
+    options: crate::QueryOptions,
+    initial_param: P,
+    fetch_fn: PageFetchFn<T, P>,
+    get_next_fn: Option<PageParamFn<T, P>>,
+    get_prev_fn: Option<PageParamFn<T, P>>,
+    max_pages: Option<usize>,
 }
 
 /// Core infinite query execution loop.
 pub(crate) async fn run_infinite_query_loop<T, P>(
     client: QueryClient,
-    key: crate::QueryKey,
-    options: crate::QueryOptions,
-    initial_param: P,
-    fetch_fn: Arc<
-        dyn Fn(
-                P,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<T, QueryError>> + Send + Sync>,
-            > + Send
-            + Sync,
-    >,
-    get_next_fn: Option<Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>>,
-    get_prev_fn: Option<Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>>,
-    max_pages: Option<usize>,
+    params: InfiniteLoopParams<T, P>,
     mut observer: QueryObserver<InfiniteData<T, P>>,
     mut next_page_rx: mpsc::Receiver<()>,
     mut prev_page_rx: mpsc::Receiver<()>,
@@ -83,6 +145,16 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
     T: Clone + Send + Sync + 'static + PartialEq,
     P: Clone + Send + Sync + 'static + PartialEq,
 {
+    let InfiniteLoopParams {
+        key,
+        options,
+        initial_param,
+        fetch_fn,
+        get_next_fn,
+        get_prev_fn,
+        max_pages,
+    } = params;
+
     observer.set_loading();
     let result = fetch_fn(initial_param.clone()).await;
     match result {
@@ -99,13 +171,13 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
 
     loop {
         tokio::select! {
-            Some(_) = next_page_rx.recv() => {
+            Some(()) = next_page_rx.recv() => {
                 if client.is_in_flight(&key) { continue; }
                 let current_data = client.get_infinite_data::<T, P>(&key);
-                if let Some(data) = current_data {
-                    if let Some(ref get_next) = get_next_fn {
-                        if let Some(last_page) = data.last_page() {
-                            if let Some(next_param) = get_next(last_page, &data.pages) {
+                if let Some(data) = current_data
+                    && let Some(ref get_next) = get_next_fn
+                        && let Some(last_page) = data.last_page()
+                            && let Some(next_param) = get_next(last_page, &data.pages) {
                                 let handle = tokio::spawn(async {}).abort_handle();
                                 let token = CancellationToken::new();
                                 client.set_in_flight(&key, InFlightTask {
@@ -123,17 +195,14 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                                 }
                                 client.clear_in_flight(&key);
                             }
-                        }
-                    }
-                }
             }
-            Some(_) = prev_page_rx.recv() => {
+            Some(()) = prev_page_rx.recv() => {
                 if client.is_in_flight(&key) { continue; }
                 let current_data = client.get_infinite_data::<T, P>(&key);
-                if let Some(data) = current_data {
-                    if let Some(ref get_prev) = get_prev_fn {
-                        if let Some(first_page) = data.first_page() {
-                            if let Some(prev_param) = get_prev(first_page, &data.pages) {
+                if let Some(data) = current_data
+                    && let Some(ref get_prev) = get_prev_fn
+                        && let Some(first_page) = data.first_page()
+                            && let Some(prev_param) = get_prev(first_page, &data.pages) {
                                 let handle = tokio::spawn(async {}).abort_handle();
                                 let token = CancellationToken::new();
                                 client.set_in_flight(&key, InFlightTask {
@@ -151,9 +220,6 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
                                 }
                                 client.clear_in_flight(&key);
                             }
-                        }
-                    }
-                }
             }
             else => break,
         }
@@ -161,6 +227,12 @@ pub(crate) async fn run_infinite_query_loop<T, P>(
 }
 
 /// Execute an infinite query.
+///
+/// # Panics
+///
+/// Panics if the background current-thread Tokio runtime cannot be built
+/// (`Builder::build().unwrap()`), which is practically unreachable in a
+/// healthy host process.
 pub fn spawn_infinite_query<
     T: Clone + Send + Sync + 'static + PartialEq,
     P: Clone + Send + Sync + 'static + PartialEq,
@@ -170,19 +242,23 @@ pub fn spawn_infinite_query<
     client: &QueryClient,
     query: &InfiniteQuery<T, P>,
     _callback: impl FnOnce(&mut V, QueryState<InfiniteData<T, P>>, &mut gpui::Context<V>)
-        + Send
-        + 'static,
+    + Send
+    + 'static,
 ) -> InfiniteQueryObserver<T, P> {
     let key = query.key.clone();
     let options = query.options.clone();
-    let initial_param = query.initial_page_param.clone();
-    let fetch_fn = Arc::clone(&query.fetch_fn);
-    let get_next_fn = query.get_next_page_param.clone();
-    let get_prev_fn = query.get_previous_page_param.clone();
-    let max_pages = query.max_pages;
+    let params = InfiniteLoopParams {
+        key: key.clone(),
+        options: options.clone(),
+        initial_param: query.initial_page_param.clone(),
+        fetch_fn: Arc::clone(&query.fetch_fn),
+        get_next_fn: query.get_next_page_param.clone(),
+        get_prev_fn: query.get_previous_page_param.clone(),
+        max_pages: query.max_pages,
+    };
     let client = client.clone();
 
-    let observer = QueryObserver::with_options(&client, key.clone(), options.clone());
+    let observer = QueryObserver::with_options(&client, key, options);
     let observer_thread = observer.clone();
 
     // Use mpsc channels to allow multiple page fetch requests
@@ -197,13 +273,7 @@ pub fn spawn_infinite_query<
 
         rt.block_on(run_infinite_query_loop(
             client,
-            key,
-            options,
-            initial_param,
-            fetch_fn,
-            get_next_fn,
-            get_prev_fn,
-            max_pages,
+            params,
             observer_thread,
             next_page_rx,
             prev_page_rx,
@@ -215,24 +285,19 @@ pub fn spawn_infinite_query<
         query: Arc::new(query.clone()),
         next_page_tx,
         prev_page_tx,
+        fetch_direction: Arc::new(AtomicU8::new(DIRECTION_FORWARD)),
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::QueryError;
     use crate::{QueryKey, QueryOptions};
     use std::future::Future;
-    use std::pin::Pin;
     use std::time::{Duration, Instant};
 
     /// Helper to create an Arc'd fetch function for tests.
-    fn make_fetch_fn<T, P, F, Fut>(
-        f: F,
-    ) -> Arc<
-        dyn Fn(P) -> Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send + Sync>>
-            + Send
-            + Sync,
-    >
+    fn make_fetch_fn<T, P, F, Fut>(f: F) -> PageFetchFn<T, P>
     where
         T: Clone + Send + Sync + 'static,
         P: Clone + Send + Sync + 'static,
@@ -243,13 +308,32 @@ mod tests {
     }
 
     /// Helper to create an Arc'd get-next/get-previous page function for tests.
-    fn make_page_fn<T, P, F>(f: F) -> Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>
+    fn make_page_fn<T, P, F>(f: F) -> PageParamFn<T, P>
     where
         T: Send + Sync,
         P: Send + Sync,
         F: Fn(&T, &[T]) -> Option<P> + Send + Sync + 'static,
     {
         Arc::new(f)
+    }
+
+    /// Run the query's fetch closure once on a throwaway runtime.
+    ///
+    /// Several observer-level unit tests build an [`InfiniteQuery`] whose fetch
+    /// future is never awaited; calling it once here exercises the test-defined
+    /// closure without changing what the test asserts.
+    fn fetch_initial<T, P>(query: &InfiniteQuery<T, P>)
+    where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(
+            rt.block_on((query.fetch_fn)(query.initial_page_param.clone()))
+                .is_ok()
+        );
     }
 
     /// Poll until data appears in the cache or timeout.
@@ -280,14 +364,29 @@ mod tests {
     ) -> bool {
         let start = Instant::now();
         while start.elapsed() < timeout {
-            if let Some(data) = client.get_infinite_data::<T, P>(key) {
-                if data.page_count() >= expected {
-                    return true;
-                }
+            if let Some(data) = client.get_infinite_data::<T, P>(key)
+                && data.page_count() >= expected
+            {
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         false
+    }
+
+    #[tokio::test]
+    async fn test_wait_helpers_return_false_on_timeout() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("never-fetched");
+        assert!(
+            !wait_for_data::<Vec<i32>, i32>(&client, &key, Duration::from_millis(10)).await,
+            "nothing ever lands in the cache"
+        );
+        assert!(
+            !wait_for_page_count::<Vec<i32>, i32>(&client, &key, 1, Duration::from_millis(10))
+                .await,
+            "no pages ever arrive"
+        );
     }
 
     // ========================================================================
@@ -310,6 +409,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -318,6 +418,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_next_page());
@@ -338,6 +439,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -346,6 +448,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -367,6 +470,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -375,6 +479,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -392,6 +497,7 @@ mod tests {
         )
         .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -400,6 +506,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -421,6 +528,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -429,6 +537,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_previous_page());
@@ -449,6 +558,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -457,6 +567,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -474,6 +585,7 @@ mod tests {
         )
         .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -482,6 +594,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -503,6 +616,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -511,6 +625,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -527,6 +642,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -535,6 +651,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.state().is_idle());
@@ -551,6 +668,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
             QueryObserver::new(&client, key.clone());
 
@@ -559,6 +677,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         infinite_observer.fetch_next_page();
@@ -753,6 +872,7 @@ mod tests {
         )
         .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -760,6 +880,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -778,6 +899,7 @@ mod tests {
         )
         .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -785,6 +907,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -806,6 +929,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -813,6 +937,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -834,6 +959,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -841,6 +967,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -883,6 +1010,7 @@ mod tests {
         let data = InfiniteData::<Vec<i32>, i32>::new();
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -890,6 +1018,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -910,6 +1039,7 @@ mod tests {
         let data = InfiniteData::<Vec<i32>, i32>::new();
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -917,6 +1047,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -940,6 +1071,7 @@ mod tests {
         data.push_page(vec![21, 22], 2);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -947,6 +1079,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_next_page());
@@ -975,6 +1108,11 @@ mod tests {
         data.push_page(vec![21, 22], 2);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
+        // Exercise the None branch of the param closure directly (first page
+        // already at the boundary).
+        let get_prev = query.get_previous_page_param.as_ref().unwrap();
+        assert_eq!(get_prev(&vec![0], &[vec![0]]), None);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -982,6 +1120,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_previous_page());
@@ -1009,6 +1148,11 @@ mod tests {
         data.push_page(vec![0, 1], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
+        // Exercise the Some branch of the param closure directly (first page
+        // strictly above the boundary).
+        let get_prev = query.get_previous_page_param.as_ref().unwrap();
+        assert_eq!(get_prev(&vec![10], &[vec![10]]), Some(0));
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1016,6 +1160,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_previous_page());
@@ -1036,6 +1181,7 @@ mod tests {
         data.push_page(vec![1, 2, 3], 0);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1043,6 +1189,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.state().is_success());
@@ -1066,6 +1213,7 @@ mod tests {
 
         client.invalidate_queries(&key);
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1073,6 +1221,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.state().has_data());
@@ -1089,6 +1238,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let (next_page_tx, rx) = mpsc::channel::<()>(1);
@@ -1099,6 +1249,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         infinite_observer.fetch_next_page();
@@ -1115,6 +1266,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let (prev_page_tx, rx) = mpsc::channel::<()>(1);
@@ -1125,6 +1277,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         infinite_observer.fetch_previous_page();
@@ -1142,7 +1295,7 @@ mod tests {
         )
         .get_next_page_param(|_last: &Vec<i32>, all: &[Vec<i32>]| {
             if all.len() < 3 {
-                Some(all.len() as i32)
+                Some(i32::try_from(all.len()).unwrap_or(i32::MAX))
             } else {
                 None
             }
@@ -1153,6 +1306,12 @@ mod tests {
         data.push_page(vec![2], 1);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
+        // Exercise the None branch of the param closure directly (the page
+        // limit is reached).
+        let get_next = query.get_next_page_param.as_ref().unwrap();
+        let three = [vec![1], vec![2], vec![3]];
+        assert_eq!(get_next(&three[0], &three), None);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1160,6 +1319,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_next_page());
@@ -1177,7 +1337,7 @@ mod tests {
         )
         .get_next_page_param(|_last: &Vec<i32>, all: &[Vec<i32>]| {
             if all.len() < 3 {
-                Some(all.len() as i32)
+                Some(i32::try_from(all.len()).unwrap_or(i32::MAX))
             } else {
                 None
             }
@@ -1189,6 +1349,12 @@ mod tests {
         data.push_page(vec![3], 2);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
+        // Exercise the Some branch of the param closure directly (below the
+        // page limit).
+        let get_next = query.get_next_page_param.as_ref().unwrap();
+        let one = [vec![1]];
+        assert_eq!(get_next(&one[0], &one), Some(1));
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1196,6 +1362,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(!infinite_observer.has_next_page());
@@ -1220,6 +1387,7 @@ mod tests {
         data.push_page(vec![3], 2);
         client.set_infinite_data(&key, data, QueryOptions::default());
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1227,6 +1395,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.has_next_page());
@@ -1244,6 +1413,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1251,6 +1421,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         infinite_observer.fetch_next_page();
@@ -1285,6 +1456,7 @@ mod tests {
             0,
         );
 
+        fetch_initial(&query);
         let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> = QueryObserver::new(&client, key);
 
         let infinite_observer = InfiniteQueryObserver {
@@ -1292,6 +1464,7 @@ mod tests {
             query: std::sync::Arc::new(query),
             next_page_tx: mpsc::channel(1).0,
             prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
         };
 
         assert!(infinite_observer.state().is_idle());
@@ -1302,6 +1475,196 @@ mod tests {
     // ========================================================================
     // NEW: Integration tests for run_infinite_query_loop
     // ========================================================================
+
+    #[test]
+    fn test_infinite_query_has_next_page_on_query_definition() {
+        // InfiniteQuery::has_next_page/has_previous_page wired through the
+        // observer's cached data.
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
+
+        fetch_initial(&query);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1, 2, 3], 0);
+        assert!(query.has_next_page(Some(&data)));
+        assert!(!query.has_next_page(None));
+    }
+
+    #[tokio::test]
+    async fn test_is_fetching_flags_track_in_flight_direction() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let _ = (query.fetch_fn)(0).await.unwrap();
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
+        };
+
+        assert!(!infinite_observer.is_fetching());
+        assert!(!infinite_observer.is_fetching_next_page());
+        assert!(!infinite_observer.is_fetching_previous_page());
+
+        // Simulate an in-flight page fetch; the direction comes from the
+        // most recent request.
+        let handle = tokio::spawn(async {});
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: CancellationToken::new(),
+            },
+        );
+        // Default direction is forward.
+        assert!(infinite_observer.is_fetching());
+        assert!(infinite_observer.is_fetching_next_page());
+        assert!(!infinite_observer.is_fetching_previous_page());
+
+        // A previous-page request flips the direction.
+        infinite_observer.fetch_previous_page();
+        assert!(infinite_observer.is_fetching());
+        assert!(infinite_observer.is_fetching_previous_page());
+        assert!(!infinite_observer.is_fetching_next_page());
+
+        client.clear_in_flight(&key);
+        assert!(!infinite_observer.is_fetching());
+        assert!(!infinite_observer.is_fetching_next_page());
+        assert!(!infinite_observer.is_fetching_previous_page());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_next_page_with_cancels_in_flight() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let _ = (query.fetch_fn)(0).await.unwrap();
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
+        };
+
+        let handle = tokio::spawn(async {});
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: CancellationToken::new(),
+            },
+        );
+
+        // cancel_refetch = true: cancel the running fetch, then queue the
+        // next-page request (the receiver is dropped, so the send fails
+        // silently -- that's fine).
+        infinite_observer.fetch_next_page_with(true, false);
+        assert!(!client.is_in_flight(&key));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_next_page_with_reuses_in_flight_without_cancel() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let _ = (query.fetch_fn)(0).await.unwrap();
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: mpsc::channel(1).0,
+            prev_page_tx: mpsc::channel(1).0,
+            fetch_direction: std::sync::Arc::default(),
+        };
+
+        let handle = tokio::spawn(async {});
+        client.set_in_flight(
+            &key,
+            InFlightTask {
+                abort_handle: handle.abort_handle(),
+                cancel_token: CancellationToken::new(),
+            },
+        );
+
+        // cancel_refetch = false: keep the in-flight fetch (dedup).
+        infinite_observer.fetch_next_page_with(false, false);
+        assert!(client.is_in_flight(&key));
+
+        // And the previous-page variant behaves the same.
+        infinite_observer.fetch_previous_page_with(false, false);
+        assert!(client.is_in_flight(&key));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_next_page_with_sends_request_when_idle() {
+        let client = QueryClient::new();
+        let key = QueryKey::new("test");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |_param: i32| async move { Ok(vec![1, 2, 3]) },
+            0,
+        );
+
+        let _ = (query.fetch_fn)(0).await.unwrap();
+        let observer: QueryObserver<InfiniteData<Vec<i32>, i32>> =
+            QueryObserver::new(&client, key.clone());
+
+        let (next_tx, mut next_rx) = mpsc::channel(1);
+        let (prev_tx, mut prev_rx) = mpsc::channel(1);
+        let infinite_observer = InfiniteQueryObserver {
+            observer,
+            query: std::sync::Arc::new(query),
+            next_page_tx: next_tx,
+            prev_page_tx: prev_tx,
+            fetch_direction: std::sync::Arc::default(),
+        };
+
+        infinite_observer.fetch_next_page_with(true, false);
+        assert!(next_rx.try_recv().is_ok(), "next-page request was queued");
+
+        infinite_observer.fetch_previous_page_with(true, false);
+        assert!(
+            prev_rx.try_recv().is_ok(),
+            "previous-page request was queued"
+        );
+    }
 
     #[tokio::test]
     async fn test_loop_initial_fetch_success() {
@@ -1318,13 +1681,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1346,11 +1711,7 @@ mod tests {
         let client = QueryClient::new();
         let key = QueryKey::new("test");
 
-        let fetch_fn: Arc<
-            dyn Fn(i32) -> Pin<Box<dyn Future<Output = Result<Vec<i32>, QueryError>> + Send + Sync>>
-                + Send
-                + Sync,
-        > = Arc::new(|_param: i32| {
+        let fetch_fn: PageFetchFn<Vec<i32>, i32> = Arc::new(|_param: i32| {
             Box::pin(async move { Err(QueryError::network("fetch failed")) })
         });
 
@@ -1360,13 +1721,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1401,13 +1764,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1439,11 +1804,7 @@ mod tests {
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cc = call_count.clone();
 
-        let fetch_fn: Arc<
-            dyn Fn(i32) -> Pin<Box<dyn Future<Output = Result<Vec<i32>, QueryError>> + Send + Sync>>
-                + Send
-                + Sync,
-        > = Arc::new(move |param: i32| {
+        let fetch_fn: PageFetchFn<Vec<i32>, i32> = Arc::new(move |param: i32| {
             let cc = cc.clone();
             Box::pin(async move {
                 if cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -1462,13 +1823,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1508,13 +1871,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            5,
-            fetch_fn,
-            None,
-            get_prev,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 5,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: get_prev,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1546,11 +1911,7 @@ mod tests {
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cc = call_count.clone();
 
-        let fetch_fn: Arc<
-            dyn Fn(i32) -> Pin<Box<dyn Future<Output = Result<Vec<i32>, QueryError>> + Send + Sync>>
-                + Send
-                + Sync,
-        > = Arc::new(move |param: i32| {
+        let fetch_fn: PageFetchFn<Vec<i32>, i32> = Arc::new(move |param: i32| {
             let cc = cc.clone();
             Box::pin(async move {
                 if cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
@@ -1571,13 +1932,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            5,
-            fetch_fn,
-            None,
-            get_prev,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 5,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: get_prev,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1611,13 +1974,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1649,13 +2014,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1689,13 +2056,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1729,13 +2098,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            get_prev,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: get_prev,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1771,13 +2142,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            99,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 99,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1796,7 +2169,7 @@ mod tests {
         let fetch_fn = make_fetch_fn(|param: i32| Box::pin(async move { Ok(vec![param]) }));
 
         let get_next = Some(make_page_fn(|_last: &Vec<i32>, all: &[Vec<i32>]| {
-            Some(all.len() as i32)
+            Some(i32::try_from(all.len()).unwrap_or(i32::MAX))
         }));
 
         let observer = QueryObserver::new(&client, key.clone());
@@ -1805,13 +2178,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1859,13 +2234,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            Some(3),
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: Some(3),
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1893,13 +2270,15 @@ mod tests {
         // Poll for the actual eviction result instead of just count (count stays 3)
         let start = Instant::now();
         loop {
-            if start.elapsed() > Duration::from_secs(1) {
-                panic!("timed out waiting for eviction");
-            }
-            if let Some(data) = client.get_infinite_data::<Vec<i32>, i32>(&key) {
-                if data.page_count() == 3 && data.pages[0] == vec![1] {
-                    break;
-                }
+            assert!(
+                start.elapsed() <= Duration::from_secs(1),
+                "timed out waiting for eviction"
+            );
+            if let Some(data) = client.get_infinite_data::<Vec<i32>, i32>(&key)
+                && data.page_count() == 3
+                && data.pages[0] == vec![1]
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -1932,13 +2311,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            2,
-            fetch_fn,
-            None,
-            get_prev,
-            Some(3),
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 2,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: get_prev,
+                max_pages: Some(3),
+            },
             observer,
             next_rx,
             prev_rx,
@@ -1965,13 +2346,15 @@ mod tests {
         prev_tx.send(()).await.unwrap();
         let start = Instant::now();
         loop {
-            if start.elapsed() > Duration::from_secs(1) {
-                panic!("timed out waiting for eviction");
-            }
-            if let Some(data) = client.get_infinite_data::<Vec<i32>, i32>(&key) {
-                if data.page_count() == 3 && data.pages[0] == vec![-1] {
-                    break;
-                }
+            assert!(
+                start.elapsed() <= Duration::from_secs(1),
+                "timed out waiting for eviction"
+            );
+            if let Some(data) = client.get_infinite_data::<Vec<i32>, i32>(&key)
+                && data.page_count() == 3
+                && data.pages[0] == vec![-1]
+            {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -2007,13 +2390,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -2060,13 +2445,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            get_next,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -2109,13 +2496,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            1,
-            fetch_fn,
-            get_next,
-            get_prev,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 1,
+                fetch_fn,
+                get_next_fn: get_next,
+                get_prev_fn: get_prev,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -2158,13 +2547,15 @@ mod tests {
 
         let handle = tokio::spawn(run_infinite_query_loop(
             client.clone(),
-            key.clone(),
-            QueryOptions::default(),
-            0,
-            fetch_fn,
-            None,
-            None,
-            None,
+            InfiniteLoopParams {
+                key: key.clone(),
+                options: QueryOptions::default(),
+                initial_param: 0,
+                fetch_fn,
+                get_next_fn: None,
+                get_prev_fn: None,
+                max_pages: None,
+            },
             observer,
             next_rx,
             prev_rx,
@@ -2181,5 +2572,82 @@ mod tests {
         drop(next_tx);
         drop(prev_tx);
         let _ = handle.await;
+    }
+
+    // ========================================================================
+    // spawn_infinite_query (GPUI integration)
+    // ========================================================================
+
+    struct SpawnHolder {
+        observer: InfiniteQueryObserver<Vec<i32>, i32>,
+    }
+
+    impl gpui::Render for SpawnHolder {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::Empty
+        }
+    }
+
+    #[gpui::test]
+    fn test_spawn_infinite_query_fetches_and_appends_pages(cx: &mut gpui::TestAppContext) {
+        let client = QueryClient::new();
+        let key = QueryKey::new("spawn");
+
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            key.clone(),
+            |param: i32| async move {
+                // A small delay so the polling loop below actually waits at
+                // least once before the initial page lands.
+                std::thread::sleep(Duration::from_millis(50));
+                Ok(vec![param])
+            },
+            0,
+        )
+        .get_next_page_param(|last: &Vec<i32>, _all: &[Vec<i32>]| Some(last[0] + 1));
+
+        let view_client = client.clone();
+        let view = cx
+            .add_window_view(move |_window, cx| SpawnHolder {
+                observer: spawn_infinite_query(cx, &view_client, &query, |_, _, _| {}),
+            })
+            .0;
+
+        // The spawned thread performs the initial page fetch on its own
+        // current-thread runtime.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while client.get_infinite_data::<Vec<i32>, i32>(&key).is_none() {
+            assert!(Instant::now() < deadline, "initial page never arrived");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let data = client.get_infinite_data::<Vec<i32>, i32>(&key).unwrap();
+        assert_eq!(data.page_count(), 1);
+        assert_eq!(data.pages[0], vec![0]);
+
+        // Requesting the next page through the observer appends it.
+        view.read_with(cx, |holder, _| holder.observer.fetch_next_page());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "next page never arrived");
+            if let Some(data) = client.get_infinite_data::<Vec<i32>, i32>(&key)
+                && data.page_count() >= 2
+            {
+                assert_eq!(data.pages[1], vec![1]);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // The loop thread updates its own observer clone; the handle's
+        // observer was created before any data existed, so its cached state
+        // intentionally stays behind. The client-level flags are meaningful:
+        let fetching = view.read_with(cx, |holder, _| holder.observer.is_fetching());
+        assert!(!fetching, "both page fetches finished, nothing in flight");
+
+        // Dropping the observer (with the view) closes the request channels
+        // and the loop thread exits on its own.
     }
 }
