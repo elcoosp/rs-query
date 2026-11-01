@@ -2,10 +2,23 @@
 //! Infinite query support for paginated data
 
 use crate::options::QueryOptions;
+use crate::query::FetchFuture;
 use crate::{QueryError, QueryKey};
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
+
+/// Thread-safe, cloneable function fetching one page for an
+/// [`InfiniteQuery`], parameterized by the page parameter `P`.
+///
+/// # `TanStack` parity: `useInfiniteQuery`'s `queryFn`.
+pub type PageFetchFn<T, P> = Arc<dyn Fn(P) -> FetchFuture<T> + Send + Sync>;
+
+/// Thread-safe, cloneable function deriving the next/previous page parameter
+/// from the last fetched page and all pages fetched so far.
+///
+/// # `TanStack` parity: `useInfiniteQuery`'s `getNextPageParam` /
+/// `getPreviousPageParam`.
+pub type PageParamFn<T, P> = Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>;
 
 /// Data structure for infinite query results.
 #[derive(Debug)]
@@ -33,6 +46,7 @@ impl<T: PartialEq, P: PartialEq> PartialEq for InfiniteData<T, P> {
 
 impl<T, P> InfiniteData<T, P> {
     /// Create new empty infinite data.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pages: Vec::new(),
@@ -55,16 +69,19 @@ impl<T, P> InfiniteData<T, P> {
     }
 
     /// Get the number of pages.
+    #[must_use]
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
 
     /// Get the last page if available.
+    #[must_use]
     pub fn last_page(&self) -> Option<&T> {
         self.pages.last()
     }
 
     /// Get the first page if available.
+    #[must_use]
     pub fn first_page(&self) -> Option<&T> {
         self.pages.first()
     }
@@ -81,17 +98,13 @@ pub struct InfiniteQuery<T: Clone + Send + Sync + 'static, P: Clone + Send + Syn
     /// Query key.
     pub key: QueryKey,
     /// Function to fetch a page.
-    pub fetch_fn: Arc<
-        dyn Fn(P) -> Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send + Sync>>
-            + Send
-            + Sync,
-    >,
+    pub fetch_fn: PageFetchFn<T, P>,
     /// Initial page parameter.
     pub initial_page_param: P,
     /// Function to get the next page parameter.
-    pub get_next_page_param: Option<Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>>,
+    pub get_next_page_param: Option<PageParamFn<T, P>>,
     /// Function to get the previous page parameter.
-    pub get_previous_page_param: Option<Arc<dyn Fn(&T, &[T]) -> Option<P> + Send + Sync>>,
+    pub get_previous_page_param: Option<PageParamFn<T, P>>,
     /// Maximum number of pages to keep.
     pub max_pages: Option<usize>,
     /// Query options.
@@ -133,6 +146,7 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Infinit
     }
 
     /// Set the function to get the next page parameter.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn get_next_page_param<F>(mut self, f: F) -> Self
     where
         F: Fn(&T, &[T]) -> Option<P> + Send + Sync + 'static,
@@ -142,6 +156,7 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Infinit
     }
 
     /// Set the function to get the previous page parameter.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn get_previous_page_param<F>(mut self, f: F) -> Self
     where
         F: Fn(&T, &[T]) -> Option<P> + Send + Sync + 'static,
@@ -151,15 +166,49 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Infinit
     }
 
     /// Set maximum number of pages to keep.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn max_pages(mut self, max: usize) -> Self {
         self.max_pages = Some(max);
         self
     }
 
     /// Set query options.
+    #[must_use = "builder methods do nothing unless the result is used"]
     pub fn options(mut self, options: QueryOptions) -> Self {
         self.options = options;
         self
+    }
+
+    /// `TanStack` `hasNextPage`: whether `get_next_page_param` yields a
+    /// parameter for the **last** cached page. `None` data, a missing
+    /// `get_next_page_param`, or a `None` param all mean "no next page".
+    pub fn has_next_page(&self, data: Option<&InfiniteData<T, P>>) -> bool {
+        let Some(data) = data else {
+            return false;
+        };
+        let Some(get_next) = self.get_next_page_param.as_ref() else {
+            return false;
+        };
+        let Some(last_page) = data.last_page() else {
+            return false;
+        };
+        get_next(last_page, &data.pages).is_some()
+    }
+
+    /// `TanStack` `hasPreviousPage`: like [`InfiniteQuery::has_next_page`] for
+    /// the **first** cached page, additionally requiring
+    /// `get_previous_page_param` to be configured.
+    pub fn has_previous_page(&self, data: Option<&InfiniteData<T, P>>) -> bool {
+        let Some(data) = data else {
+            return false;
+        };
+        let Some(get_prev) = self.get_previous_page_param.as_ref() else {
+            return false;
+        };
+        let Some(first_page) = data.first_page() else {
+            return false;
+        };
+        get_prev(first_page, &data.pages).is_some()
     }
 }
 #[cfg(test)]
@@ -167,18 +216,35 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Await the query's fetch closure once on a throwaway runtime so
+    /// test-defined page fetchers are exercised even when the unit under test
+    /// never drives them.
+    fn fetch_once<T, P>(query: &InfiniteQuery<T, P>)
+    where
+        T: Clone + Send + Sync + 'static,
+        P: Clone + Send + Sync + 'static,
+    {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        assert!(
+            rt.block_on((query.fetch_fn)(query.initial_page_param.clone()))
+                .is_ok()
+        );
+    }
+
     #[test]
     fn test_infinite_data_new() {
         let data: InfiniteData<Vec<i32>, i32> = InfiniteData::new();
-        assert!(data.pages.is_empty());
-        assert!(data.page_params.is_empty());
+        assert_eq!(data.pages, [] as [Vec<i32>; 0]);
+        assert_eq!(data.page_params, [] as [i32; 0]);
         assert_eq!(data.page_count(), 0);
     }
 
     #[test]
     fn test_infinite_data_default() {
         let data: InfiniteData<Vec<i32>, i32> = InfiniteData::default();
-        assert!(data.pages.is_empty());
+        assert_eq!(data.pages, [] as [Vec<i32>; 0]);
     }
 
     #[test]
@@ -236,7 +302,7 @@ mod tests {
     #[test]
     fn test_infinite_data_debug() {
         let data = InfiniteData::with_first_page(vec![1, 2, 3], 0);
-        let debug = format!("{:?}", data);
+        let debug = format!("{data:?}");
         assert!(debug.contains("pages"));
     }
 
@@ -271,6 +337,7 @@ mod tests {
         )
         .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1))
         .max_pages(10);
+        fetch_once(&query);
 
         let cloned = query.clone();
         assert_eq!(cloned.key.cache_key(), "test");
@@ -287,6 +354,7 @@ mod tests {
             0,
         )
         .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(1));
+        fetch_once(&query);
 
         assert!(query.get_next_page_param.is_some());
         let fn_get = query.get_next_page_param.as_ref().unwrap();
@@ -302,6 +370,7 @@ mod tests {
             0,
         )
         .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
+        fetch_once(&query);
 
         assert!(query.get_previous_page_param.is_some());
         let fn_get = query.get_previous_page_param.as_ref().unwrap();
@@ -321,6 +390,7 @@ mod tests {
             stale_time: std::time::Duration::from_secs(60),
             ..Default::default()
         });
+        fetch_once(&query);
 
         assert_eq!(query.max_pages, Some(5));
         assert_eq!(query.options.stale_time, std::time::Duration::from_secs(60));
@@ -334,6 +404,7 @@ mod tests {
             0,
         )
         .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| None);
+        fetch_once(&query);
 
         let fn_get = query.get_next_page_param.as_ref().unwrap();
         let result = fn_get(&vec![1], &[vec![1]]);
@@ -363,5 +434,151 @@ mod tests {
         (cloned.fetch_fn)(2).await.unwrap();
 
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    // ----- has_next_page / has_previous_page -----
+
+    #[test]
+    fn test_has_next_page_true_then_false_at_boundary() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_next_page_param(
+            |last: &Vec<i32>, _all: &[Vec<i32>]| {
+                if last[0] < 3 { Some(last[0] + 1) } else { None }
+            },
+        );
+        fetch_once(&query);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![1], 0);
+        assert!(query.has_next_page(Some(&data)));
+
+        data.push_page(vec![3], 3);
+        assert!(
+            !query.has_next_page(Some(&data)),
+            "param is None => no next page"
+        );
+    }
+
+    #[test]
+    fn test_has_next_page_none_data_or_no_fn() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(2));
+        fetch_once(&query);
+
+        assert!(!query.has_next_page(None), "no data => no next page");
+
+        let bare: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        );
+        fetch_once(&bare);
+        let data = InfiniteData::with_first_page(vec![1], 0);
+        assert!(!bare.has_next_page(Some(&data)), "no get_next_page_param");
+    }
+
+    #[test]
+    fn test_has_next_page_empty_pages() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(2));
+        fetch_once(&query);
+
+        let data = InfiniteData::<Vec<i32>, i32>::new();
+        assert!(!query.has_next_page(Some(&data)), "no last page => false");
+    }
+
+    #[test]
+    fn test_has_previous_page_true_then_false() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_previous_page_param(|first: &Vec<i32>, _all: &[Vec<i32>]| {
+            if first[0] > 0 {
+                Some(first[0] - 1)
+            } else {
+                None
+            }
+        });
+        fetch_once(&query);
+
+        let mut data = InfiniteData::new();
+        data.push_page(vec![2], 1);
+        assert!(query.has_previous_page(Some(&data)));
+
+        data.pages.insert(0, vec![0]);
+        data.page_params.insert(0, 0);
+        assert!(
+            !query.has_previous_page(Some(&data)),
+            "param is None => no previous page"
+        );
+    }
+
+    #[test]
+    fn test_has_previous_page_requires_previous_fn_and_data() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_next_page_param(|_last: &Vec<i32>, _all: &[Vec<i32>]| Some(2));
+        fetch_once(&query);
+
+        let data = InfiniteData::with_first_page(vec![1], 0);
+        assert!(
+            !query.has_previous_page(Some(&data)),
+            "has_next_page_param alone is not enough"
+        );
+        assert!(!query.has_previous_page(None));
+    }
+
+    #[test]
+    fn test_has_previous_page_with_empty_pages_returns_false() {
+        let query: InfiniteQuery<Vec<i32>, i32> = InfiniteQuery::new(
+            QueryKey::new("test"),
+            |param: i32| async move { Ok(vec![param]) },
+            0,
+        )
+        .get_previous_page_param(|_first: &Vec<i32>, _all: &[Vec<i32>]| Some(-1));
+
+        let data = InfiniteData::<Vec<i32>, i32>::new();
+        assert!(
+            !query.has_previous_page(Some(&data)),
+            "no first page => false"
+        );
+
+        // Drive the stored fetcher once so the async block behind it is
+        // instantiated (the page logic itself is exercised elsewhere).
+        let page =
+            futures::executor::block_on((query.fetch_fn)(0)).expect("fetcher should succeed");
+        assert_eq!(page, vec![0]);
+    }
+
+    #[test]
+    fn test_infinite_data_partial_eq_compares_pages_and_params() {
+        let base = InfiniteData::with_first_page(vec![1, 2], 0);
+        assert_eq!(base, InfiniteData::with_first_page(vec![1, 2], 0));
+
+        let different_pages = InfiniteData::with_first_page(vec![9, 9], 0);
+        let different_params = InfiniteData::with_first_page(vec![1, 2], 7);
+        assert_ne!(base, different_pages);
+        assert_ne!(base, different_params);
+
+        let mut longer = InfiniteData::with_first_page(vec![1, 2], 0);
+        longer.push_page(vec![3], 1);
+        assert_ne!(base, longer);
     }
 }
