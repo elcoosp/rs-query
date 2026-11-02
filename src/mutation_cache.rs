@@ -2,7 +2,7 @@
 //! Mutation cache, mirroring `TanStack` Query's `mutationCache.ts`.
 //!
 //! Stores a snapshot entry for every submitted mutation, fans lifecycle events
-//! out through a `tokio::sync::broadcast` channel and serializes scoped
+//! out through a bounded broadcast bus ([`crate::bus`]) and serializes scoped
 //! mutations: mutations sharing a [`MutationScope`] run one at a time; later
 //! submissions are added as paused and queued until the current one finishes.
 //!
@@ -11,14 +11,15 @@
 //! call back into the cache without re-entrancy hazards. Per `TanStack` they
 //! run *before* the corresponding per-mutation option callbacks.
 
+use crate::bus;
 use crate::error::QueryError;
 use crate::filters::{MutationFilters, MutationSnapshot, match_mutation};
 use crate::key::QueryKey;
 use crate::state::MutationStatus;
+use crate::watch::{Watch, Watcher};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 
 /// Broadcast capacity for [`MutationCacheEvent`] deliveries.
 const EVENT_CAPACITY: usize = 256;
@@ -158,7 +159,10 @@ pub struct MutationCache {
     scopes: Arc<Mutex<HashMap<String, ScopeState>>>,
     next_id: Arc<AtomicU64>,
     config: Arc<MutationCacheConfig>,
-    tx: Arc<broadcast::Sender<MutationCacheEvent>>,
+    tx: Arc<bus::Sender<MutationCacheEvent>>,
+    /// Per-scope release signals: waiting mutations park on the scope's
+    /// watcher instead of polling.
+    scope_release: Arc<Mutex<HashMap<String, Watch<()>>>>,
 }
 
 impl Default for MutationCache {
@@ -205,10 +209,11 @@ impl MutationCache {
     /// Create an empty cache with the given config callbacks.
     #[must_use]
     pub fn with_config(config: MutationCacheConfig) -> Self {
-        let (tx, _rx) = broadcast::channel(EVENT_CAPACITY);
+        let (tx, _rx) = bus::Sender::channel(EVENT_CAPACITY);
         Self {
             entries: Arc::new(Mutex::new(Vec::new())),
             scopes: Arc::new(Mutex::new(HashMap::new())),
+            scope_release: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(0)),
             config: Arc::new(config),
             tx: Arc::new(tx),
@@ -223,7 +228,7 @@ impl MutationCache {
 
     /// Subscribe to cache lifecycle events.
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<MutationCacheEvent> {
+    pub fn subscribe(&self) -> bus::Receiver<MutationCacheEvent> {
         self.tx.subscribe()
     }
 
@@ -272,7 +277,7 @@ impl MutationCache {
         if let Some(hook) = on_assigned {
             hook(id);
         }
-        let _ = self.tx.send(MutationCacheEvent::Added(id));
+        self.tx.send(&MutationCacheEvent::Added(id));
         id
     }
 
@@ -294,7 +299,7 @@ impl MutationCache {
             }
         };
         if found {
-            let _ = self.tx.send(MutationCacheEvent::Updated(id));
+            self.tx.send(&MutationCacheEvent::Updated(id));
         }
         found
     }
@@ -327,7 +332,7 @@ impl MutationCache {
                 state.queue.retain(|queued| *queued != id);
             }
         }
-        let _ = self.tx.send(MutationCacheEvent::Removed(id));
+        self.tx.send(&MutationCacheEvent::Removed(id));
         found
     }
 
@@ -348,9 +353,9 @@ impl MutationCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         for id in ids {
-            let _ = self.tx.send(MutationCacheEvent::Removed(id));
+            self.tx.send(&MutationCacheEvent::Removed(id));
         }
-        let _ = self.tx.send(MutationCacheEvent::Cleared);
+        self.tx.send(&MutationCacheEvent::Cleared);
     }
 
     /// Snapshot of every entry (insertion order).
@@ -434,23 +439,58 @@ impl MutationCache {
     }
 
     /// Release `scope`; the calling mutation has finished.
+    ///
+    /// Wakes every mutation parked on [`MutationCache::subscribe_scope`].
     pub fn mark_finished(&self, scope: &str) {
-        let mut scopes = self
-            .scopes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(state) = scopes.get_mut(scope) {
-            state.running = false;
-            if state.queue.is_empty() {
-                scopes.remove(scope);
+        {
+            let mut scopes = self
+                .scopes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(state) = scopes.get_mut(scope) {
+                state.running = false;
+                if state.queue.is_empty() {
+                    scopes.remove(scope);
+                }
             }
         }
+        self.notify_scope(scope);
+    }
+
+    /// A watcher that resolves when `scope` is released (`mark_finished` /
+    /// `run_next`). The scope gate parks on this instead of polling.
+    #[must_use]
+    pub fn subscribe_scope(&self, scope: &str) -> Watcher<()> {
+        let mut release = self
+            .scope_release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(watch) = release.get(scope) {
+            return watch.subscribe();
+        }
+        let (watch, _rx) = Watch::new(());
+        release.insert(scope.to_string(), watch.clone());
+        watch.subscribe()
+    }
+
+    fn notify_scope(&self, scope: &str) {
+        let watch = {
+            let release = self
+                .scope_release
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match release.get(scope) {
+                Some(watch) => watch.clone(),
+                None => return,
+            }
+        };
+        watch.send(());
     }
 
     /// Pop the next queued mutation id of `scope` and notify `ScopeResumed`.
     ///
-    /// Waiting mutations poll [`MutationCache::can_run`]; the event is a
-    /// notification for observers, not the wakeup primitive itself.
+    /// Waiting mutations park on [`MutationCache::subscribe_scope`]; the event
+    /// is a notification for observers, not the wakeup primitive itself.
     pub fn run_next(&self, scope: &str) -> Option<u64> {
         let next = self
             .scopes
@@ -459,9 +499,9 @@ impl MutationCache {
             .get_mut(scope)
             .and_then(|state| state.queue.pop_front());
         if next.is_some() {
-            let _ = self
-                .tx
-                .send(MutationCacheEvent::ScopeResumed(scope.to_string()));
+            self.tx
+                .send(&MutationCacheEvent::ScopeResumed(scope.to_string()));
+            self.notify_scope(scope);
         }
         next
     }
@@ -484,7 +524,7 @@ impl MutationCache {
             resumed
         };
         for id in &resumed {
-            let _ = self.tx.send(MutationCacheEvent::Updated(*id));
+            self.tx.send(&MutationCacheEvent::Updated(*id));
         }
         resumed.len()
     }
@@ -541,7 +581,7 @@ mod tests {
         MutationCacheEntry::new(Some(QueryKey::new(key)), None)
     }
 
-    fn drain(rx: &mut broadcast::Receiver<MutationCacheEvent>) -> Vec<MutationCacheEvent> {
+    fn drain(rx: &mut crate::bus::Receiver<MutationCacheEvent>) -> Vec<MutationCacheEvent> {
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
