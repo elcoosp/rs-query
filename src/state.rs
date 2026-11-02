@@ -100,7 +100,11 @@ impl FetchDirection {
 }
 
 /// Represents the current state of a query.
-#[derive(Clone, Debug, Default)]
+///
+/// `PartialEq` (with `T: PartialEq`) lets bindings suppress redundant signal
+/// writes (`set_if_eq`) so pull-based frameworks only re-render on real
+/// changes.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum QueryState<T> {
     /// Not fetching and no data: the query has never run (or was reset).
     #[default]
@@ -263,7 +267,7 @@ impl<T> QueryState<T> {
 }
 
 /// Represents the current state of a mutation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum MutationState<T> {
     /// The mutation has not been executed (or was reset).
     #[default]
