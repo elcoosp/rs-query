@@ -8,11 +8,11 @@ use crate::network::{NetworkMode, can_fetch, can_retry};
 use crate::observer::QueryStateVariant;
 use crate::query::Query;
 use crate::retryer::RetryDecision;
-use crate::timeout_manager::TimeoutManager;
+use crate::runtime::{BoxFuture, SpawnedTask};
 use crate::{MutationState, QueryClient, QueryState};
+use quoin_core::CancellationToken;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 /// Guard that decrements the fetching count on drop.
 struct FetchingGuard {
@@ -64,13 +64,16 @@ async fn wait_for_online(
         if token.is_cancelled() || can_retry(network_mode, online.is_online()) {
             return;
         }
-        // Park until connectivity changes or cancellation. A closed channel
-        // resolves the select immediately; the flag re-check at the top of
-        // the loop then decides whether waiting can continue.
-        let _ = tokio::select! {
-            () = token.cancelled() => return,
-            changed = rx.changed() => changed,
-        };
+        // Park until connectivity changes or cancellation. A closed change
+        // stream resolves the race immediately; the flag re-check at the top
+        // of the loop then decides whether waiting can continue.
+        let changed = token.run_until_cancelled(rx.changed());
+        match changed.await {
+            // `Ok` means connectivity changed (the loop re-checks the flag);
+            // `Err` (watch closed) and `None` (cancelled) both end the wait.
+            Some(Ok(())) => {}
+            _ => return,
+        }
     }
 }
 
@@ -246,7 +249,7 @@ async fn execute_query_inner<T: Clone + Send + Sync + 'static + PartialEq>(
                         }
                     }
                     let delay = delay_for(&options.retry, attempt_index);
-                    TimeoutManager::default().sleep(delay).await;
+                    client_clone.runtime().sleep(delay).await;
                     continue;
                 }
                 client_clone.notify_subscribers(key.cache_key(), QueryStateVariant::Error);
@@ -260,6 +263,12 @@ async fn execute_query_inner<T: Clone + Send + Sync + 'static + PartialEq>(
 }
 
 /// Execute a mutation with optimistic update support.
+///
+/// # Errors
+///
+/// Returns the mutation function's error (after rollback + `on_error`
+/// callbacks), or the `on_mutate` hook's error when the optimistic phase
+/// fails.
 pub async fn execute_mutation<T: Clone + Send + Sync + 'static, P: Clone + Send + 'static>(
     client: &QueryClient,
     mutation: &Mutation<T, P>,
@@ -306,32 +315,35 @@ fn should_retry(error: &QueryError, _retry: &crate::options::RetryConfig) -> boo
     matches!(error, QueryError::Network(_) | QueryError::Timeout(_))
 }
 
-/// Spawn a query on GPUI's foreground executor.
+/// Spawn a query on the client's runtime.
 ///
 /// While `client.is_restoring()` (persisted-cache restore in progress) the
-/// fetch is skipped entirely and the callback is invoked immediately with
+/// fetch is skipped entirely and the handle resolves immediately with
 /// [`QueryState::Idle`], mirroring `TanStack`'s `_optimisticResults:
 /// 'isRestoring'` forcing `fetchStatus: 'idle'`.
-pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static + PartialEq>(
-    cx: &mut gpui::Context<V>,
-    client: &QueryClient,
-    query: &Query<T>,
-    callback: impl FnOnce(&mut V, QueryState<T>, &mut gpui::Context<V>) + Send + 'static,
-) {
+///
+/// The fetch registers itself as in-flight (deduplication, cancellation via
+/// [`QueryClient::cancel_query`]) and increments the fetching activity
+/// counter for its duration.
+///
+/// Observation is decoupled from delivery: await the returned
+/// [`SpawnedTask`] for the final state, or subscribe to the key through
+/// [`QueryClient::subscribe`]/the hooks for incremental updates. Dropping the
+/// handle without awaiting or detaching aborts the fetch (structured
+/// concurrency).
+pub fn spawn_query<T>(client: &QueryClient, query: &Query<T>) -> SpawnedTask<QueryState<T>>
+where
+    T: Clone + Send + Sync + 'static + PartialEq,
+{
     let client = client.clone();
     let query = query.clone();
-    let entity = cx.entity().downgrade();
-    let mut async_cx = cx.to_async();
 
     if client.is_restoring() {
-        cx.foreground_executor()
-            .spawn(async move {
-                let _ = entity.update(&mut async_cx, |this, cx| {
-                    callback(this, QueryState::Idle, cx);
-                });
-            })
-            .detach();
-        return;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let handle = client.runtime().spawn(Box::pin(async move {
+            let _ = tx.send(QueryState::Idle);
+        }));
+        return SpawnedTask::new(handle, rx, Arc::new(|| QueryState::Idle));
     }
 
     // Increment fetching count and set up guard.
@@ -345,72 +357,75 @@ pub fn spawn_query<V: 'static, T: Clone + Send + Sync + 'static + PartialEq>(
     let token_clone = token.clone();
     let client_for_task = client.clone();
     let query_for_task = query.clone();
-    let fetch_task = tokio::spawn(async move {
+    let runtime = client.runtime().clone();
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let task: BoxFuture<()> = Box::pin(async move {
         let _guard = guard; // ensure decrement on drop
         // The spawned task is the fetcher itself: it must not deduplicate
         // against its own in-flight entry (that would deadlock).
-        execute_query_inner(&client_for_task, &query_for_task, token_clone, false).await
+        //
+        // Panic isolation mirrors the old tokio-join semantics: a panicking
+        // fetch surfaces as an error state instead of poisoning the worker.
+        let state = match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            execute_query_inner(&client_for_task, &query_for_task, token_clone, false),
+        ))
+        .await
+        {
+            Ok(state) => state,
+            Err(panic) => QueryState::Error {
+                error: QueryError::custom(panic_message(&panic)),
+                stale_data: client_for_task.get_query_data(&query_for_task.key),
+            },
+        };
+        client_for_task.clear_in_flight(&query_for_task.key);
+        let _ = tx.send(state);
     });
+    let handle = runtime.spawn(task);
     client.set_in_flight(
         &query.key,
         crate::client::InFlightTask {
-            abort_handle: fetch_task.abort_handle(),
+            abort: {
+                let handle = handle.clone();
+                Box::new(move || handle.abort())
+            },
             cancel_token: token,
         },
     );
-
-    cx.foreground_executor()
-        .spawn(async move {
-            let state = fetch_task.await.unwrap_or_else(|e| {
-                if e.is_cancelled() {
-                    QueryState::Error {
-                        error: QueryError::cancelled(),
-                        stale_data: client.get_query_data(&query.key),
-                    }
-                } else {
-                    QueryState::Error {
-                        error: QueryError::custom(e.to_string()),
-                        stale_data: client.get_query_data(&query.key),
-                    }
-                }
-            });
-            client.clear_in_flight(&query.key);
-            let _ = entity.update(&mut async_cx, |this, cx| {
-                callback(this, state, cx);
-            });
-        })
-        .detach();
+    SpawnedTask::new(
+        handle,
+        rx,
+        Arc::new(move || QueryState::Error {
+            error: QueryError::cancelled(),
+            stale_data: client.get_query_data(&query.key),
+        }),
+    )
 }
 
-/// Spawn a mutation on GPUI's foreground executor.
+/// Spawn a mutation on the client's runtime.
 ///
-/// While `client.is_restoring()` the mutation is skipped and the callback is
-/// invoked immediately with [`MutationState::Idle`].
-pub fn spawn_mutation<
-    V: 'static,
-    T: Clone + Send + Sync + 'static,
-    P: Clone + Send + Sync + 'static,
->(
-    cx: &mut gpui::Context<V>,
+/// While `client.is_restoring()` the mutation is skipped and the handle
+/// resolves immediately with [`MutationState::Idle`]. The mutating activity
+/// counter is incremented for the duration. Awaiting the handle observes the
+/// final state; dropping it without awaiting or detaching aborts the
+/// mutation.
+pub fn spawn_mutation<T, P>(
     client: &QueryClient,
     mutation: &Mutation<T, P>,
     params: P,
-    callback: impl FnOnce(&mut V, MutationState<T>, &mut gpui::Context<V>) + Send + 'static,
-) {
+) -> SpawnedTask<MutationState<T>>
+where
+    T: Clone + Send + Sync + 'static,
+    P: Clone + Send + Sync + 'static,
+{
     let client = client.clone();
     let mutation = mutation.clone();
-    let entity = cx.entity().downgrade();
-    let mut async_cx = cx.to_async();
 
     if client.is_restoring() {
-        cx.foreground_executor()
-            .spawn(async move {
-                let _ = entity.update(&mut async_cx, |this, cx| {
-                    callback(this, MutationState::Idle, cx);
-                });
-            })
-            .detach();
-        return;
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let handle = client.runtime().spawn(Box::pin(async move {
+            let _ = tx.send(MutationState::Idle);
+        }));
+        return SpawnedTask::new(handle, rx, Arc::new(|| MutationState::Idle));
     }
 
     client.inc_mutating();
@@ -418,28 +433,43 @@ pub fn spawn_mutation<
         client: client.clone(),
     };
 
-    cx.foreground_executor()
-        .spawn(async move {
-            let _guard = guard;
-            let result = execute_mutation(&client, &mutation, params).await;
-            let state = match result {
-                Ok(data) => MutationState::Success(data),
-                Err(e) => MutationState::Error(e),
-            };
-            let _ = entity.update(&mut async_cx, |this, cx| {
-                callback(this, state, cx);
-            });
-        })
-        .detach();
+    let runtime = client.runtime().clone();
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let task: BoxFuture<()> = Box::pin(async move {
+        let _guard = guard;
+        let state = match execute_mutation(&client, &mutation, params).await {
+            Ok(data) => MutationState::Success(data),
+            Err(e) => MutationState::Error(e),
+        };
+        let _ = tx.send(state);
+    });
+    let handle = runtime.spawn(task);
+    SpawnedTask::new(
+        handle,
+        rx,
+        Arc::new(|| MutationState::Error(QueryError::cancelled())),
+    )
 }
+
+/// Extract a readable message from a caught panic payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        format!("fetch panicked: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("fetch panicked: {message}")
+    } else {
+        "fetch panicked".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{QueryClient, QueryError, QueryKey, QueryOptions, query::Query};
+    use quoin_core::CancellationToken;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
 
     // Helper to create a default token for tests
     fn test_token() -> CancellationToken {
@@ -647,7 +677,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: token,
             },
         );
@@ -1078,7 +1111,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: CancellationToken::new(),
             },
         );
@@ -1102,7 +1138,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: CancellationToken::new(),
             },
         );
@@ -1123,7 +1162,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: CancellationToken::new(),
             },
         );
@@ -1159,7 +1201,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: CancellationToken::new(),
             },
         );
@@ -1201,7 +1246,10 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
                 cancel_token: CancellationToken::new(),
             },
         );
@@ -1327,241 +1375,118 @@ mod tests {
         assert_eq!(data, Some("rolled_back".to_string()));
     }
 
-    // ----- Coverage: spawn_query / spawn_mutation on GPUI's executor -----
+    // ----- Coverage: spawn_query / spawn_mutation on the client runtime -----
 
-    struct SpawnView {
-        query_state: Option<QueryState<String>>,
-        mutation_state: Option<MutationState<String>>,
-    }
-
-    impl gpui::Render for SpawnView {
-        fn render(
-            &mut self,
-            _: &mut gpui::Window,
-            _: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            gpui::Empty
-        }
-    }
-
-    fn spawn_view(cx: &mut gpui::TestAppContext) -> gpui::Entity<SpawnView> {
-        cx.add_window_view(move |_window, _cx| SpawnView {
-            query_state: None,
-            mutation_state: None,
-        })
-        .0
-    }
-
-    /// A multi-thread tokio runtime, so `tokio::spawn` inside `spawn_query`
-    /// has a runtime to run on. Enter it on the test thread before spawning.
-    fn multi_thread_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime")
-    }
-
-    fn wait_until(
-        cx: &mut gpui::TestAppContext,
-        ready: impl FnMut(&mut gpui::TestAppContext) -> bool,
-    ) {
-        assert!(
-            wait_until_bounded(cx, 200, ready),
-            "condition not reached in time"
-        );
-    }
-
-    /// Poll `ready` after every executor park, at most `max_polls` times,
-    /// sleeping briefly between polls. Returns whether the condition held.
-    fn wait_until_bounded(
-        cx: &mut gpui::TestAppContext,
-        max_polls: usize,
-        mut ready: impl FnMut(&mut gpui::TestAppContext) -> bool,
-    ) -> bool {
-        for _ in 0..max_polls {
-            cx.run_until_parked();
-            if ready(cx) {
-                return true;
-            }
+    /// Poll `ready` until it holds or the deadline passes (real-time; the
+    /// pooled executor delivers asynchronously).
+    fn wait_until_ready(ready: impl Fn() -> bool) {
+        // Thread sleep (not `tokio::time`): the helper works under
+        // `futures::executor::block_on` in plain `#[test]`s too.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        false
+        assert!(ready(), "condition not reached in time");
     }
 
-    #[gpui::test]
-    fn wait_until_polls_until_the_condition_flips(cx: &mut gpui::TestAppContext) {
+    #[test]
+    fn wait_until_ready_polls_until_the_condition_flips() {
+        // The condition is false on the first poll and true afterwards, so
+        // the helper must actually poll repeatedly.
         let polls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&polls);
-        // The condition is false on the first poll and true afterwards, so
-        // the helper must actually sleep between polls and poll again.
-        let reached = wait_until_bounded(cx, 5, move |_cx| {
-            counter.fetch_add(1, Ordering::SeqCst) >= 1
-        });
-        assert!(reached);
-        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        wait_until_ready(move || counter.fetch_add(1, Ordering::SeqCst) >= 1);
+        // At least one repeat poll happened (the first poll returned false);
+        // real-time scheduling may interleave one extra benign poll.
+        assert!(polls.load(Ordering::SeqCst) >= 2);
     }
 
-    #[gpui::test]
-    fn wait_until_bounded_reports_timeout_without_panicking(cx: &mut gpui::TestAppContext) {
-        // Exhausting the poll budget reports failure instead of hanging.
-        assert!(!wait_until_bounded(cx, 2, |_cx| false));
-    }
-
-    #[gpui::test]
-    fn test_spawn_query_delivers_callback_on_foreground(cx: &mut gpui::TestAppContext) {
-        // Deterministic delivery check: the restoring gate skips the tokio
-        // fetch entirely, so the callback is scheduled purely on GPUI's
-        // (test-scheduler-driven) foreground executor.
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_query_resolves_idle_while_restoring() {
+        let client = crate::test_support::tokio_client();
         client.set_is_restoring(true);
         let key = QueryKey::new("spawn-restore");
-        let query = Query::new(key.clone(), || async {
-            Ok::<String, QueryError>("never".to_string())
-        });
-
-        let entity = spawn_view(cx);
-        let client_for_call = client.clone();
-        entity.update(cx, |_view, cx| {
-            spawn_query(cx, &client_for_call, &query, |this, state, _| {
-                this.query_state = Some(state);
-            });
-        });
-
-        wait_until(cx, |cx| {
-            entity.read_with(cx, |v, _| v.query_state.is_some())
-        });
-
-        let state = entity.read_with(cx, |v, _| v.query_state.clone());
-        assert!(
-            matches!(&state, Some(QueryState::Idle)),
-            "restoring gate should deliver Idle, got {state:?}"
-        );
-        // No in-flight entry and no fetching counter leak.
-        assert_eq!(client.fetching_count(), 0);
-        assert!(!client.is_in_flight(&key));
-
-        // The restoring gate skips the fetch entirely; drive the stored
-        // fetcher once so its async body is instantiated (the fetch behavior
-        // itself is covered by the `execute_query` suite).
-        let outcome =
-            futures::executor::block_on((query.fetch_fn)()).expect("fetcher should succeed");
-        assert_eq!(outcome, "never");
-    }
-
-    #[gpui::test]
-    fn test_spawn_query_skips_fetch_while_restoring(cx: &mut gpui::TestAppContext) {
-        let rt = multi_thread_runtime();
-        let _guard = rt.enter();
-        let client = QueryClient::new();
-        client.set_is_restoring(true);
-
         let fetches = Arc::new(AtomicUsize::new(0));
         let fetches_clone = Arc::clone(&fetches);
-        let key = QueryKey::new("spawn-restoring");
-        let query = Query::new(key, move || {
+        let query = Query::new(key.clone(), move || {
             let f = Arc::clone(&fetches_clone);
             async move {
                 f.fetch_add(1, Ordering::SeqCst);
-                Ok::<String, QueryError>("fetched".to_string())
+                Ok::<String, QueryError>("never".to_string())
             }
         });
 
-        let entity = spawn_view(cx);
-        entity.update(cx, |_view, cx| {
-            spawn_query(cx, &client, &query, |this, state, _| {
-                this.query_state = Some(state);
-            });
-        });
-        cx.run_until_parked();
-
-        let state = entity.read_with(cx, |v, _| v.query_state.clone());
+        let state = spawn_query(&client, &query).await;
         assert!(
-            matches!(state, Some(QueryState::Idle)),
-            "expected idle while restoring, got {state:?}"
+            matches!(state, QueryState::Idle),
+            "restoring gate should resolve Idle, got {state:?}"
         );
+        // No fetch ran and no counters leaked.
         assert_eq!(fetches.load(Ordering::SeqCst), 0);
         assert_eq!(client.fetching_count(), 0);
+        assert!(!client.is_in_flight(&key));
 
-        // Once restoring ends, the same query fetches normally, exercising
-        // the fetch closure the restoring gate skipped.
+        // Once restoring ends, the same query fetches normally.
         client.set_is_restoring(false);
-        let state = rt.block_on(execute_query(&client, &query, CancellationToken::new()));
+        let state = execute_query(&client, &query, CancellationToken::new()).await;
         assert!(state.is_success());
-        assert_eq!(state.data(), Some(&"fetched".to_string()));
+        assert_eq!(state.data(), Some(&"never".to_string()));
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
     }
 
-    #[gpui::test]
-    fn test_spawn_query_cleans_in_flight_on_cancel_query(cx: &mut gpui::TestAppContext) {
-        // Cancellation bookkeeping is deterministic: `cancel_query` removes
-        // the in-flight entry synchronously. The tokio task is driven on a
-        // current-thread runtime entered on the test thread, so the aborted
-        // task's join error wakes the foreground continuation on the
-        // scheduler's own thread (cross-thread foreground wakes are rejected
-        // by the test scheduler).
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        let _guard = rt.enter();
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_query_delivers_success_and_cleans_in_flight() {
+        let client = crate::test_support::tokio_client();
+        let key = QueryKey::new("spawn-success");
+        let query = Query::new(key.clone(), || async {
+            Ok::<String, QueryError>("fetched".to_string())
+        });
+
+        let handle = spawn_query(&client, &query);
+        assert!(client.is_in_flight(&key), "spawn registers the fetch");
+        assert_eq!(client.fetching_count(), 1);
+
+        let state = handle.await;
+        assert!(state.is_success(), "expected success, got {state:?}");
+        assert_eq!(state.data(), Some(&"fetched".to_string()));
+        wait_until_ready(|| !client.is_in_flight(&key));
+        assert_eq!(client.fetching_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_query_cleans_in_flight_on_cancel_query() {
+        let client = crate::test_support::tokio_client();
         let key = QueryKey::new("spawn-abort");
         let query = Query::new(key.clone(), || async {
             tokio::time::sleep(Duration::from_millis(10)).await;
             Ok::<String, QueryError>("never".to_string())
         });
 
-        let entity = spawn_view(cx);
-        let client_for_call = client.clone();
-        entity.update(cx, |_view, cx| {
-            spawn_query(cx, &client_for_call, &query, |this, state, _| {
-                this.query_state = Some(state);
-            });
-        });
+        let handle = spawn_query(&client, &query);
         assert!(client.is_in_flight(&key));
 
         client.cancel_query(&key);
         assert!(!client.is_in_flight(&key));
 
-        // One runtime tick reaps the aborted task and completes its join
-        // handle — on this thread, so the foreground continuation is woken
-        // from the scheduler's own thread.
-        rt.block_on(async {
-            for _ in 0..10 {
-                tokio::task::yield_now().await;
-            }
-        });
-
-        // The aborted tokio task surfaces as a cancelled join error on the
-        // foreground executor: the callback delivers a cancelled Error state
-        // carrying whatever data was cached before the cancellation.
+        // The aborted fetch surfaces as a cancelled error state carrying
+        // whatever data was cached before the cancellation.
         client.set_query_data(&key, "stale".to_string(), QueryOptions::default());
-        wait_until(cx, |cx| {
-            entity.read_with(cx, |v, _| v.query_state.is_some())
-        });
-        let state = entity
-            .read_with(cx, |v, _| v.query_state.clone())
-            .expect("callback should have delivered a state");
+        let state = handle.await;
         assert!(
             state.is_error(),
             "aborted spawn must deliver an error, got {state:?}"
         );
         assert_eq!(state.data(), Some(&"stale".to_string()));
 
-        // Note: the fetching counter drops when the aborted tokio task is
-        // reaped (asynchronous, real-runtime dependent); that transition is
-        // covered by `test_spawn_query_increments_and_decrements_fetching_count`.
-
-        // Let the fetch closure complete on the tokio runtime so its body is
-        // exercised end to end.
-        let state = rt.block_on(execute_query(&client, &query, CancellationToken::new()));
+        // The fetch closure itself still works when driven directly.
+        let state = execute_query(&client, &query, CancellationToken::new()).await;
         assert!(state.is_success());
         assert_eq!(state.data(), Some(&"never".to_string()));
     }
 
-    #[gpui::test]
-    fn test_spawn_mutation_delivers_success(cx: &mut gpui::TestAppContext) {
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_mutation_delivers_success() {
+        let client = crate::test_support::tokio_client();
         let key = QueryKey::new("spawn-mutation");
         client.set_query_data(&key, "cached".to_string(), QueryOptions::default());
 
@@ -1569,57 +1494,41 @@ mod tests {
             crate::mutation::Mutation::new(|param: i32| async move { Ok(param.to_string()) })
                 .invalidates_key(key.clone());
 
-        let entity = spawn_view(cx);
-        entity.update(cx, |_view, cx| {
-            spawn_mutation(cx, &client, &mutation, 42, |this, state, _| {
-                this.mutation_state = Some(state);
-            });
-        });
+        let handle = spawn_mutation(&client, &mutation, 42);
         assert_eq!(client.mutating_count(), 1);
 
-        cx.run_until_parked();
-        let state = entity.read_with(cx, |v, _| v.mutation_state.clone());
+        let state = handle.await;
         assert!(
-            matches!(&state, Some(MutationState::Success(data)) if data == "42"),
+            matches!(&state, MutationState::Success(data) if data == "42"),
             "expected success, got {state:?}"
         );
-        assert_eq!(client.mutating_count(), 0);
+        wait_until_ready(|| client.mutating_count() == 0);
         assert!(client.is_stale(&key), "invalidation ran on success");
     }
 
-    #[gpui::test]
-    fn test_spawn_mutation_delivers_error(cx: &mut gpui::TestAppContext) {
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_mutation_delivers_error() {
+        let client = crate::test_support::tokio_client();
         let mutation: crate::mutation::Mutation<String, i32> =
             crate::mutation::Mutation::new(|_param: i32| async {
                 Err(QueryError::custom("spawned mutation failed"))
             });
 
-        let entity = spawn_view(cx);
-        entity.update(cx, |_view, cx| {
-            spawn_mutation(cx, &client, &mutation, 1, |this, state, _| {
-                this.mutation_state = Some(state);
-            });
-        });
-
-        cx.run_until_parked();
-        let state = entity.read_with(cx, |v, _| v.mutation_state.clone());
+        let state = spawn_mutation(&client, &mutation, 1).await;
         assert!(
             matches!(
                 &state,
-                Some(MutationState::Error(error))
+                MutationState::Error(error)
                     if error.to_string() == "spawned mutation failed"
             ),
             "expected error, got {state:?}"
         );
-        assert_eq!(client.mutating_count(), 0);
+        wait_until_ready(|| client.mutating_count() == 0);
     }
 
-    #[gpui::test]
-    fn test_spawn_mutation_skips_while_restoring(cx: &mut gpui::TestAppContext) {
-        let rt = multi_thread_runtime();
-        let _guard = rt.enter();
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_mutation_skips_while_restoring() {
+        let client = crate::test_support::tokio_client();
         client.set_is_restoring(true);
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1632,74 +1541,41 @@ mod tests {
             }
         });
 
-        let entity = spawn_view(cx);
-        entity.update(cx, |_view, cx| {
-            spawn_mutation(cx, &client, &mutation, 1, |this, state, _| {
-                this.mutation_state = Some(state);
-            });
-        });
-        cx.run_until_parked();
-
-        let state = entity.read_with(cx, |v, _| v.mutation_state.clone());
+        let state = spawn_mutation(&client, &mutation, 1).await;
         assert!(
-            matches!(state, Some(MutationState::Idle)),
+            matches!(state, MutationState::Idle),
             "expected idle while restoring, got {state:?}"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(client.mutating_count(), 0);
 
-        // Once restoring ends, the mutation runs normally, exercising the
-        // mutate closure the restoring gate skipped.
+        // Once restoring ends, the mutation runs normally.
         client.set_is_restoring(false);
-        let result = rt.block_on(execute_mutation(&client, &mutation, 1));
+        let result = execute_mutation(&client, &mutation, 1).await;
         assert_eq!(result.expect("mutation should run"), "never");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    #[gpui::test]
-    fn test_spawn_query_maps_panicked_fetch_to_custom_error(cx: &mut gpui::TestAppContext) {
-        // A panicking fetch surfaces as a non-cancelled `JoinError`, which the
-        // foreground continuation maps to a custom error state. The tokio task
-        // is driven on a current-thread runtime entered on the test thread, so
-        // the foreground continuation is woken from the scheduler's own thread
-        // (the test scheduler rejects cross-thread foreground wakes).
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        let _guard = rt.enter();
-        let client = QueryClient::new();
+    #[tokio::test]
+    async fn test_spawn_query_maps_panicked_fetch_to_custom_error() {
+        // A panicking fetch is caught inside the spawned task (panic
+        // isolation, mirroring the old tokio-join mapping) and surfaces as a
+        // non-cancelled custom error state.
+        let client = crate::test_support::tokio_client();
         let key = QueryKey::new("spawn-panic");
         let query: Query<String> = Query::new(key.clone(), || async {
             panic!("fetch exploded");
         });
 
-        let entity = spawn_view(cx);
-        let client_for_call = client.clone();
-        entity.update(cx, |_view, cx| {
-            spawn_query(cx, &client_for_call, &query, |this, state, _| {
-                this.query_state = Some(state);
-            });
-        });
+        let handle = spawn_query(&client, &query);
         assert!(client.is_in_flight(&key));
 
-        // Drive the tokio runtime on this thread: the fetch task panics, the
-        // task boundary converts it into a `JoinError`, and the foreground
-        // continuation is scheduled back onto the test scheduler.
-        rt.block_on(async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        });
-
-        wait_until(cx, |cx| {
-            entity.read_with(cx, |v, _| v.query_state.is_some())
-        });
-
-        let state = entity.read_with(cx, |v, _| v.query_state.clone());
+        let state = handle.await;
         assert!(
-            matches!(&state, Some(QueryState::Error { error, .. }) if !error.is_cancelled()),
+            matches!(&state, QueryState::Error { error, .. } if !error.is_cancelled()),
             "panicked fetch should map to a custom error, got {state:?}"
         );
-        assert!(!client.is_in_flight(&key));
+        wait_until_ready(|| !client.is_in_flight(&key));
         assert_eq!(client.fetching_count(), 0);
     }
 
