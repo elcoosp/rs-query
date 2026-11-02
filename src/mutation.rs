@@ -36,9 +36,6 @@ pub type OnErrorFn<P> = Arc<dyn Fn(&QueryError, &P) + Send + Sync>;
 /// (`TanStack` `onSettled`).
 pub type OnSettledFn<T, P> = Arc<dyn Fn(Result<&T, &QueryError>, &P) + Send + Sync>;
 
-/// Poll interval while a scoped mutation waits for its turn.
-const SCOPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
 /// Definition of a mutation.
 pub struct Mutation<T, P> {
     /// The async mutate function (`TanStack` `mutationFn`).
@@ -383,6 +380,9 @@ where
     let scope_id = mutation.scope.as_ref().map(|scope| scope.id.clone());
     let mut scope_acquired = false;
     if let Some(scope) = &scope_id {
+        // Park on the scope's release watcher instead of polling: the cache
+        // bumps it on `mark_finished`/`run_next`.
+        let mut release = cache.subscribe_scope(scope);
         loop {
             if cache.can_run(scope) {
                 cache.mark_running(scope);
@@ -392,8 +392,10 @@ where
                 }
                 break;
             }
-            tokio::task::yield_now().await;
-            tokio::time::sleep(SCOPE_POLL_INTERVAL).await;
+            // A closed watcher only happens if the cache dropped its release
+            // cell (cache is alive here, so this cannot happen); re-check
+            // either way.
+            let _ = release.changed().await;
         }
     }
 
@@ -430,7 +432,7 @@ where
             Err(err) => {
                 if retries_used < mutation.retry {
                     retries_used += 1;
-                    tokio::time::sleep(mutation.retry_delay).await;
+                    client.runtime().sleep(mutation.retry_delay).await;
                 } else {
                     break Err(err);
                 }
@@ -594,9 +596,7 @@ mod tests {
     }
 
     /// Drain already-broadcast cache events without awaiting.
-    fn drain_events(
-        rx: &mut tokio::sync::broadcast::Receiver<MutationCacheEvent>,
-    ) -> Vec<MutationCacheEvent> {
+    fn drain_events(rx: &mut crate::bus::Receiver<MutationCacheEvent>) -> Vec<MutationCacheEvent> {
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
