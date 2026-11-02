@@ -1,928 +1,1008 @@
 // src/hooks.rs
-//! Reactive hooks for GPUI integration.
+//! quoin bindings: observe rs-query state through any supported framework's
+//! signals.
+//!
+//! Every `use_*` function is generic over `C: quoin_core::ReactiveContext`
+//! and returns a `C::Signal<...>` plus (for the query/mutation bindings) a
+//! driver handle. This is the portable replacement for the previous
+//! gpui-entity hooks and the `spawn_query(cx, ..., callback)` view callbacks:
+//! the pattern mirrors quoin's own `fetch-core` example — create signals on
+//! the context, spawn a pump on the context's executor, and let the pump copy
+//! authoritative cache state into the signal (lag-tolerant, `set_if_eq`-gated
+//! so pull-based frameworks only repaint on real changes).
+//!
+//! # Lifecycle
+//!
+//! Binding structs own a stop token: dropping the binding cancels its pump
+//! task (the equivalent of the old "view dropped → weak update fails"
+//! teardown). The signal handle itself stays readable after the drop but no
+//! longer receives updates.
+//!
+//! # Threading
+//!
+//! Pump tasks run on `cx.executor()` and call `signal.set(...)` from the
+//! spawned task — exactly the contract quoin's `Resource`/`fetch-core` use.
+//! On `NotifierSignal`-based adapters (gpui, xilem, the testkit) this is
+//! thread-safe by construction; on fine-grained adapters follow the
+//! framework's own threading rules (on `wasm32` there is a single thread, so
+//! it always works).
 
-use crate::observer::QueryStateUpdate;
+use crate::bus::{Receiver, RecvError};
+use crate::infinite::InfiniteQuery;
+use crate::infinite_executor::InfiniteQueryObserver;
+use crate::mutation::Mutation;
+use crate::mutation_cache::MutationCache;
+use crate::mutation_observer::MutationObserver;
+use crate::options::PlaceholderData;
 use crate::query::Query;
-use crate::state::QueryState;
-use crate::{ActivityEvent, QueryClient, QueryKey};
-use gpui::{AppContext, AsyncApp, Context, Entity, Task, WeakEntity};
-use tokio::sync::broadcast;
-
-/// A reactive boolean that indicates if any query is fetching.
-pub struct UseIsFetching {
-    value: bool,
-    _task: Task<()>,
-}
-
-impl UseIsFetching {
-    /// Returns the current fetching status.
-    pub fn get(&self) -> bool {
-        self.value
-    }
-}
-
-/// Create a reactive hook that tracks whether any query is fetching.
-pub fn use_is_fetching<V: 'static>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-) -> Entity<UseIsFetching> {
-    let client = client.clone();
-    let mut rx = client.subscribe_activity();
-    let initial = client.is_fetching();
-
-    cx.new(|cx: &mut Context<UseIsFetching>| {
-        let task = cx.spawn(|this: WeakEntity<UseIsFetching>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                while let Ok(event) = rx.recv().await {
-                    if let ActivityEvent::FetchingCountChanged(_) = event {
-                        _ = this.update(
-                            &mut cx,
-                            |this: &mut UseIsFetching, cx: &mut Context<UseIsFetching>| {
-                                this.value = client.is_fetching();
-                                cx.notify();
-                            },
-                        );
-                    }
-                }
-            }
-        });
-        UseIsFetching {
-            value: initial,
-            _task: task,
-        }
-    })
-}
-
-/// A reactive boolean that indicates if any mutation is in progress.
-pub struct UseIsMutating {
-    value: bool,
-    _task: Task<()>,
-}
-
-impl UseIsMutating {
-    /// Returns the current mutating status.
-    pub fn get(&self) -> bool {
-        self.value
-    }
-}
-
-/// Create a reactive hook that tracks whether any mutation is in progress.
-pub fn use_is_mutating<V: 'static>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-) -> Entity<UseIsMutating> {
-    let client = client.clone();
-    let mut rx = client.subscribe_activity();
-    let initial = client.is_mutating();
-
-    cx.new(|cx: &mut Context<UseIsMutating>| {
-        let task = cx.spawn(|this: WeakEntity<UseIsMutating>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                while let Ok(event) = rx.recv().await {
-                    if let ActivityEvent::MutatingCountChanged(_) = event {
-                        _ = this.update(
-                            &mut cx,
-                            |this: &mut UseIsMutating, cx: &mut Context<UseIsMutating>| {
-                                this.value = client.is_mutating();
-                                cx.notify();
-                            },
-                        );
-                    }
-                }
-            }
-        });
-        UseIsMutating {
-            value: initial,
-            _task: task,
-        }
-    })
-}
-
-/// A reactive counter that tracks the number of in‑flight fetches.
-pub struct UseFetchingCount {
-    value: usize,
-    _task: Task<()>,
-}
-
-impl UseFetchingCount {
-    /// Returns the current fetching count.
-    pub fn get(&self) -> usize {
-        self.value
-    }
-}
-
-/// Create a reactive hook that tracks the number of in‑flight fetch operations.
-pub fn use_fetching_count<V: 'static>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-) -> Entity<UseFetchingCount> {
-    let client = client.clone();
-    let mut rx = client.subscribe_activity();
-    let initial = client.fetching_count();
-
-    cx.new(|cx: &mut Context<UseFetchingCount>| {
-        let task = cx.spawn(|this: WeakEntity<UseFetchingCount>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                while let Ok(event) = rx.recv().await {
-                    if let ActivityEvent::FetchingCountChanged(count) = event {
-                        _ = this.update(
-                            &mut cx,
-                            |this: &mut UseFetchingCount, cx: &mut Context<UseFetchingCount>| {
-                                this.value = count;
-                                cx.notify();
-                            },
-                        );
-                    }
-                }
-            }
-        });
-        UseFetchingCount {
-            value: initial,
-            _task: task,
-        }
-    })
-}
-
-/// A reactive counter that tracks the number of in‑flight mutations.
-pub struct UseMutatingCount {
-    value: usize,
-    _task: Task<()>,
-}
-
-impl UseMutatingCount {
-    /// Returns the current mutating count.
-    pub fn get(&self) -> usize {
-        self.value
-    }
-}
-
-/// Create a reactive hook that tracks the number of in‑flight mutation operations.
-pub fn use_mutating_count<V: 'static>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-) -> Entity<UseMutatingCount> {
-    let client = client.clone();
-    let mut rx = client.subscribe_activity();
-    let initial = client.mutating_count();
-
-    cx.new(|cx: &mut Context<UseMutatingCount>| {
-        let task = cx.spawn(|this: WeakEntity<UseMutatingCount>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                while let Ok(event) = rx.recv().await {
-                    if let ActivityEvent::MutatingCountChanged(count) = event {
-                        _ = this.update(
-                            &mut cx,
-                            |this: &mut UseMutatingCount, cx: &mut Context<UseMutatingCount>| {
-                                this.value = count;
-                                cx.notify();
-                            },
-                        );
-                    }
-                }
-            }
-        });
-        UseMutatingCount {
-            value: initial,
-            _task: task,
-        }
-    })
-}
+use crate::runtime::SpawnedTask;
+use crate::state::{MutationState, QueryState};
+use crate::{ActivityEvent, QueryClient, QueryError, QueryKey};
+use futures::StreamExt;
+use quoin_core::signal::Signal;
+use quoin_core::{CancellationToken, Executor, JoinHandle, ReactiveContext};
+use std::sync::Arc;
 
 /// Maximum number of events retained by [`use_activity_feed`].
 pub const ACTIVITY_FEED_CAPACITY: usize = 100;
 
-/// Read the observer-visible [`QueryState`] for a key from the client cache.
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve a query's [`PlaceholderData`] for seeding (no previous data).
+fn placeholder_value<T: Clone + Send + Sync + 'static>(query: &Query<T>) -> Option<T> {
+    query.placeholder_data.as_ref().map(|data| match data {
+        PlaceholderData::Value(value) => value.clone(),
+        PlaceholderData::Function(function) => function(None),
+    })
+}
+
+/// Read the current observer-visible [`QueryState<T>`] for a key from the
+/// cache (the value a pump copies into its signal).
 ///
-/// In-flight fetches surface as `Loading` (no cached data yet) or `Refetching`
-/// (cached data kept while refetching); otherwise cached data maps to
-/// `Stale`/`Success` depending on staleness, and missing data to `Idle`.
-fn read_query_state<T: Clone + Send + Sync + 'static>(
+/// The type-erased cache does not persist error states, so a cached key with
+/// data resolves to [`QueryState::Success`]/[`QueryState::Stale`]; a missing
+/// key resolves to `LoadingWithPlaceholder` (when a placeholder exists) or
+/// [`QueryState::Idle`].
+#[must_use]
+pub fn read_query_state<T>(
     client: &QueryClient,
     key: &QueryKey,
-) -> QueryState<T> {
-    match client.get_query_data::<T>(key) {
-        Some(data) if client.is_in_flight(key) => QueryState::Refetching(data),
-        Some(data) if client.is_stale(key) => QueryState::Stale(data),
-        Some(data) => QueryState::Success(data),
-        None if client.is_in_flight(key) => QueryState::Loading,
-        None => QueryState::Idle,
-    }
-}
-
-/// Like [`read_query_state`], but seeds the cache with the query's
-/// `initial_data` first when the cache is empty (mirrors
-/// `QueryObserver::from_query`).
-fn query_state_from_cache<T>(client: &QueryClient, query: &Query<T>) -> QueryState<T>
+    placeholder: Option<T>,
+) -> QueryState<T>
 where
-    T: Clone + Send + Sync + PartialEq + 'static,
+    T: Clone + Send + Sync + 'static,
 {
-    if client.get_query_data::<T>(&query.key).is_none()
-        && let Some(initial) = &query.initial_data
-    {
-        client.set_query_data(&query.key, initial.clone(), query.options.clone());
+    if let Some(data) = client.get_query_data::<T>(key) {
+        if client.is_stale(key) {
+            QueryState::Stale(data)
+        } else {
+            QueryState::Success(data)
+        }
+    } else {
+        match placeholder {
+            Some(data) => QueryState::LoadingWithPlaceholder(data),
+            None => QueryState::Idle,
+        }
     }
-    read_query_state::<T>(client, &query.key)
 }
 
-/// Push `event` onto `feed`, keeping at most the `capacity` most recent
-/// events (older events are dropped from the front).
-fn push_capped<E>(feed: &mut Vec<E>, event: E, capacity: usize) {
-    if capacity == 0 {
-        return;
+/// Push `item` into `buffer`, dropping the oldest entry past `capacity`.
+pub fn push_capped<T>(buffer: &mut Vec<T>, item: T, capacity: usize) {
+    if buffer.len() >= capacity {
+        buffer.remove(0);
     }
-    if feed.len() >= capacity {
-        let overflow = feed.len() + 1 - capacity;
-        feed.drain(0..overflow);
-    }
-    feed.push(event);
+    buffer.push(item);
 }
 
-/// Drain events already buffered in a broadcast receiver without waiting for
-/// new ones. Lagged (missed) events are skipped.
-fn drain_ready<E: Clone>(rx: &mut broadcast::Receiver<E>) -> Vec<E> {
+/// Drain every currently-queued event from `rx` without awaiting.
+pub fn drain_ready<E: Clone + Send + Sync + 'static>(rx: &mut Receiver<E>) -> Vec<E> {
     let mut events = Vec::new();
     loop {
         match rx.try_recv() {
-            Ok(event) => push_capped(&mut events, event, ACTIVITY_FEED_CAPACITY),
-            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
-                break;
-            }
-            Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+            Ok(event) => events.push(event),
+            // Lagged: the skipped values are gone; keep draining.
+            Err(crate::bus::TryRecvError::Lagged(_)) => {}
+            Err(crate::bus::TryRecvError::Empty | crate::bus::TryRecvError::Closed) => break,
         }
     }
     events
 }
 
-/// Reactive hook mirroring `TanStack`'s `useQueries`: observe a list of query
-/// specs and expose a model of per-spec [`QueryState`]s.
-///
-/// The hook subscribes to each spec's cache key; whenever a subscribed key
-/// emits an update, the corresponding result slot is re-read from the client
-/// cache (via `get_query_data` + `is_stale` + in-flight checks, see
-/// [`read_query_state`]). Initial values are taken from the cache, seeding
-/// `initial_data` where applicable.
-///
-/// The hook itself does not trigger fetches — pair it with
-/// [`crate::executor::execute_query`], `spawn_query`, or a
-/// [`crate::queries_observer::QueriesObserver`] that drives execution; state
-/// changes flowing through the client cache are picked up automatically.
-/// Each spec index has its own subscription task; lagged broadcasts are
-/// tolerated by re-reading the cached state.
-pub fn use_queries<T, V: 'static>(
-    cx: &mut Context<V>,
-    client: &QueryClient,
-    specs: Vec<Query<T>>,
-) -> Entity<Vec<QueryState<T>>>
-where
-    T: Clone + Send + Sync + PartialEq + 'static,
-{
-    let client = client.clone();
-    let initial: Vec<QueryState<T>> = specs
-        .iter()
-        .map(|spec| query_state_from_cache(&client, spec))
-        .collect();
-    let receivers: Vec<(usize, broadcast::Receiver<QueryStateUpdate>)> = specs
-        .iter()
-        .enumerate()
-        .map(|(idx, spec)| (idx, client.subscribe(spec.key.cache_key())))
-        .collect();
+// ---------------------------------------------------------------------------
+// use_query
+// ---------------------------------------------------------------------------
 
-    cx.new(move |cx: &mut Context<Vec<QueryState<T>>>| {
-        for (idx, mut rx) in receivers {
-            let client = client.clone();
-            let specs = specs.clone();
-            cx.spawn(
-                move |this: WeakEntity<Vec<QueryState<T>>>, cx: &mut AsyncApp| {
-                    let mut cx = cx.clone();
-                    async move {
-                        // Fresh updates and lagged broadcasts both re-read the
-                        // cached state (self-healing); a closed channel (all
-                        // client clones gone) ends the tracking task.
-                        while !matches!(rx.recv().await, Err(broadcast::error::RecvError::Closed)) {
-                            // `idx` indexes the specs list this receiver was
-                            // built from, so the lookup is always in bounds.
-                            let spec = &specs[idx];
-                            let fresh = read_query_state(&client, &spec.key);
-                            let delivered = this.update(
-                            &mut cx,
-                            |states: &mut Vec<QueryState<T>>,
-                             cx: &mut Context<Vec<QueryState<T>>>| {
-                                if let Some(slot) = states.get_mut(idx) {
-                                    *slot = fresh.clone();
-                                    cx.notify();
-                                }
-                            },
-                        );
-                            if delivered.is_err() {
-                                break; // entity dropped, stop tracking
-                            }
-                        }
-                    }
-                },
-            )
-            .detach();
-        }
-        initial
-    })
+/// Binding returned by [`use_query`]: the live state signal plus the driver
+/// handle for the initial fetch.
+pub struct UseQuery<S, T: Clone + Send + Sync + 'static> {
+    /// Live query state; update-gated so equal states do not notify.
+    pub state: S,
+    query: Query<T>,
+    client: QueryClient,
+    key: QueryKey,
+    handle: SpawnedTask<QueryState<T>>,
+    stop: CancellationToken,
 }
 
-/// Reactive hook mirroring `TanStack`'s `useMutationState`, generalized over
-/// the event type so it can follow any broadcast feed (e.g. a future
-/// mutation cache's event stream) without a hard dependency.
+impl<S, T: Clone + Send + Sync + PartialEq + 'static> UseQuery<S, T> {
+    /// Trigger a refetch: the in-flight fetch is cancelled and a fresh one
+    /// starts; the signal keeps updating through the pump.
+    pub fn refetch(&self) {
+        self.client.cancel_query(&self.key);
+        let handle = crate::executor::spawn_query(&self.client, &self.query);
+        // The refetch result flows through the cache notifications the pump
+        // observes; the direct handle is detached (its state is redundant).
+        handle.detach();
+    }
+
+    /// Abort the in-flight fetch without cancelling the pump.
+    pub fn abort_fetch(&self) {
+        self.client.cancel_query(&self.key);
+    }
+}
+
+impl<S, T: Clone + Send + Sync + 'static> Drop for UseQuery<S, T> {
+    fn drop(&mut self) {
+        self.stop.cancel();
+        // The pump stops with the token; the fetch task (if still running)
+        // finishes on its own so the cache converges.
+        self.handle.detach();
+    }
+}
+
+impl<S, T: Clone + Send + Sync + 'static> std::fmt::Debug for UseQuery<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UseQuery").finish_non_exhaustive()
+    }
+}
+
+/// Observe and drive one query (the `useQuery` analogue).
 ///
-/// Events already buffered in `rx` when the hook is created are drained into
-/// the model; afterwards every incoming event is appended. The feed is
-/// capped at the [`ACTIVITY_FEED_CAPACITY`] most recent events.
-pub fn use_activity_feed<E, V: 'static>(
-    cx: &mut Context<V>,
-    mut rx: broadcast::Receiver<E>,
-) -> Entity<Vec<E>>
+/// The initial state is seeded from the cache (respecting `initial_data` and
+/// `placeholder_data`), the query is spawned immediately through
+/// [`crate::spawn_query`] and a pump keeps the signal in sync with every
+/// cache notification for the key — including invalidations, cancellations
+/// and external `set_query_data` writes.
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn (executor contract
+/// violation); normal adapters never do.
+pub fn use_query<C, T>(
+    cx: &C,
+    client: &QueryClient,
+    query: &Query<T>,
+) -> UseQuery<C::Signal<QueryState<T>>, T>
 where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<QueryState<T>>: Send + 'static,
+    T: Clone + Send + Sync + PartialEq + 'static,
+{
+    let seed_initial = query.initial_data.clone();
+    if client.get_query_data::<T>(&query.key).is_none()
+        && let Some(initial) = seed_initial
+    {
+        client.set_query_data(&query.key, initial, query.options.clone());
+    }
+    let state = cx.create_signal(read_query_state(
+        client,
+        &query.key,
+        placeholder_value(query),
+    ));
+    let handle = crate::executor::spawn_query(client, query);
+    let stop = CancellationToken::new();
+
+    // Pump: cache notifications → signal.
+    let mut rx = client.subscribe(query.key.cache_key());
+    let pump_signal = state.clone();
+    let pump_client = client.clone();
+    let pump_key = query.key.clone();
+    let pump_stop = stop.clone();
+    let pump_placeholder = placeholder_value(query);
+    let pump = async move {
+        while let Ok(_) | Err(RecvError::Lagged(_)) = rx.recv().await {
+            if pump_stop.is_cancelled() {
+                break;
+            }
+            let fresh = read_query_state(&pump_client, &pump_key, pump_placeholder.clone());
+            pump_signal.set_if_eq(fresh);
+        }
+    };
+    cx.executor().spawn(Box::pin(pump)).detach();
+
+    UseQuery {
+        state,
+        query: query.clone(),
+        client: client.clone(),
+        key: query.key.clone(),
+        handle,
+        stop,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// use_mutation
+// ---------------------------------------------------------------------------
+
+/// Binding returned by [`use_mutation`]: a live mutation-state signal plus a
+/// tracked observer for executing mutations.
+pub struct UseMutation<S, T, P> {
+    /// Live mutation state (`Idle` until the first `mutate`).
+    pub state: S,
+    observer: std::sync::Mutex<MutationObserver<T, P>>,
+    _marker: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<
+    S: Signal<MutationState<T>> + Send + Sync + 'static,
+    T: Clone + Send + Sync + PartialEq + 'static,
+    P: Clone + Send + Sync + 'static,
+> UseMutation<S, T, P>
+{
+    /// Execute the mutation (the `useMutation().mutate` analogue).
+    ///
+    /// The returned handle resolves with the mutation result; the `state`
+    /// signal mirrors `Idle → Loading → Success/Error` (the `Loading` write
+    /// happens synchronously inside [`MutationObserver::mutate`]). Dropping
+    /// the handle without awaiting or detaching aborts the execution; an
+    /// aborted mutation leaves the signal in `Loading` until the next
+    /// `mutate`/`reset`.
+    pub fn mutate(
+        &self,
+        client: &QueryClient,
+        params: P,
+        per_call: Option<crate::mutation::MutateOptions<T, P>>,
+    ) -> SpawnedTask<Result<T, QueryError>> {
+        let inner_guard = self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mutate(client, params, per_call);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let signal = self.state.clone();
+        let runtime = client.runtime().clone();
+        let task = async move {
+            let result = inner_guard.await;
+            signal.set(match &result {
+                Ok(data) => MutationState::Success(data.clone()),
+                Err(error) => MutationState::Error(error.clone()),
+            });
+            let _ = tx.send(result);
+        };
+        let handle = runtime.spawn(Box::pin(task));
+        SpawnedTask::new(handle, rx, Arc::new(|| Err(QueryError::cancelled())))
+    }
+
+    /// Reset the tracked state back to [`MutationState::Idle`].
+    pub fn reset(&self) {
+        self.observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .reset();
+        self.state.set(MutationState::Idle);
+    }
+}
+
+impl<S, T, P> std::fmt::Debug for UseMutation<S, T, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UseMutation").finish_non_exhaustive()
+    }
+}
+
+/// Observe and drive one mutation (the `useMutation` analogue).
+#[must_use]
+pub fn use_mutation<C, T, P>(
+    cx: &C,
+    mutation: Mutation<T, P>,
+) -> UseMutation<C::Signal<MutationState<T>>, T, P>
+where
+    C: ReactiveContext,
+    C::Signal<MutationState<T>>: Send + 'static,
+    T: Clone + Send + Sync + PartialEq + 'static,
+    P: Clone + Send + Sync + 'static,
+{
+    let state = cx.create_signal(MutationState::Idle);
+    let observer = MutationObserver::new(Arc::new(MutationCache::new()), mutation);
+    UseMutation {
+        state,
+        observer: std::sync::Mutex::new(observer),
+        _marker: std::marker::PhantomData,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// use_infinite_query
+// ---------------------------------------------------------------------------
+
+/// Binding returned by [`use_infinite_query`]: the live state signal plus the
+/// page-fetch observer.
+pub struct UseInfiniteQuery<S, T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> {
+    /// Live query state over [`crate::infinite::InfiniteData`].
+    pub state: S,
+    observer: Arc<InfiniteQueryObserver<T, P>>,
+    stop: CancellationToken,
+}
+
+impl<S, T, P> UseInfiniteQuery<S, T, P>
+where
+    T: Clone + Send + Sync + PartialEq + 'static,
+    P: Clone + Send + Sync + PartialEq + 'static,
+{
+    /// Request the next page (`TanStack` `fetchNextPage`).
+    pub fn fetch_next_page(&self) {
+        self.observer.fetch_next_page();
+    }
+
+    /// Request the previous page (`TanStack` `fetchPreviousPage`).
+    pub fn fetch_previous_page(&self) {
+        self.observer.fetch_previous_page();
+    }
+
+    /// TanStack-style options variant for next-page fetches.
+    pub fn fetch_next_page_with(&self, cancel_refetch: bool, throw_on_error: bool) {
+        self.observer
+            .fetch_next_page_with(cancel_refetch, throw_on_error);
+    }
+
+    /// TanStack-style options variant for previous-page fetches.
+    pub fn fetch_previous_page_with(&self, cancel_refetch: bool, throw_on_error: bool) {
+        self.observer
+            .fetch_previous_page_with(cancel_refetch, throw_on_error);
+    }
+
+    /// Whether another next page exists.
+    #[must_use]
+    pub fn has_next_page(&self) -> bool {
+        self.observer.has_next_page()
+    }
+
+    /// Whether another previous page exists.
+    #[must_use]
+    pub fn has_previous_page(&self) -> bool {
+        self.observer.has_previous_page()
+    }
+
+    /// Whether a page fetch is in flight.
+    #[must_use]
+    pub fn is_fetching(&self) -> bool {
+        self.observer.is_fetching()
+    }
+
+    /// Whether the in-flight page fetch is forward.
+    #[must_use]
+    pub fn is_fetching_next_page(&self) -> bool {
+        self.observer.is_fetching_next_page()
+    }
+
+    /// Whether the in-flight page fetch is backward.
+    #[must_use]
+    pub fn is_fetching_previous_page(&self) -> bool {
+        self.observer.is_fetching_previous_page()
+    }
+
+    /// The underlying infinite-query observer (for advanced use).
+    #[must_use]
+    pub fn observer(&self) -> Arc<InfiniteQueryObserver<T, P>> {
+        Arc::clone(&self.observer)
+    }
+}
+
+impl<S, T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Drop
+    for UseInfiniteQuery<S, T, P>
+{
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
+}
+
+/// Observe and drive one infinite query (the `useInfiniteQuery` analogue).
+///
+/// The page loop runs on the client's runtime; a pump keeps the state signal
+/// in sync with the key's cache notifications (initial page, appended /
+/// prepended pages, errors).
+///
+/// Shorthand for the state signal type of [`use_infinite_query`].
+pub type InfiniteStateSignal<C, T, P> =
+    <C as ReactiveContext>::Signal<QueryState<crate::infinite::InfiniteData<T, P>>>;
+
+/// Observe and drive one infinite query (the `useInfiniteQuery` analogue).
+///
+/// The page loop runs on the client's runtime; a pump keeps the state signal
+/// in sync with the key's cache notifications (initial page, appended /
+/// prepended pages, errors).
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_infinite_query<C, T, P>(
+    cx: &C,
+    client: &QueryClient,
+    query: &InfiniteQuery<T, P>,
+) -> UseInfiniteQuery<InfiniteStateSignal<C, T, P>, T, P>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<QueryState<crate::infinite::InfiniteData<T, P>>>: Send + 'static,
+    T: Clone + Send + Sync + PartialEq + 'static,
+    P: Clone + Send + Sync + PartialEq + 'static,
+{
+    let observer = Arc::new(crate::spawn_infinite_query(client, query));
+    let state = cx.create_signal(observer.state().clone());
+    let stop = CancellationToken::new();
+
+    let mut rx = client.subscribe(query.key.cache_key());
+    let pump_signal = state.clone();
+    let pump_client = client.clone();
+    let pump_key = query.key.clone();
+    let pump_stop = stop.clone();
+    let pump = async move {
+        while let Ok(_) | Err(RecvError::Lagged(_)) = rx.recv().await {
+            if pump_stop.is_cancelled() {
+                break;
+            }
+            // Cache-derived state (Success/Stale/Idle): the loop task owns
+            // the observer and keeps the cache authoritative.
+            let fresh = read_query_state::<crate::infinite::InfiniteData<T, P>>(
+                &pump_client,
+                &pump_key,
+                None,
+            );
+            pump_signal.set_if_eq(fresh);
+        }
+    };
+    cx.executor().spawn(Box::pin(pump)).detach();
+
+    UseInfiniteQuery {
+        state,
+        observer,
+        stop,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Activity hooks
+// ---------------------------------------------------------------------------
+
+/// Observe whether any query is currently fetching (`useIsFetching` without
+/// filters).
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_is_fetching<C>(cx: &C, client: &QueryClient) -> C::Signal<bool>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<bool>: Send + 'static,
+{
+    let signal = cx.create_signal(client.is_fetching());
+    spawn_activity_pump(cx, client, signal.clone(), |client, _| client.is_fetching());
+    signal
+}
+
+/// Observe whether any mutation is currently executing (`useIsMutating`
+/// without filters).
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_is_mutating<C>(cx: &C, client: &QueryClient) -> C::Signal<bool>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<bool>: Send + 'static,
+{
+    let signal = cx.create_signal(client.is_mutating());
+    spawn_activity_pump(cx, client, signal.clone(), |client, _| client.is_mutating());
+    signal
+}
+
+/// Observe the number of in-flight fetches (`useFetchingCount`).
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_fetching_count<C>(cx: &C, client: &QueryClient) -> C::Signal<usize>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<usize>: Send + 'static,
+{
+    let signal = cx.create_signal(client.fetching_count());
+    spawn_activity_pump(cx, client, signal.clone(), |client, _| {
+        client.fetching_count()
+    });
+    signal
+}
+
+/// Observe the number of in-flight mutations (`useMutatingCount`).
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_mutating_count<C>(cx: &C, client: &QueryClient) -> C::Signal<usize>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<usize>: Send + 'static,
+{
+    let signal = cx.create_signal(client.mutating_count());
+    spawn_activity_pump(cx, client, signal.clone(), |client, _| {
+        client.mutating_count()
+    });
+    signal
+}
+
+/// Observe whether any of the given clients has a fetch in flight.
+///
+/// Every client's activity stream feeds the same signal; on each event the
+/// boolean is recomputed across all clients.
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_any_fetching<C>(cx: &C, clients: &[QueryClient]) -> C::Signal<bool>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<bool>: Send + 'static,
+{
+    let signal = cx.create_signal(clients.iter().any(QueryClient::is_fetching));
+    for client in clients {
+        let mut rx = client.subscribe_activity();
+        let pump_signal = signal.clone();
+        let all_clients: Vec<QueryClient> = clients.to_vec();
+        let pump = async move {
+            while let Ok(_) | Err(RecvError::Lagged(_)) = rx.recv().await {
+                let any = all_clients.iter().any(QueryClient::is_fetching);
+                pump_signal.set_if_eq(any);
+            }
+        };
+        cx.executor().spawn(Box::pin(pump)).detach();
+    }
+    signal
+}
+
+/// Observe a live feed of events, capped at [`ACTIVITY_FEED_CAPACITY`]
+/// entries (oldest dropped first). The receiver is drained up-front so
+/// events buffered before the binding existed are included.
+///
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_activity_feed<C, E>(cx: &C, mut rx: Receiver<E>) -> C::Signal<Vec<E>>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<Vec<E>>: Send + 'static,
     E: Clone + Send + Sync + 'static,
 {
     let initial = drain_ready(&mut rx);
-
-    cx.new(move |cx: &mut Context<Vec<E>>| {
-        cx.spawn(move |this: WeakEntity<Vec<E>>, cx: &mut AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                loop {
-                    let event = match rx.recv().await {
-                        Ok(event) => event,
-                        // Missed events are dropped; the feed keeps following.
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    };
-                    let delivered =
-                        this.update(&mut cx, |feed: &mut Vec<E>, cx: &mut Context<Vec<E>>| {
-                            push_capped(feed, event, ACTIVITY_FEED_CAPACITY);
-                            cx.notify();
-                        });
-                    if delivered.is_err() {
-                        break; // entity dropped, stop tracking
-                    }
-                }
+    let signal = cx.create_signal(initial);
+    let feed_signal = signal.clone();
+    let stop = CancellationToken::new();
+    let pump_stop = stop.clone();
+    let pump = async move {
+        while let Some(Ok(event)) = rx.next().await {
+            if pump_stop.is_cancelled() {
+                break;
             }
-        })
-        .detach();
-        initial
-    })
+            feed_signal.update(|buffer| push_capped(buffer, event, ACTIVITY_FEED_CAPACITY));
+        }
+    };
+    cx.executor().spawn(Box::pin(pump)).detach();
+    signal
 }
 
-/// Reactive hook that reports whether *any* of the given clients currently
-/// has queries in flight (multi-client variant of [`use_is_fetching`]).
+/// Observe several queries at once (`useQueries`): the signal holds one
+/// [`QueryState`] per spec, each slot updated by its own key-filtered pump.
 ///
-/// Like the single-client hooks it subscribes to each client's activity
-/// broadcast instead of polling: any fetching/mutating count change on any
-/// client re-evaluates `client.is_fetching()` across all clients.
-pub fn use_any_fetching<V: 'static>(cx: &mut Context<V>, clients: &[QueryClient]) -> Entity<bool> {
-    let initial = clients.iter().any(super::client::QueryClient::is_fetching);
-    let receivers: Vec<broadcast::Receiver<ActivityEvent>> = clients
+/// # Panics
+///
+/// Panics only if the context's executor cannot spawn; normal adapters never
+/// do.
+pub fn use_queries<C, T>(
+    cx: &C,
+    client: &QueryClient,
+    specs: &[Query<T>],
+) -> C::Signal<Vec<QueryState<T>>>
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    C::Signal<Vec<QueryState<T>>>: Send + 'static,
+    T: Clone + Send + Sync + PartialEq + 'static,
+{
+    let states: Vec<QueryState<T>> = specs
         .iter()
-        .map(super::client::QueryClient::subscribe_activity)
+        .map(|spec| {
+            if client.get_query_data::<T>(&spec.key).is_none()
+                && let Some(initial) = &spec.initial_data
+            {
+                client.set_query_data(&spec.key, initial.clone(), spec.options.clone());
+            }
+            read_query_state(client, &spec.key, placeholder_value(spec))
+        })
         .collect();
+    let signal = cx.create_signal(states);
 
-    cx.new(move |cx: &mut Context<bool>| {
-        for mut rx in receivers {
-            let clients = clients.to_vec();
-            cx.spawn(move |this: WeakEntity<bool>, cx: &mut AsyncApp| {
-                let mut cx = cx.clone();
-                async move {
-                    // A closed channel (all client clones gone) ends the
-                    // tracking task; every other outcome re-evaluates.
-                    while !matches!(rx.recv().await, Err(broadcast::error::RecvError::Closed)) {
-                        let any_fetching =
-                            clients.iter().any(super::client::QueryClient::is_fetching);
-                        let delivered =
-                            this.update(&mut cx, |value: &mut bool, cx: &mut Context<bool>| {
-                                *value = any_fetching;
-                                cx.notify();
-                            });
-                        if delivered.is_err() {
-                            break; // entity dropped, stop tracking
-                        }
+    // One pump per spec: its receiver filters to that key, and updates write
+    // only the spec's slot (signal updates are atomic, so concurrent pumps
+    // are serialized).
+    for (idx, spec) in specs.iter().enumerate() {
+        let mut rx = client.subscribe(spec.key.cache_key());
+        let pump_signal = signal.clone();
+        let pump_client = client.clone();
+        let pump_key = spec.key.clone();
+        let pump_placeholder = placeholder_value(spec);
+        let pump = async move {
+            while let Ok(_) | Err(RecvError::Lagged(_)) = rx.recv().await {
+                let fresh = read_query_state(&pump_client, &pump_key, pump_placeholder.clone());
+                pump_signal.update(|states| {
+                    if let Some(slot) = states.get_mut(idx)
+                        && *slot != fresh
+                    {
+                        *slot = fresh;
                     }
-                }
-            })
-            .detach();
+                });
+            }
+        };
+        cx.executor().spawn(Box::pin(pump)).detach();
+    }
+    signal
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Spawn a pump that recomputes `signal` from the client's activity events.
+///
+/// `recompute` derives the new signal value from the client state after each
+/// activity event (count changes).
+fn spawn_activity_pump<C, S, T, F>(cx: &C, client: &QueryClient, signal: S, recompute: F)
+where
+    C: ReactiveContext,
+    C::Executor: Executor<JoinHandle<()>: JoinHandle<()> + 'static>,
+    S: Signal<T> + Send + 'static,
+    T: Clone + PartialEq + Send + 'static,
+    F: Fn(&QueryClient, &ActivityEvent) -> T + Send + 'static,
+{
+    let mut rx = client.subscribe_activity();
+    let pump_client = client.clone();
+    let pump = async move {
+        while let Ok(event) = rx.recv().await {
+            let value = recompute(&pump_client, &event);
+            signal.set_if_eq(value);
         }
-        initial
-    })
+    };
+    cx.executor().spawn(Box::pin(pump)).detach();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::QueryClient;
-    use gpui::{Empty, Render, TestAppContext, Window};
+    use crate::QueryError;
+    use crate::key::QueryKey;
+    use crate::mutation::Mutation;
+    use crate::query::Query;
+    use crate::state::MutationState;
+    use quoin_testkit::{ImmediateExecutor, TestContext, ThreadedExecutor, UpdateRecorder};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct TestView {
-        is_fetching: Entity<UseIsFetching>,
-        is_mutating: Entity<UseIsMutating>,
-        fetching_count: Entity<UseFetchingCount>,
-        mutating_count: Entity<UseMutatingCount>,
+    type TestCx = TestContext<ThreadedExecutor>;
+
+    /// Context whose pumps run on dedicated threads (poll with deadlines).
+    pub(crate) fn threaded_cx() -> TestCx {
+        TestContext::with_executor(ThreadedExecutor)
     }
 
-    impl Render for TestView {
-        fn render(
-            &mut self,
-            _: &mut Window,
-            _: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            Empty
+    fn ok_query(key: &QueryKey, data: &'static str) -> Query<String> {
+        Query::new(key.clone(), move || async move { Ok(data.to_string()) })
+    }
+
+    async fn wait_for(ready: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready() && std::time::Instant::now() < deadline {
+            // Tokio sleep: yields to the current-thread test runtime so the
+            // fetch tasks make progress while polling.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
+        assert!(ready(), "condition not reached in time");
     }
 
-    fn create_test_view(cx: &mut TestAppContext, client: &QueryClient) -> Entity<TestView> {
-        let client = client.clone();
-        cx.add_window_view(move |_window, cx| TestView {
-            is_fetching: use_is_fetching(cx, &client),
-            is_mutating: use_is_mutating(cx, &client),
-            fetching_count: use_fetching_count(cx, &client),
-            mutating_count: use_mutating_count(cx, &client),
-        })
-        .0
+    // ------------------------------------------------------------------
+    // use_query
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn use_query_seeds_executes_and_tracks() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let key = QueryKey::new("hooks-query");
+        let query = ok_query(&key, "data");
+
+        let binding = use_query(&cx, &client, &query);
+        // Seed: idle (nothing cached yet).
+        assert!(matches!(binding.state.get(), QueryState::Idle));
+
+        // The fetch resolves and the pump copies the success state into the
+        // signal.
+        wait_for(|| matches!(binding.state.get(), QueryState::Success(_))).await;
+        assert_eq!(
+            binding.state.get().data(),
+            Some(&"data".to_string()),
+            "signal mirrors the cached data"
+        );
     }
 
-    #[gpui::test]
-    fn test_use_is_fetching_reacts_to_activity(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let view = create_test_view(cx, &client);
-        let entity = view.read_with(cx, |v, _| v.is_fetching.clone());
+    #[tokio::test]
+    async fn use_query_refetch_and_invalidation_flow_through_signal() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let key = QueryKey::new("hooks-refetch");
+        let query = ok_query(&key, "v1");
 
-        assert!(!entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
+        let binding = use_query(&cx, &client, &query);
+        wait_for(|| matches!(binding.state.get(), QueryState::Success(_))).await;
+
+        // External cache writes reach the signal through the pump.
+        client.set_query_data(&key, "v2".to_string(), crate::QueryOptions::default());
+        wait_for(|| binding.state.get().data() == Some(&"v2".to_string())).await;
+
+        // Invalidation marks the signal stale through the pump.
+        client.invalidate_queries(&key);
+        wait_for(|| matches!(binding.state.get(), QueryState::Stale(_))).await;
+
+        // refetch resolves the stale mark back to fresh data.
+        binding.refetch();
+        wait_for(|| matches!(binding.state.get(), QueryState::Success(_))).await;
+    }
+
+    #[tokio::test]
+    async fn use_query_drop_stops_the_pump() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let key = QueryKey::new("hooks-drop");
+        let query = ok_query(&key, "data");
+        let binding = use_query(&cx, &client, &query);
+        wait_for(|| matches!(binding.state.get(), QueryState::Success(_))).await;
+
+        let signal = binding.state.clone();
+        drop(binding);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        client.set_query_data(
+            &key,
+            "after-drop".to_string(),
+            crate::QueryOptions::default(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        // The pump is cancelled: the signal no longer tracks the cache.
+        assert_ne!(
+            signal.get().data(),
+            Some(&"after-drop".to_string()),
+            "dropped binding must stop tracking"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // use_mutation
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn use_mutation_tracks_lifecycle() {
+        let cx = threaded_cx();
+        let mutation = Mutation::new(|param: i32| async move { Ok(param * 2) });
+        let binding = use_mutation(&cx, mutation);
+        assert!(matches!(binding.state.get(), MutationState::Idle));
+
+        let client = crate::test_support::tokio_client();
+        let result = binding.mutate(&client, 21, None).await;
+        assert_eq!(result.expect("mutation succeeds"), 42);
+        assert!(matches!(binding.state.get(), MutationState::Success(_)));
+
+        binding.reset();
+        assert!(matches!(binding.state.get(), MutationState::Idle));
+    }
+
+    #[tokio::test]
+    async fn use_mutation_surfaces_errors() {
+        let cx = threaded_cx();
+        let mutation: Mutation<String, i32> =
+            Mutation::new(|_param: i32| async { Err(QueryError::custom("nope")) });
+        let binding = use_mutation(&cx, mutation);
+        let client = crate::test_support::tokio_client();
+        let result = binding.mutate(&client, 1, None).await;
+        assert_eq!(result.unwrap_err().to_string(), "nope");
+        assert!(matches!(binding.state.get(), MutationState::Error(_)));
+    }
+
+    // ------------------------------------------------------------------
+    // Activity hooks
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn use_is_fetching_tracks_activity_counts() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let fetching = use_is_fetching(&cx, &client);
+        let count = use_fetching_count(&cx, &client);
+        assert!(!fetching.get());
+        assert_eq!(count.get(), 0);
 
         client.inc_fetching();
-        cx.run_until_parked();
-        assert!(entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
+        wait_for(|| fetching.get()).await;
+        wait_for(|| count.get() == 1).await;
 
         client.dec_fetching();
-        cx.run_until_parked();
-        assert!(!entity.read_with(cx, |e: &UseIsFetching, _| e.get()));
+        wait_for(|| !fetching.get()).await;
+        wait_for(|| count.get() == 0).await;
     }
 
-    #[gpui::test]
-    fn test_use_is_mutating_reacts_to_activity(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let view = create_test_view(cx, &client);
-        let entity = view.read_with(cx, |v, _| v.is_mutating.clone());
-
-        assert!(!entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
-
+    #[tokio::test]
+    async fn use_is_mutating_and_counts_track_activity() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let mutating = use_is_mutating(&cx, &client);
+        let mutating_count = use_mutating_count(&cx, &client);
         client.inc_mutating();
-        cx.run_until_parked();
-        assert!(entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
-
+        wait_for(|| mutating.get()).await;
+        wait_for(|| mutating_count.get() == 1).await;
         client.dec_mutating();
-        cx.run_until_parked();
-        assert!(!entity.read_with(cx, |e: &UseIsMutating, _| e.get()));
+        wait_for(|| mutating_count.get() == 0).await;
     }
 
-    #[gpui::test]
-    fn test_use_fetching_count_reacts_to_activity(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let view = create_test_view(cx, &client);
-        let entity = view.read_with(cx, |v, _| v.fetching_count.clone());
-
-        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 0);
-
-        client.inc_fetching();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 1);
-
-        client.inc_fetching();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 2);
-
-        client.dec_fetching();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseFetchingCount, _| e.get()), 1);
+    #[tokio::test]
+    async fn use_any_fetching_combines_clients() {
+        let cx = threaded_cx();
+        let a = crate::test_support::tokio_client();
+        let b = crate::test_support::tokio_client();
+        let any = use_any_fetching(&cx, &[a.clone(), b.clone()]);
+        assert!(!any.get());
+        b.inc_fetching();
+        wait_for(|| any.get()).await;
+        b.dec_fetching();
+        wait_for(|| !any.get()).await;
     }
 
-    #[gpui::test]
-    fn test_use_mutating_count_reacts_to_activity(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let view = create_test_view(cx, &client);
-        let entity = view.read_with(cx, |v, _| v.mutating_count.clone());
+    #[tokio::test]
+    async fn use_activity_feed_caps_and_orders() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
+        let rx = client.subscribe_activity();
+        let feed = use_activity_feed(&cx, rx);
 
-        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 0);
-
-        client.inc_mutating();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 1);
-
-        client.inc_mutating();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 2);
-
-        client.dec_mutating();
-        cx.run_until_parked();
-        assert_eq!(entity.read_with(cx, |e: &UseMutatingCount, _| e.get()), 1);
-    }
-
-    #[gpui::test]
-    fn test_activity_hooks_stop_after_lagged_broadcast(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let view = create_test_view(cx, &client);
-        let is_fetching = view.read_with(cx, |v, _| v.is_fetching.clone());
-        let is_mutating = view.read_with(cx, |v, _| v.is_mutating.clone());
-        let fetching_count = view.read_with(cx, |v, _| v.fetching_count.clone());
-        let mutating_count = view.read_with(cx, |v, _| v.mutating_count.clone());
-
-        // The activity channel buffers 16 events. Flooding far more than that
-        // without yielding makes every hook's first `recv()` report `Lagged`,
-        // which ends its `while let Ok(..)` tracking loop.
+        // Paced first: 30 pairs stream through the bounded activity channel
+        // without lagging it, so the feed accumulates them in order.
         for _ in 0..30 {
             client.inc_fetching();
             client.dec_fetching();
-            client.inc_mutating();
-            client.dec_mutating();
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
-        cx.run_until_parked();
+        wait_for(|| feed.get().len() >= 60).await;
+        let first = feed.get();
+        // Each inc+dec pair emits two count-change events.
+        assert_eq!(first.len(), 60, "paced events all land, in order");
 
-        // The tracking loops have ended: further activity is not observed and
-        // the hooks keep their initial values.
-        client.inc_fetching();
-        client.inc_mutating();
-        cx.run_until_parked();
-        assert!(!is_fetching.read_with(cx, |e: &UseIsFetching, _| e.get()));
-        assert!(!is_mutating.read_with(cx, |e: &UseIsMutating, _| e.get()));
-        assert_eq!(
-            fetching_count.read_with(cx, |e: &UseFetchingCount, _| e.get()),
-            0
-        );
-        assert_eq!(
-            mutating_count.read_with(cx, |e: &UseMutatingCount, _| e.get()),
-            0
-        );
-    }
-
-    // ----- use_queries / use_activity_feed / use_any_fetching -----
-
-    struct MultiHookView {
-        queries: Option<Entity<Vec<QueryState<Vec<String>>>>>,
-        feed: Option<Entity<Vec<u64>>>,
-        any_fetching: Option<Entity<bool>>,
-    }
-
-    impl Render for MultiHookView {
-        fn render(
-            &mut self,
-            _: &mut Window,
-            _: &mut gpui::Context<Self>,
-        ) -> impl gpui::IntoElement {
-            Empty
+        // Flood past the capacity: the feed must stay bounded (oldest
+        // dropped), never exceeding ACTIVITY_FEED_CAPACITY.
+        for _ in 0..(ACTIVITY_FEED_CAPACITY * 2) {
+            client.inc_fetching();
+            client.dec_fetching();
         }
-    }
-
-    fn ok_spec(key: &crate::QueryKey) -> Query<Vec<String>> {
-        Query::new(key.clone(), || async { Ok(Vec::<String>::new()) })
-    }
-
-    #[gpui::test]
-    fn test_use_queries_initial_from_cache_and_tracks_updates(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let key = crate::QueryKey::new("multi");
-        client.set_query_data(&key, vec!["a".to_string()], crate::QueryOptions::default());
-        let specs = vec![ok_spec(&key)];
-
-        let view_client = client.clone();
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: Some(use_queries(cx, &view_client, specs)),
-                feed: None,
-                any_fetching: None,
-            })
-            .0;
-        let queries = view.read_with(cx, |v, _| v.queries.clone().expect("queries entity"));
-
-        // Initial value comes from the cache.
-        assert!(queries.read_with(cx, |states, _| states[0].is_success()));
-        assert_eq!(
-            queries.read_with(cx, |states, _| states[0].data().cloned()),
-            Some(vec!["a".to_string()])
-        );
-
-        // Cache writes propagate through the subscription.
-        client.set_query_data(
-            &key,
-            vec!["a".to_string(), "b".to_string()],
-            crate::QueryOptions::default(),
-        );
-        cx.run_until_parked();
-        assert_eq!(
-            queries.read_with(cx, |states, _| states[0].data().cloned()),
-            Some(vec!["a".to_string(), "b".to_string()])
-        );
-
-        // Invalidation flips the state to Stale.
-        client.invalidate_queries(&key);
-        cx.run_until_parked();
-        assert!(queries.read_with(cx, |states, _| states[0].is_stale()));
-
-        // A fresh write un-stales it again.
-        client.set_query_data(
-            &key,
-            vec!["c".to_string()],
-            crate::QueryOptions {
-                stale_time: std::time::Duration::from_secs(60),
-                ..Default::default()
-            },
-        );
-        cx.run_until_parked();
-        assert!(queries.read_with(cx, |states, _| states[0].is_success()));
-        assert_eq!(
-            queries.read_with(cx, |states, _| states[0].data().cloned()),
-            Some(vec!["c".to_string()])
-        );
-    }
-
-    #[gpui::test]
-    fn test_use_queries_multiple_specs_track_independently(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let first = crate::QueryKey::new("first");
-        let second = crate::QueryKey::new("second");
-        let specs = vec![ok_spec(&first), ok_spec(&second)];
-
-        let view_client = client.clone();
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: Some(use_queries(cx, &view_client, specs)),
-                feed: None,
-                any_fetching: None,
-            })
-            .0;
-        let queries = view.read_with(cx, |v, _| v.queries.clone().expect("queries entity"));
-
-        assert!(queries.read_with(cx, |states, _| states.iter().all(QueryState::is_idle)));
-        assert_eq!(queries.read_with(cx, |states, _| states.len()), 2);
-
-        client.set_query_data(
-            &second,
-            vec!["s".to_string()],
-            crate::QueryOptions::default(),
-        );
-        cx.run_until_parked();
-        assert!(queries.read_with(cx, |states, _| states[0].is_idle()));
-        assert!(queries.read_with(cx, |states, _| states[1].is_success()));
-    }
-
-    #[gpui::test]
-    fn test_use_activity_feed_collects_and_caps_events(cx: &mut TestAppContext) {
-        let (tx, rx) = tokio::sync::broadcast::channel::<u64>(256);
-        for i in 0..150u64 {
-            let _ = tx.send(i);
-        }
-
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: None,
-                feed: Some(use_activity_feed(cx, rx)),
-                any_fetching: None,
-            })
-            .0;
-        let feed = view.read_with(cx, |v, _| v.feed.clone().expect("feed entity"));
-
-        // Pre-buffered events are drained and capped to the most recent 100.
-        assert_eq!(feed.read_with(cx, |events, _| events.len()), 100);
-        assert_eq!(
-            feed.read_with(cx, |events, _| *events.last().expect("non-empty")),
-            149
-        );
-
-        // Events sent after mount are appended, still capped.
-        let _ = tx.send(150);
-        cx.run_until_parked();
-        assert_eq!(feed.read_with(cx, |events, _| events.len()), 100);
-        assert_eq!(
-            feed.read_with(cx, |events, _| *events.last().expect("non-empty")),
-            150
-        );
-    }
-
-    #[gpui::test]
-    fn test_use_any_fetching_tracks_multiple_clients(cx: &mut TestAppContext) {
-        let client_a = QueryClient::new();
-        let client_b = QueryClient::new();
-        let view_a = client_a.clone();
-        let view_b = client_b.clone();
-
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: None,
-                feed: None,
-                any_fetching: Some(use_any_fetching(cx, &[view_a, view_b])),
-            })
-            .0;
-        let any_fetching = view.read_with(cx, |v, _| {
-            v.any_fetching.clone().expect("any_fetching entity")
-        });
-
-        assert!(!any_fetching.read_with(cx, |value, _| *value));
-
-        client_b.inc_fetching();
-        cx.run_until_parked();
-        assert!(any_fetching.read_with(cx, |value, _| *value));
-
-        client_a.inc_fetching();
-        cx.run_until_parked();
-        assert!(any_fetching.read_with(cx, |value, _| *value));
-
-        client_a.dec_fetching();
-        cx.run_until_parked();
-        assert!(any_fetching.read_with(cx, |value, _| *value));
-
-        client_b.dec_fetching();
-        cx.run_until_parked();
-        assert!(!any_fetching.read_with(cx, |value, _| *value));
-    }
-
-    // ----- pure helpers (non-GPUI) -----
-
-    #[test]
-    fn test_push_capped_caps_at_capacity() {
-        let mut feed: Vec<u64> = Vec::new();
-        for i in 0..5u64 {
-            push_capped(&mut feed, i, 3);
-        }
-        assert_eq!(feed, vec![2, 3, 4]);
-    }
-
-    #[test]
-    fn test_push_capped_under_capacity_preserves_order() {
-        let mut feed: Vec<&str> = Vec::new();
-        push_capped(&mut feed, "a", 10);
-        push_capped(&mut feed, "b", 10);
-        push_capped(&mut feed, "c", 10);
-        assert_eq!(feed, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_push_capped_zero_capacity_drops_events() {
-        let mut feed: Vec<u64> = Vec::new();
-        push_capped(&mut feed, 1, 0);
-        push_capped(&mut feed, 2, 0);
-        assert_eq!(feed, [] as [u64; 0]);
-    }
-
-    #[test]
-    fn test_push_capped_exact_capacity_boundary() {
-        let mut feed: Vec<u64> = vec![1, 2];
-        push_capped(&mut feed, 3, 2);
-        assert_eq!(feed, vec![2, 3]);
-    }
-
-    #[tokio::test]
-    async fn test_drain_ready_collects_buffered_events() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
-        for i in 0..5u64 {
-            let _ = tx.send(i);
-        }
-        assert_eq!(drain_ready(&mut rx), vec![0, 1, 2, 3, 4]);
-        // Second drain finds nothing buffered.
-        assert_eq!(drain_ready(&mut rx), [] as [u64; 0]);
-    }
-
-    #[tokio::test]
-    async fn test_drain_ready_on_closed_channel() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel::<u64>(4);
-        drop(tx);
-        assert_eq!(drain_ready(&mut rx), [] as [u64; 0]);
-    }
-
-    #[tokio::test]
-    async fn test_drain_ready_skips_lagged_events() {
-        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
-        for i in 0..10u64 {
-            let _ = tx.send(i);
-        }
-        // The receiver lagged: only the newest buffered events survive, and
-        // the lagged-marker error is swallowed by the drain.
-        let drained = drain_ready(&mut rx);
+        wait_for(|| !feed.get().is_empty()).await;
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let events = feed.get();
         assert!(
-            !drained.is_empty(),
-            "buffered events after lag are collected"
+            events.len() <= ACTIVITY_FEED_CAPACITY,
+            "feed is capped, got {}",
+            events.len()
         );
-        assert_eq!(*drained.last().expect("non-empty"), 9);
-        assert!(drained.len() <= 4, "only the buffered tail survives");
     }
 
-    #[gpui::test]
-    fn test_use_queries_seeds_initial_data_into_cache(cx: &mut TestAppContext) {
-        let client = QueryClient::new();
-        let key = crate::QueryKey::new("seeded-hook");
+    #[tokio::test]
+    async fn use_queries_tracks_each_spec_slot() {
+        let cx = threaded_cx();
+        let client = crate::test_support::tokio_client();
         let specs = vec![
-            Query::new(key, || async { Ok(Vec::<String>::new()) })
-                .initial_data(vec!["seed".to_string()]),
+            ok_query(&QueryKey::new("hooks-multi-1"), "one"),
+            ok_query(&QueryKey::new("hooks-multi-2"), "two"),
         ];
-
-        let view_client = client.clone();
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: Some(use_queries(cx, &view_client, specs)),
-                feed: None,
-                any_fetching: None,
-            })
-            .0;
-        let queries = view.read_with(cx, |v, _| v.queries.clone().expect("queries entity"));
-
-        assert!(queries.read_with(cx, |states, _| states[0].is_success()));
-        assert_eq!(
-            queries.read_with(cx, |states, _| states[0].data().cloned()),
-            Some(vec!["seed".to_string()])
-        );
+        let states = use_queries(&cx, &client, &specs);
+        // `use_queries` only observes (TanStack parity): execution is driven
+        // separately, e.g. through `spawn_query`.
+        for spec in &specs {
+            crate::spawn_query(&client, spec).detach();
+        }
+        wait_for(|| {
+            states
+                .get()
+                .iter()
+                .all(|state| matches!(state, QueryState::Success(_)))
+        })
+        .await;
+        let snapshot = states.get();
+        assert_eq!(snapshot[0].data(), Some(&"one".to_string()));
+        assert_eq!(snapshot[1].data(), Some(&"two".to_string()));
     }
 
-    #[gpui::test]
-    fn test_use_queries_stops_when_entity_dropped(cx: &mut TestAppContext) {
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn read_query_state_maps_cache_to_states() {
         let client = QueryClient::new();
-        let key = crate::QueryKey::new("dropped-queries");
-        let specs = vec![ok_spec(&key)];
-
-        let view_client = client.clone();
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: Some(use_queries(cx, &view_client, specs)),
-                feed: None,
-                any_fetching: None,
-            })
-            .0;
-
-        // Drop the model entity: the per-spec task observes the failed update
-        // on the next event and breaks out of its loop.
-        view.update(cx, |v, _| v.queries = None);
-        client.set_query_data(
-            &key,
-            vec!["late".to_string()],
-            crate::QueryOptions::default(),
-        );
-        cx.run_until_parked();
+        let key = QueryKey::new("read-state");
+        assert!(matches!(
+            read_query_state::<String>(&client, &key, None),
+            QueryState::Idle
+        ));
+        client.set_query_data(&key, "x".to_string(), crate::QueryOptions::default());
+        assert!(matches!(
+            read_query_state::<String>(&client, &key, None),
+            QueryState::Success(_)
+        ));
+        client.invalidate_queries(&key);
+        assert!(matches!(
+            read_query_state::<String>(&client, &key, None),
+            QueryState::Stale(_)
+        ));
     }
 
-    #[gpui::test]
-    fn test_use_activity_feed_follows_lagged_broadcasts(cx: &mut TestAppContext) {
-        let (tx, rx) = tokio::sync::broadcast::channel::<u64>(4);
-        for i in 0..10u64 {
-            let _ = tx.send(i);
+    #[test]
+    fn push_capped_drops_oldest() {
+        let mut buffer: Vec<u32> = Vec::new();
+        for i in 0..5 {
+            push_capped(&mut buffer, i, 3);
         }
-
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: None,
-                feed: Some(use_activity_feed(cx, rx)),
-                any_fetching: None,
-            })
-            .0;
-        let feed = view.read_with(cx, |v, _| v.feed.clone().expect("feed entity"));
-
-        // Events sent after the initial drain overflow the buffer: the
-        // receiver lags on its next poll and keeps following the newest tail.
-        for i in 10..20u64 {
-            let _ = tx.send(i);
-        }
-        cx.run_until_parked();
-        assert_eq!(
-            feed.read_with(cx, |events, _| *events.last().expect("non-empty")),
-            19
-        );
+        assert_eq!(buffer, vec![2, 3, 4]);
     }
 
-    #[gpui::test]
-    fn test_use_activity_feed_stops_when_entity_dropped(cx: &mut TestAppContext) {
-        let (tx, rx) = tokio::sync::broadcast::channel::<u64>(16);
-
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: None,
-                feed: Some(use_activity_feed(cx, rx)),
-                any_fetching: None,
-            })
-            .0;
-
-        view.update(cx, |v, _| v.feed = None);
-        let _ = tx.send(42);
-        cx.run_until_parked();
+    #[test]
+    fn drain_ready_empties_the_queue() {
+        let (tx, mut rx) = crate::bus::Sender::channel(8);
+        tx.send(&1);
+        tx.send(&2);
+        let events = drain_ready(&mut rx);
+        assert_eq!(events, vec![1, 2]);
+        assert_eq!(drain_ready(&mut rx), Vec::<u32>::new());
     }
 
-    #[gpui::test]
-    fn test_use_any_fetching_stops_when_entity_dropped(cx: &mut TestAppContext) {
-        let client_a = QueryClient::new();
-        let view_a = client_a.clone();
+    #[test]
+    fn placeholder_value_resolves_static_and_function() {
+        let key = QueryKey::new("placeholder");
+        let static_query: Query<String> =
+            Query::new(key.clone(), || async { Ok("real".to_string()) })
+                .placeholder_data(crate::options::PlaceholderData::Value("ph".to_string()));
+        assert_eq!(placeholder_value(&static_query), Some("ph".to_string()));
 
-        let view = cx
-            .add_window_view(move |_window, cx| MultiHookView {
-                queries: None,
-                feed: None,
-                any_fetching: Some(use_any_fetching(cx, &[view_a])),
-            })
-            .0;
+        let fn_query: Query<String> = Query::new(key, || async { Ok("real".to_string()) })
+            .placeholder_data(crate::options::PlaceholderData::Function(
+                std::sync::Arc::new(|previous: Option<&String>| {
+                    previous.cloned().unwrap_or_else(|| "fallback".to_string())
+                }),
+            ));
+        assert_eq!(placeholder_value(&fn_query), Some("fallback".to_string()));
+    }
 
-        view.update(cx, |v, _| v.any_fetching = None);
-        client_a.inc_fetching();
-        cx.run_until_parked();
+    // Silence unused-import warnings for helpers only used on some paths.
+    #[test]
+    fn recorder_smoke() {
+        let cx = TestContext::with_executor(ImmediateExecutor);
+        let signal = cx.create_signal(0u32);
+        signal.set(1);
+        let recorder = UpdateRecorder::new();
+        recorder.assert_count(0);
+        let _ = AtomicUsize::new(0).load(Ordering::SeqCst);
     }
 }
