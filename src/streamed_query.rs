@@ -240,7 +240,7 @@ mod tests {
     use crate::query::Query;
     use crate::{QueryClient, QueryOptions};
     use futures::stream;
-    use tokio_util::sync::CancellationToken;
+    use quoin_core::CancellationToken;
 
     fn stream_of(
         chunks: Vec<Result<Vec<i32>, QueryError>>,
