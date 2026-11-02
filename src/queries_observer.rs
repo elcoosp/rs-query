@@ -8,20 +8,21 @@
 //! `combine` escape hatch for deriving a single value from all results.
 //!
 //! Execution model: `run_all`/`refresh` spawn [`crate::executor::execute_query`]
-//! tasks and return their [`JoinHandle`]s. Every completed task deposits its
-//! final state into a shared per-index buffer; [`QueriesObserver::sync`] folds
-//! those buffered states back into the observer's results so they can be read
-//! with [`QueriesObserver::results`]. Set-pruning and additions are handled by
+//! tasks and return their [`SpawnedTask`] handles. Every completed task
+//! deposits its final state into a shared per-index buffer;
+//! [`QueriesObserver::sync`] folds those buffered states back into the
+//! observer's results so they can be read with
+//! [`QueriesObserver::results`]. Set-pruning and additions are handled by
 //! [`QueriesObserver::set_specs`], which reconciles by cache key: states for
 //! unchanged keys are preserved, newly added specs are executed immediately
 //! and their handles returned.
 
 use crate::executor::execute_query;
 use crate::query::Query;
+use crate::runtime::SpawnedTask;
 use crate::{QueryClient, QueryState};
+use quoin_core::CancellationToken;
 use std::sync::{Arc, Mutex};
-use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 /// Multi-query observer mirroring `TanStack`'s `QueriesObserver`.
 pub struct QueriesObserver<T: Clone + Send + Sync + PartialEq + 'static> {
@@ -54,10 +55,11 @@ impl<T: Clone + Send + Sync + PartialEq + 'static> QueriesObserver<T> {
     /// * Specs whose cache key already existed keep their current result and
     ///   completion slot.
     /// * Newly added specs get an initial (cache/`initial_data`-backed) state
-    ///   and are executed immediately; their [`JoinHandle`]s are returned so
-    ///   callers can await them (dropping the handles detaches the tasks).
+    ///   and are executed immediately; their [`SpawnedTask`] handles are
+    ///   returned so callers can await them (dropping the handles aborts the
+    ///   tasks; use `detach` for fire-and-forget).
     /// * Removed specs simply disappear together with their state.
-    pub fn set_specs(&mut self, specs: Vec<Query<T>>) -> Vec<JoinHandle<QueryState<T>>> {
+    pub fn set_specs(&mut self, specs: Vec<Query<T>>) -> Vec<SpawnedTask<QueryState<T>>> {
         let mut old_results: Vec<Option<QueryState<T>>> = std::mem::take(&mut self.results)
             .into_iter()
             .map(Some)
@@ -96,7 +98,7 @@ impl<T: Clone + Send + Sync + PartialEq + 'static> QueriesObserver<T> {
         self.run_indices(&new_indices)
     }
 
-    /// Execute every spec, returning one [`JoinHandle`] per executed query
+    /// Execute every spec, returning one [`SpawnedTask`] per executed query
     /// (in spec order).
     ///
     /// Before spawning, each result is optimistically marked
@@ -104,16 +106,16 @@ impl<T: Clone + Send + Sync + PartialEq + 'static> QueriesObserver<T> {
     /// (`options.enabled`) are skipped. Completed states only become visible
     /// through [`QueriesObserver::results`] after the handles are awaited and
     /// [`QueriesObserver::sync`] is called.
-    pub fn run_all(&mut self) -> Vec<JoinHandle<QueryState<T>>> {
+    pub fn run_all(&mut self) -> Vec<SpawnedTask<QueryState<T>>> {
         let indices: Vec<usize> = (0..self.specs.len()).collect();
         self.run_indices(&indices)
     }
 
-    /// Execute a single spec by index, returning its [`JoinHandle`].
+    /// Execute a single spec by index, returning its [`SpawnedTask`] handle.
     ///
     /// Returns `None` when the index is out of bounds or the spec is
     /// disabled.
-    pub fn refresh(&mut self, idx: usize) -> Option<JoinHandle<QueryState<T>>> {
+    pub fn refresh(&mut self, idx: usize) -> Option<SpawnedTask<QueryState<T>>> {
         if idx >= self.specs.len() {
             return None;
         }
@@ -162,7 +164,7 @@ impl<T: Clone + Send + Sync + PartialEq + 'static> QueriesObserver<T> {
     }
 
     /// Mark the given indices optimistically and spawn their executions.
-    fn run_indices(&mut self, indices: &[usize]) -> Vec<JoinHandle<QueryState<T>>> {
+    fn run_indices(&mut self, indices: &[usize]) -> Vec<SpawnedTask<QueryState<T>>> {
         let mut handles = Vec::with_capacity(indices.len());
         for &idx in indices {
             let Some(spec) = self.specs.get(idx) else {
@@ -181,15 +183,18 @@ impl<T: Clone + Send + Sync + PartialEq + 'static> QueriesObserver<T> {
             let query = spec.clone();
             let client = self.client.clone();
             let completed = Arc::clone(&self.completed);
-            handles.push(tokio::spawn(async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let task = async move {
                 let state = execute_query(&client, &query, CancellationToken::new()).await;
                 if let Ok(mut slots) = completed.lock()
                     && let Some(slot) = slots.get_mut(idx)
                 {
                     *slot = Some(state.clone());
                 }
-                state
-            }));
+                let _ = tx.send(state);
+            };
+            let handle = self.client.runtime().spawn(Box::pin(task));
+            handles.push(SpawnedTask::new(handle, rx, Arc::new(|| QueryState::Idle)));
         }
         handles
     }
@@ -234,7 +239,7 @@ mod tests {
         })
     }
 
-    async fn await_all(handles: Vec<JoinHandle<QueryState<String>>>) {
+    async fn await_all(handles: Vec<crate::runtime::SpawnedTask<QueryState<String>>>) {
         for handle in handles {
             let _ = handle.await;
         }
