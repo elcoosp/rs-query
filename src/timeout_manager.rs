@@ -3,7 +3,9 @@
 //!
 //! All internal waiting (retry backoff, GC timers, refetch intervals, throttle
 //! delays) flows through the [`TimeoutManager`] so tests can substitute
-//! deterministic timers.
+//! deterministic timers. The default provider uses quoin's portable timer
+//! ([`quoin_core::sleep`]: `futures-timer` on native, the browser timer on
+//! wasm) and therefore works **without any ambient async runtime**.
 
 use std::any::Any;
 use std::future::Future;
@@ -20,14 +22,14 @@ pub trait SleepProvider: Send + Sync + std::fmt::Debug {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Default provider backed by `tokio::time::sleep`.
+/// Default provider backed by quoin's portable timer.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct TokioSleepProvider;
+pub struct QuoinSleepProvider;
 
-impl SleepProvider for TokioSleepProvider {
+impl SleepProvider for QuoinSleepProvider {
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            tokio::time::sleep(duration).await;
+            quoin_core::sleep(duration).await;
         })
     }
 
@@ -46,12 +48,12 @@ pub struct TimeoutManager {
 
 impl Default for TimeoutManager {
     fn default() -> Self {
-        Self::with_provider(TokioSleepProvider)
+        Self::with_provider(QuoinSleepProvider)
     }
 }
 
 impl TimeoutManager {
-    /// Create a manager using the default (`tokio`) timer source.
+    /// Create a manager using the default (quoin) timer source.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -112,9 +114,9 @@ mod tests {
     #[tokio::test]
     async fn test_default_manager_sleeps() {
         let manager = TimeoutManager::new();
-        tokio::time::pause();
-        manager.sleep(Duration::from_millis(10)).await;
-        tokio::time::advance(Duration::from_millis(10)).await;
+        // Default provider is runtime-free (quoin portable timer): a real,
+        // tiny sleep must simply resolve.
+        manager.sleep(Duration::from_millis(1)).await;
     }
 
     #[tokio::test]
@@ -145,29 +147,28 @@ mod tests {
         manager.set_provider(InstantSleep {
             calls: AtomicUsize::new(0),
         });
-        // After the swap, sleeps return instantly.
-        tokio::time::pause();
+        // After the swap, sleeps return instantly even for large durations.
         manager.sleep(Duration::from_secs(60)).await;
     }
 
     #[test]
-    fn test_default_provider_is_tokio() {
+    fn test_default_provider_is_quoin() {
         let manager = TimeoutManager::default();
         let debug = format!("{manager:?}");
         assert!(debug.contains("TimeoutManager"));
     }
 
     #[test]
-    fn test_default_provider_downcasts_to_tokio_sleep_provider() {
+    fn test_default_provider_downcasts_to_quoin_sleep_provider() {
         let manager = TimeoutManager::new();
-        let is_tokio = manager
+        let is_quoin = manager
             .provider
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_any()
-            .downcast_ref::<TokioSleepProvider>()
+            .downcast_ref::<QuoinSleepProvider>()
             .is_some();
-        assert!(is_tokio, "default provider should be TokioSleepProvider");
+        assert!(is_quoin, "default provider should be QuoinSleepProvider");
     }
 
     #[tokio::test]
