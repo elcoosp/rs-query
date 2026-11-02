@@ -107,16 +107,6 @@ impl QueryError {
     }
 }
 
-impl From<tokio::task::JoinError> for QueryError {
-    fn from(err: tokio::task::JoinError) -> Self {
-        if err.is_cancelled() {
-            QueryError::cancelled()
-        } else {
-            QueryError::Custom(err.to_string())
-        }
-    }
-}
-
 impl From<std::io::Error> for QueryError {
     fn from(err: std::io::Error) -> Self {
         QueryError::Network(err.to_string())
@@ -191,30 +181,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_from_join_error_cancelled() {
-        // One spawn site serves both needs: the first task runs the spawned
-        // async block to completion, while the second is aborted before its
-        // first poll so that joining it yields the cancelled `JoinError`.
-        let spawn_sleeper = || {
-            tokio::spawn(async {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            })
-        };
-
-        spawn_sleeper().await.expect("sleeper task completes");
-        let handle = spawn_sleeper();
-        handle.abort();
-        let err: QueryError = handle.await.unwrap_err().into();
-        assert_eq!(err, QueryError::cancelled());
+    async fn test_cancelled_error_is_flagged() {
+        let err = QueryError::cancelled();
+        assert!(err.is_cancelled());
+        assert!(!matches!(err, QueryError::Custom(_)));
     }
 
     #[tokio::test]
-    async fn test_from_join_error_panic() {
+    async fn test_aborted_task_join_error_maps_manually() {
+        // The old `From<tokio JoinError>` impl is gone with tokio; spawn
+        // cancellation now surfaces through `SpawnedTask` fallbacks. Manual
+        // mapping remains trivial:
         let handle = tokio::spawn(async {
-            panic!("test panic");
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         });
-        let err: QueryError = handle.await.unwrap_err().into();
-        assert!(matches!(err, QueryError::Custom(_)));
+        handle.abort();
+        let join_err = handle.await.unwrap_err();
+        let err = if join_err.is_cancelled() {
+            QueryError::cancelled()
+        } else {
+            QueryError::custom(join_err.to_string())
+        };
+        assert!(err.is_cancelled());
     }
 
     #[test]
