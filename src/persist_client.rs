@@ -229,30 +229,48 @@ pub async fn persist_query_client_save(
 
 /// Handle for the throttled background save loop started by
 /// [`persist_query_client`].
+///
+/// Dropping the handle stops the save loop (the `Drop` impl unsubscribes);
+/// use [`PersistQueryClientHandle::into_task`] when you need to await it.
 pub struct PersistQueryClientHandle {
     /// Cooperative stop flag; also set by
     /// [`PersistQueryClientHandle::unsubscribe`].
     pub unsubscribe: Arc<AtomicBool>,
     /// The background task. Dropping the whole handle stops the loop via the
     /// [`Drop`] implementation; aborting the task works too.
-    pub task: tokio::task::JoinHandle<()>,
-    stop_signal: tokio::sync::watch::Sender<bool>,
+    pub task: Option<crate::runtime::SpawnHandle>,
+    stop_signal: crate::watch::Watch<bool>,
 }
 
 impl PersistQueryClientHandle {
     /// Stop the background save loop (idempotent).
     pub fn unsubscribe(&self) {
         self.unsubscribe.store(true, Ordering::SeqCst);
-        let _ = self.stop_signal.send(true);
+        self.stop_signal.send(true);
     }
 
     /// Stop the subscription and return the completion task (reliable stop
     /// for destructured handles; see [`BroadcastHandle::into_task`] for the
     /// drop-semantics rationale).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the task was already taken via a previous `into_task`
+    /// call; a handle yields its task exactly once.
     #[must_use]
-    pub fn into_task(self) -> tokio::task::JoinHandle<()> {
+    pub fn into_task(mut self) -> crate::runtime::SpawnHandle {
+        let task = self
+            .task
+            .take()
+            .expect("into_task consumes a handle whose task was never taken");
         self.unsubscribe();
-        self.task
+        task
+    }
+}
+
+impl Drop for PersistQueryClientHandle {
+    fn drop(&mut self) {
+        self.unsubscribe();
     }
 }
 
@@ -275,25 +293,30 @@ pub async fn persist_query_client(
 ) -> Result<PersistQueryClientHandle, QueryError> {
     persist_query_client_restore(client, options).await?;
     let unsubscribe = Arc::new(AtomicBool::new(false));
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let (stop_tx, mut stop_rx) = crate::watch::Watch::new(false);
     let task_client = client.clone();
     let task_options = options.clone();
     let task_flag = Arc::clone(&unsubscribe);
+    let runtime = client.runtime().clone();
+    let save_runtime = client.runtime().clone();
     // The unsubscribe flag only becomes reachable after this call returns
     // (TanStack's restore-then-subscribe race cannot occur here), so the
     // loop's per-iteration flag check already covers the earliest possible
     // unsubscribe.
-    let task = tokio::spawn(async move {
+    let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+    let task = async move {
         loop {
-            tokio::select! {
-                // A `changed()` error means the handle was dropped: stop.
-                _ = stop_rx.changed() => break,
-                () = tokio::time::sleep(PERSIST_INTERVAL) => {
+            let stop_fut = stop_rx.changed();
+            let tick_fut = runtime.sleep(PERSIST_INTERVAL);
+            futures::pin_mut!(stop_fut, tick_fut);
+            match futures::future::select(stop_fut, tick_fut).await {
+                // Stop requested (handle dropped/unsubscribed).
+                futures::future::Either::Left((_, _)) => break,
+                futures::future::Either::Right(((), _)) => {
                     if task_flag.load(Ordering::SeqCst) {
                         break;
                     }
-                    if let Err(error) =
-                        persist_query_client_save(&task_client, &task_options).await
+                    if let Err(error) = persist_query_client_save(&task_client, &task_options).await
                     {
                         tracing::debug!(
                             error = %error,
@@ -303,10 +326,13 @@ pub async fn persist_query_client(
                 }
             }
         }
-    });
+        let _ = done_tx.send(());
+    };
+    let handle = save_runtime.spawn(Box::pin(task));
+    let task = crate::runtime::spawn_handle(Box::new(move || handle.abort()), done_rx);
     Ok(PersistQueryClientHandle {
         unsubscribe,
-        task,
+        task: Some(task),
         stop_signal: stop_tx,
     })
 }
@@ -423,7 +449,9 @@ mod tests {
     }
 
     fn client_with(entry: (&str, &str)) -> QueryClient {
-        let client = QueryClient::new();
+        // Tokio-backed runtime so paused-time tests (`start_paused` +
+        // `advance`) drive the save loop's throttle sleep deterministically.
+        let client = crate::test_support::tokio_client();
         client.set_query_data(
             &QueryKey::new(entry.0),
             entry.1.to_string(),
@@ -909,7 +937,10 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(
-            handle.task.is_finished(),
+            handle
+                .task
+                .as_ref()
+                .is_some_and(crate::runtime::SpawnHandle::is_finished),
             "the loop must exit through the unsubscribe flag"
         );
         let _ = handle.into_task().await;
