@@ -1,6 +1,7 @@
 // src/client.rs
 //! `QueryClient` - central cache and query manager
 
+use crate::bus;
 use crate::executor::execute_query;
 use crate::filters::{
     InvalidateQueryFilters, QueryFilters, QuerySnapshot, RefetchQueryFilters, RefetchType,
@@ -12,18 +13,18 @@ use crate::network::OnlineManager;
 use crate::observer::{QueryStateUpdate, QueryStateVariant};
 use crate::options::RetryConfig;
 use crate::query::Query;
+use crate::runtime::{ExecutorRuntime, PoolRuntime, QueryRuntime};
 use crate::sharing::PartialEqAny;
 use crate::state::{FetchStatus, QueryState, QueryStatus};
+use crate::watch::Watch;
 use crate::{QueryKey, QueryOptions};
 use dashmap::DashMap;
+use quoin_core::CancellationToken;
+use quoin_core::ReactiveContext;
 use std::any::TypeId;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
-use tokio::sync::watch;
-use tokio::task::AbortHandle;
-use tokio_util::sync::CancellationToken;
 
 /// Cache entry for type-erased storage
 #[derive(Clone)]
@@ -38,7 +39,9 @@ pub struct CacheEntry {
 
 /// An in-flight task with cancellation support.
 pub(crate) struct InFlightTask {
-    pub abort_handle: AbortHandle,
+    /// Hard-abort the task (runtime-specific abort closure).
+    pub abort: Box<dyn Fn() + Send + Sync>,
+    /// Cooperative cancellation token observed by the fetch loop.
     pub cancel_token: CancellationToken,
 }
 
@@ -79,7 +82,10 @@ pub struct QueryClient {
     /// In-flight tasks keyed by cache key.
     in_flight: Arc<DashMap<String, InFlightTask>>,
     // Broadcast channels for state updates, one per key.
-    subscribers: Arc<DashMap<String, broadcast::Sender<QueryStateUpdate>>>,
+    subscribers: Arc<DashMap<String, bus::Sender<QueryStateUpdate>>>,
+    /// Client-wide update stream (every notify lands here too; used by
+    /// devtools and cross-cutting observers).
+    all_subscribers: bus::Sender<QueryStateUpdate>,
     /// Focus manager for window focus refetching
     pub focus_manager: FocusManager,
     /// Global connectivity state (mirrors `TanStack`'s `onlineManager`).
@@ -91,22 +97,32 @@ pub struct QueryClient {
     /// Ref-count of `mount()` calls driving the reconnect watcher.
     mount_count: Arc<AtomicUsize>,
     /// Stop signal of the spawned reconnect watcher (active while mounted).
-    reconnect_task: Arc<Mutex<Option<watch::Sender<bool>>>>,
+    reconnect_task: Arc<Mutex<Option<Watch<bool>>>>,
     // Activity counters
     fetching_count: Arc<AtomicUsize>,
     mutating_count: Arc<AtomicUsize>,
-    activity_tx: broadcast::Sender<ActivityEvent>,
+    activity_tx: bus::Sender<ActivityEvent>,
+    /// Spawn + timer capability (pool by default, framework executor when
+    /// built with `with_context`).
+    runtime: Arc<dyn QueryRuntime>,
 }
 
 impl QueryClient {
     /// Create a new, empty query client.
     #[must_use]
     pub fn new() -> Self {
-        let (activity_tx, _) = broadcast::channel(16);
+        Self::with_runtime(Arc::new(PoolRuntime))
+    }
+
+    /// Create a new, empty query client driven by a custom runtime.
+    #[must_use]
+    pub fn with_runtime(runtime: Arc<dyn QueryRuntime>) -> Self {
+        let (activity_tx, _) = bus::Sender::channel(16);
         let client = Self {
             cache: Arc::new(DashMap::new()),
             in_flight: Arc::new(DashMap::new()),
             subscribers: Arc::new(DashMap::new()),
+            all_subscribers: bus::Sender::channel(64).0,
             focus_manager: FocusManager::new(),
             online: OnlineManager::new(),
             default_options: Arc::new(RwLock::new(None)),
@@ -116,6 +132,7 @@ impl QueryClient {
             fetching_count: Arc::new(AtomicUsize::new(0)),
             mutating_count: Arc::new(AtomicUsize::new(0)),
             activity_tx,
+            runtime,
         };
         // Spawn background garbage collection thread.
         let cache = Arc::clone(&client.cache);
@@ -128,22 +145,49 @@ impl QueryClient {
         client
     }
 
+    /// Create a client whose tasks spawn on a quoin context's executor and
+    /// whose timers use the framework's `Executor::sleep`.
+    ///
+    /// This is the constructor for quoin applications: `cx` is any
+    /// `quoin_core::ReactiveContext` (gpui, leptos, dioxus, xilem, floem, or
+    /// the testkit's `TestContext`).
+    #[must_use]
+    pub fn with_context<C: ReactiveContext>(cx: &C) -> Self {
+        Self::with_runtime(Arc::new(ExecutorRuntime::new(cx.executor())))
+    }
+
+    /// The runtime backing task spawns and timers for this client.
+    #[must_use]
+    pub fn runtime(&self) -> &Arc<dyn QueryRuntime> {
+        &self.runtime
+    }
+
     /// Subscribe to state changes for a given cache key.
     #[must_use]
-    pub fn subscribe(&self, cache_key: &str) -> broadcast::Receiver<QueryStateUpdate> {
+    pub fn subscribe(&self, cache_key: &str) -> bus::Receiver<QueryStateUpdate> {
         let entry = self.subscribers.entry(cache_key.to_string());
-        let sender = entry.or_insert_with(|| broadcast::channel(16).0);
+        let sender = entry.or_insert_with(|| bus::Sender::channel(16).0);
         sender.subscribe()
+    }
+
+    /// Subscribe to state changes for **every** key (a client-wide stream).
+    ///
+    /// Used by devtools and cross-cutting observers; per-key subscriptions
+    /// remain the efficient path for query-bound UI.
+    #[must_use]
+    pub fn subscribe_all(&self) -> bus::Receiver<QueryStateUpdate> {
+        self.all_subscribers.subscribe()
     }
 
     /// Internal method to notify subscribers of a state change.
     pub fn notify_subscribers(&self, cache_key: &str, variant: QueryStateVariant) {
+        let update = QueryStateUpdate {
+            key: cache_key.to_string(),
+            state_variant: variant,
+        };
+        self.all_subscribers.send(&update);
         if let Some(sender) = self.subscribers.get(cache_key) {
-            let update = QueryStateUpdate {
-                key: cache_key.to_string(),
-                state_variant: variant,
-            };
-            let _ = sender.send(update);
+            sender.send(&update);
         }
     }
 
@@ -340,7 +384,7 @@ impl QueryClient {
         for key in keys_to_invalidate {
             if let Some((_, task)) = self.in_flight.remove(&key) {
                 task.cancel_token.cancel();
-                task.abort_handle.abort();
+                (task.abort)();
             }
             if let Some(mut entry_mut) = self.cache.get_mut(&key) {
                 entry_mut.is_stale = true;
@@ -354,7 +398,7 @@ impl QueryClient {
         let cache_key = key.cache_key();
         if let Some((_, task)) = self.in_flight.remove(cache_key) {
             task.cancel_token.cancel();
-            task.abort_handle.abort();
+            (task.abort)();
             // Wake up any waiting subscribers so they don't hang.
             self.notify_subscribers(cache_key, QueryStateVariant::Error);
         }
@@ -381,7 +425,7 @@ impl QueryClient {
     pub fn clear(&self) {
         for entry in self.in_flight.iter() {
             entry.value().cancel_token.cancel();
-            entry.value().abort_handle.abort();
+            (entry.value().abort)();
         }
         self.in_flight.clear();
         self.cache.clear();
@@ -564,7 +608,7 @@ impl QueryClient {
         for (cache_key, _) in self.matching_entries(filters) {
             if let Some((_, task)) = self.in_flight.remove(&cache_key) {
                 task.cancel_token.cancel();
-                task.abort_handle.abort();
+                (task.abort)();
                 self.notify_subscribers(&cache_key, QueryStateVariant::Error);
                 cancelled += 1;
             }
@@ -585,7 +629,7 @@ impl QueryClient {
         for (cache_key, _) in self.matching_entries(filters) {
             if let Some((_, task)) = self.in_flight.remove(&cache_key) {
                 task.cancel_token.cancel();
-                task.abort_handle.abort();
+                (task.abort)();
             }
             if self.cache.remove(&cache_key).is_some() {
                 reset += 1;
@@ -603,7 +647,7 @@ impl QueryClient {
         for (cache_key, _) in self.matching_entries(filters) {
             if let Some((_, task)) = self.in_flight.remove(&cache_key) {
                 task.cancel_token.cancel();
-                task.abort_handle.abort();
+                (task.abort)();
             }
             if self.cache.remove(&cache_key).is_some() {
                 removed += 1;
@@ -658,7 +702,7 @@ impl QueryClient {
     fn trigger_refetch(&self, cache_key: &str) {
         if let Some((_, task)) = self.in_flight.remove(cache_key) {
             task.cancel_token.cancel();
-            task.abort_handle.abort();
+            (task.abort)();
         }
         if let Some(mut entry_mut) = self.cache.get_mut(cache_key) {
             entry_mut.is_stale = true;
@@ -716,7 +760,7 @@ impl QueryClient {
             }
             if cancel_refetch && let Some((_, task)) = self.in_flight.remove(cache_key) {
                 task.cancel_token.cancel();
-                task.abort_handle.abort();
+                (task.abort)();
             }
             if let Some(mut entry_mut) = self.cache.get_mut(cache_key) {
                 entry_mut.is_stale = true;
@@ -851,31 +895,40 @@ impl QueryClient {
 
     /// Increment the mount ref-count (`TanStack` `QueryClient.mount`).
     ///
-    /// On the first mount a watcher task is spawned that calls
-    /// [`QueryClient::handle_reconnect`] whenever the online manager reports
-    /// restored connectivity. Requires a running tokio runtime.
+    /// On the first mount a watcher task is spawned on the client's runtime
+    /// that calls [`QueryClient::handle_reconnect`] whenever the online
+    /// manager reports restored connectivity.
     pub fn mount(&self) {
         let count = self.mount_count.fetch_add(1, Ordering::SeqCst) + 1;
         if count == 1 {
             let mut rx = self.online.subscribe();
             let client = self.clone();
-            let (stop_tx, mut stop_rx) = watch::channel(false);
-            tokio::spawn(async move {
+            let (stop_tx, mut stop_rx) = Watch::new(false);
+            let handle = self.runtime().spawn(Box::pin(async move {
                 // The online manager only emits *changes*, so a `true` update
-                // always means a just-restored connection. A closed update
-                // channel (online manager gone) also ends the loop.
+                // always means a just-restored connection. A closed change
+                // stream (online manager gone) also ends the loop.
                 loop {
-                    tokio::select! {
-                        // Stop requested (`unmount`): leave the watcher.
-                        _ = stop_rx.changed() => break,
-                        changed = rx.changed() => {
-                            if changed.is_ok() && *rx.borrow_and_update() {
+                    let stop_fut = stop_rx.changed();
+                    let online_fut = rx.changed();
+                    futures::pin_mut!(stop_fut, online_fut);
+                    match futures::future::select(stop_fut, online_fut).await {
+                        // Stop requested (`unmount`) or online manager gone.
+                        futures::future::Either::Left((_, _)) => break,
+                        futures::future::Either::Right((changed, _)) => {
+                            if changed.is_err() {
+                                // Online manager's watch closed: nothing more
+                                // to observe.
+                                break;
+                            }
+                            if rx.borrow() {
                                 client.handle_reconnect();
                             }
                         }
                     }
                 }
-            });
+            }));
+            handle.detach();
             *self
                 .reconnect_task
                 .lock()
@@ -894,9 +947,8 @@ impl QueryClient {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
         {
-            // Signal the watcher to stop; dropping the sender afterwards
-            // closes the channel, so the task exits on its next poll.
-            let _ = stop.send(true);
+            // Signal the watcher to stop; the task exits on its next poll.
+            stop.send(true);
         }
     }
 
@@ -950,36 +1002,32 @@ impl QueryClient {
 
     /// Subscribe to activity events (fetching/mutating count changes).
     #[must_use]
-    pub fn subscribe_activity(&self) -> broadcast::Receiver<ActivityEvent> {
+    pub fn subscribe_activity(&self) -> bus::Receiver<ActivityEvent> {
         self.activity_tx.subscribe()
     }
 
     pub(crate) fn inc_fetching(&self) {
         let new = self.fetching_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self
-            .activity_tx
-            .send(ActivityEvent::FetchingCountChanged(new));
+        self.activity_tx
+            .send(&ActivityEvent::FetchingCountChanged(new));
     }
 
     pub(crate) fn dec_fetching(&self) {
         let new = self.fetching_count.fetch_sub(1, Ordering::Relaxed) - 1;
-        let _ = self
-            .activity_tx
-            .send(ActivityEvent::FetchingCountChanged(new));
+        self.activity_tx
+            .send(&ActivityEvent::FetchingCountChanged(new));
     }
 
     pub(crate) fn inc_mutating(&self) {
         let new = self.mutating_count.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self
-            .activity_tx
-            .send(ActivityEvent::MutatingCountChanged(new));
+        self.activity_tx
+            .send(&ActivityEvent::MutatingCountChanged(new));
     }
 
     pub(crate) fn dec_mutating(&self) {
         let new = self.mutating_count.fetch_sub(1, Ordering::Relaxed) - 1;
-        let _ = self
-            .activity_tx
-            .send(ActivityEvent::MutatingCountChanged(new));
+        self.activity_tx
+            .send(&ActivityEvent::MutatingCountChanged(new));
     }
 }
 
@@ -1004,6 +1052,8 @@ impl Clone for QueryClient {
             fetching_count: Arc::clone(&self.fetching_count),
             mutating_count: Arc::clone(&self.mutating_count),
             activity_tx: self.activity_tx.clone(),
+            all_subscribers: self.all_subscribers.clone(),
+            runtime: Arc::clone(&self.runtime),
         }
     }
 }
@@ -1153,7 +1203,7 @@ mod tests {
         client.set_in_flight(
             &key,
             InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: Box::new(move || handle.abort()),
                 cancel_token: token,
             },
         );
@@ -1467,7 +1517,7 @@ mod tests {
         client.set_in_flight(
             &key,
             InFlightTask {
-                abort_handle: handle.abort_handle(),
+                abort: Box::new(move || handle.abort()),
                 cancel_token: token,
             },
         );
@@ -1495,7 +1545,9 @@ mod tests {
         client.set_in_flight(
             &key,
             InFlightTask {
-                abort_handle: handle.abort_handle(),
+                // Bookkeeping only: the body is awaited below, so no abort
+                // closure is needed here.
+                abort: Box::new(|| {}),
                 cancel_token: token,
             },
         );
@@ -1504,7 +1556,7 @@ mod tests {
         assert!(client.is_in_flight(&key));
 
         // Let the spawned body run to completion on the paused clock so the
-        // task's own lines are covered; aborting a finished task is a no-op.
+        // task's own lines are covered.
         tokio::time::advance(std::time::Duration::from_secs(100)).await;
         handle.await.expect("task body completed");
 
@@ -1542,14 +1594,16 @@ mod tests {
         client.set_in_flight(
             &key1,
             InFlightTask {
-                abort_handle: handle1.abort_handle(),
+                // Bookkeeping only: the bodies are joined below.
+                abort: Box::new(|| {}),
                 cancel_token: token1,
             },
         );
         client.set_in_flight(
             &key2,
             InFlightTask {
-                abort_handle: handle2.abort_handle(),
+                // Bookkeeping only: the bodies are joined below.
+                abort: Box::new(|| {}),
                 cancel_token: token2,
             },
         );
@@ -1765,7 +1819,10 @@ mod tests {
     fn dummy_task() -> crate::client::InFlightTask {
         let handle = tokio::spawn(async {});
         crate::client::InFlightTask {
-            abort_handle: handle.abort_handle(),
+            abort: {
+                let handle = handle;
+                Box::new(move || handle.abort())
+            },
             cancel_token: CancellationToken::new(),
         }
     }
@@ -2265,7 +2322,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mount_unmount_and_reconnect_watcher() {
-        let client = QueryClient::new();
+        let client = crate::test_support::tokio_client();
         let key = QueryKey::new("test");
         // `Always` refetches on reconnect even with fresh data.
         client.set_query_data(
