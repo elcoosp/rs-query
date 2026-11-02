@@ -1,13 +1,13 @@
 <div align="center">
   <img src="docs/logo.png" alt="rs-query" width="300"/>
   <h1>rs-query</h1>
-  <p><strong>TanStack Query v5 parity for Rust & GPUI.</strong></p>
+  <p><strong>TanStack Query v5 parity for Rust — portable to every quoin-supported UI framework.</strong></p>
   <p>
     <a href="https://github.com/elcoosp/rs-query/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/CI-Linux%20%7C%20macOS%20%7C%20Windows-9D4EDD?style=flat-square&logo=github" alt="CI"/></a>
     <a href="https://github.com/elcoosp/rs-query/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License"/></a>
     <a href="https://crates.io/crates/rs-query"><img src="https://img.shields.io/badge/Rust-stable%20%7C%20edition%202024-000000?style=flat-square&logo=rust" alt="Rust"/></a>
-    <a href="#observers--gpui-integration"><img src="https://img.shields.io/badge/Framework-GPUI-007ACC?style=flat-square" alt="Framework"/></a>
-    <a href="#testing--quality-gates"><img src="https://img.shields.io/badge/Tests-704%20Rust%20%7C%2098.46%25%20Coverage-brightgreen?style=flat-square" alt="Tests"/></a>
+    <a href="#observers--quoin-bindings"><img src="https://img.shields.io/badge/Frameworks-gpui%20%7C%20leptos%20%7C%20dioxus%20%7C%20xilem%20%7C%20floem-9D4EDD?style=flat-square" alt="Frameworks"/></a>
+    <a href="#testing--quality-gates"><img src="https://img.shields.io/badge/Tests-713%20Rust-brightgreen?style=flat-square" alt="Tests"/></a>
   </p>
   <p>
     <a href="#installation">Install</a> ·
@@ -21,20 +21,24 @@
 
 <br/>
 
-**rs-query** is a Rust port of [TanStack Query](https://tanstack.com/query), built for the
-[GPUI](https://www.gpui.rs/) framework. It gives GPUI applications declarative, cache-aware
-async state management: queries and mutations with retries, deduplication, cancellation,
-invalidation, offline pause/resume, persistence, hydration and reactive observers.
+**rs-query** is a Rust port of [TanStack Query](https://tanstack.com/query) built on
+[quoin](https://github.com/elcoosp/quoin), the framework-portable reactive abstraction
+layer. It gives applications declarative, cache-aware async state management — queries and
+mutations with retries, deduplication, cancellation, invalidation, offline pause/resume,
+persistence, hydration and reactive observers — **without hardcoding any UI framework**.
+The same crate runs headless (shared worker pool + portable timers, no runtime needed) or
+inside a quoin application on **gpui, leptos, dioxus, xilem or floem**.
 
 This crate targets **TanStack Query v5 parity** — the porting contract lives in
-[`docs/port-plan.md`](docs/port-plan.md) and the audited upstream semantics behind every
-module in [`docs/research/`](docs/research/).
+[`docs/port-plan.md`](docs/port-plan.md), the quoin migration contract in
+[`docs/quoin-migration-plan.md`](docs/quoin-migration-plan.md), and the audited upstream
+semantics behind every module in [`docs/research/`](docs/research/).
 
 | | |
 |---|---|
 | CI | GitHub Actions: `cargo fmt`, `clippy --all-features -- -D warnings` (pedantic, zero `#[allow]`), tests on default + all features, `cargo-llvm-cov` coverage |
-| Tests | 704 tests (`cargo test --all-features`), 671 on default features |
-| Coverage | **98.46 %** line coverage (`cargo llvm-cov --all-features --lib`); the remainder is devtools UI render code that cannot execute headless |
+| Tests | 713 tests (`cargo test --all-features`), framework-free |
+| Runtime | no tokio, no gpui — quoin-core only; `futures` + portable timers |
 | Edition | Rust 2024, `clippy::pedantic` clean |
 
 ## Feature overview
@@ -74,19 +78,26 @@ module in [`docs/research/`](docs/research/).
   dispatch → mutation fn → cache/options `on_success`/`on_error` → per-call `MutateOptions`
   (fire last) → settle chain.
 
-### Observers & GPUI integration
+### Observers & quoin bindings
 - `QueryObserver<T>` with `QueryResultFlags` — TanStack `QueryObserverResult` parity:
   `data_updated_at`, `error_updated_at`, `error_update_count`, `failure_count`,
   `failure_reason`, `is_fetched`, `is_fetched_after_mount`, `is_loading_error`,
   `is_refetch_error`, `is_placeholder_data`, `is_paused`, `is_enabled`.
-- `use_query`-style `spawn_query` / `spawn_mutation` callbacks on GPUI's foreground
-  executor, with an `is_restoring` gate for hydration-driven apps.
-- Hooks: `use_is_fetching`, `use_is_mutating`, `use_fetching_count`, `use_mutating_count`,
-  `use_queries` (dynamic multi-query observer), `use_any_fetching`, `use_activity_feed`.
+- `spawn_query(client, query)` / `spawn_mutation(client, mutation, params)` return
+  awaitable, abortable handles on the client's runtime, with an `is_restoring` gate for
+  hydration-driven apps.
+- **Bindings generic over any `quoin_core::ReactiveContext`** (the `useQuery` /
+  `useMutation` / `useInfiniteQuery` / `useQueries` analogues): `use_query`,
+  `use_mutation`, `use_infinite_query`, `use_queries`, plus `use_is_fetching`,
+  `use_is_mutating`, `use_fetching_count`, `use_mutating_count`, `use_any_fetching`,
+  `use_activity_feed` — every binding returns the framework's own `Signal` and stays in
+  sync through lag-tolerant cache pumps.
 - `QueriesObserver` with TanStack `combine` support; `InfiniteQuery` with bidirectional
   pagination, `max_pages`, `has_next_page` / `has_previous_page`, direction-tracked
   `is_fetching_next_page` / `is_fetching_previous_page`.
-- **Devtools** (feature-gated) — GPUI panel for inspecting the cache, timeline and filters.
+- **Devtools** (feature-gated) — headless state + collector: cache rows, a timestamped
+  transition timeline with filters/search, and cache actions, renderable by any framework
+  (or plumbed into quoin-devtools' `EventLog`).
 
 ### Persistence & hydration
 - `dehydrate` / `hydrate` with TanStack semantics: `dehydrated_at`, error redaction
@@ -107,19 +118,23 @@ module in [`docs/research/`](docs/research/).
 
 ## Installation
 
-Add `rs-query` as a Git dependency in your `Cargo.toml`:
+rs-query depends on `quoin-core`. Until quoin is published to crates.io, check out
+[quoin](https://github.com/elcoosp/quoin) next to rs-query (sibling directory) and use
+path dependencies — they resolve to `../quoin/quoin-core` and `../quoin/quoin-testkit`:
 
 ```toml
 [dependencies]
-rs-query = { git = "https://github.com/elcoosp/rs-query" }
+rs-query = { path = "../rs-query" }
 
 # Optional feature gates:
 #   serde     — JSON persistence/hydration of query data
-#   devtools  — GPUI devtools panel (pulls gpui-component + chrono)
+#   devtools  — headless devtools state + collector
 ```
 
-Your project needs a `tokio` runtime (features `rt-multi-thread`, `time`, `sync`,
-`macros`) alongside `gpui`.
+There is **no runtime requirement**: rs-query spawns on quoin's shared worker pool with
+portable timers by default. To host it inside a quoin app, build the client from the
+framework context (see the quick start) so fetches and timers use the framework's own
+executor.
 
 ## Quick start
 
@@ -136,29 +151,33 @@ struct AppState {
 }
 ```
 
-### 2. Run a query
+### 2. Run a query (headless)
 
 ```rust
 use std::time::Duration;
-use rs_query::{Query, QueryClient, QueryState, QueryKey, spawn_query, options::QueryOptions};
+use rs_query::{Query, QueryClient, QueryKey, spawn_query};
 
 let client = QueryClient::new();
 let key = QueryKey::new("users").with("id", 42);
 
-let query = Query::new(key.clone(), || async {
-    Ok(vec!["Ada", "Alan"])
-})
-.stale_time(Duration::from_secs(30));
+let query = Query::new(key.clone(), || async { Ok(vec!["Ada", "Alan"]) })
+    .stale_time(Duration::from_secs(30));
 
-// From inside a GPUI component context:
-// spawn_query(cx, &client, &query, |this, state: QueryState<Vec<&str>>, cx| {
-//     match state {
-//         QueryState::Success(users) => { /* render */ }
-//         QueryState::Loading => { /* spinner */ }
-//         QueryState::Error { error, .. } => { /* error UI */ }
-//         _ => {}
-//     }
-// });
+let handle = spawn_query(&client, &query);
+let state = handle.await; // awaitable + abortable (drop aborts the fetch)
+```
+
+### 2b. Observe from a quoin view (framework-agnostic)
+
+```rust,ignore
+use quoin::ReactiveContext;
+
+// Inside your app: the client rides the framework's executor + timer.
+let client = QueryClient::with_context(&cx);
+
+// Inside a component: binding.state is the framework's own signal.
+let todo = rs_query::use_query(&cx, &client, &query);
+// render reads: todo.state.get()  →  QueryState<Todo>
 ```
 
 ### 3. Invalidate with filters
@@ -255,7 +274,10 @@ src/
 ├── mutation_cache.rs    MutationCache + scope serialization
 ├── mutation_observer.rs MutationObserver
 ├── queries_observer.rs  QueriesObserver (useQueries core)
-├── hooks.rs             GPUI reactive hooks
+├── runtime.rs           QueryRuntime seam (PoolRuntime / ExecutorRuntime)
+├── bus.rs               bounded broadcast channel (runtime-free)
+├── watch.rs             watch cell (online/stop signals)
+├── hooks.rs             quoin signal bindings (framework-agnostic)
 ├── sharing.rs           structural sharing (PartialEqAny)
 ├── cancellation.rs      cancellable_fetch
 ├── hydration.rs         dehydrate/hydrate with TanStack semantics
@@ -263,15 +285,14 @@ src/
 ├── persist_client.rs    whole-client persistence
 ├── broadcast.rs         cross-instance cache sync
 ├── streamed_query.rs    streamedQuery port
-└── devtools.rs          GPUI devtools panel (feature "devtools")
+└── devtools.rs          headless devtools state + collector (feature "devtools")
 ```
 
 ## Testing & quality gates
 
 ```bash
-cargo test --all-features          # 704 tests (671 on default features)
+cargo test --all-features          # 713 tests, framework-free
 cargo clippy --all-features --all-targets -- -D warnings   # pedantic, zero allows
-cargo llvm-cov --all-features --lib --summary-only         # 98.46 % lines
 cargo doc --no-deps                # every public item documented
 ```
 
