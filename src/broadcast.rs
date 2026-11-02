@@ -3,11 +3,12 @@
 //! `broadcastQueryClient`.
 //!
 //! `TanStack` uses the `broadcast-channel` npm package for cross-tab transport.
-//! GPUI apps sync windows inside one process (a future GPUI
-//! `EventEmitter`/`Global` bus can replace this hub without changing the
-//! API), so this module ships an **in-process hub**: a global registry of
-//! [`tokio::sync::broadcast`] channels keyed by channel name. Registered
-//! clients apply remote snapshots with [`QueryClient::hydrate`].
+//! quoin apps sync windows/instances inside one process, so this module ships
+//! an **in-process hub**: a global registry of bounded broadcast buses
+//! ([`crate::bus`]) keyed by channel name. Registered clients apply remote
+//! snapshots with [`QueryClient::hydrate`]. The loop runs on the client's
+//! [`QueryRuntime`](crate::QueryRuntime) (framework executor or the shared
+//! pool).
 //!
 //! Re-entrancy guard: while a remote snapshot is being applied, the receiving
 //! task raises a local flag and never publishes of its own — remote updates
@@ -20,8 +21,10 @@ use crate::persister::now_ms;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
+
+use crate::bus;
+use crate::runtime::{SpawnHandle, spawn_handle};
+use crate::watch::Watch;
 
 /// Default channel name (`TanStack`: `tanstack-query`).
 pub const DEFAULT_CHANNEL: &str = "rs-query";
@@ -30,23 +33,18 @@ pub const DEFAULT_CHANNEL: &str = "rs-query";
 const CHANNEL_CAPACITY: usize = 64;
 
 /// Global registry of in-process broadcast channels.
-static CHANNEL_REGISTRY: LazyLock<Mutex<HashMap<String, broadcast::Sender<PersistedClient>>>> =
+static CHANNEL_REGISTRY: LazyLock<Mutex<HashMap<String, bus::Sender<PersistedClient>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Look up (or create) the channel and return the sender plus a fresh
 /// receiver for a new subscriber.
-fn channel_entry(
-    channel: &str,
-) -> (
-    broadcast::Sender<PersistedClient>,
-    broadcast::Receiver<PersistedClient>,
-) {
+fn channel_entry(channel: &str) -> (bus::Sender<PersistedClient>, bus::Receiver<PersistedClient>) {
     let mut registry = CHANNEL_REGISTRY
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sender = registry
         .entry(channel.to_string())
-        .or_insert_with(|| broadcast::channel(CHANNEL_CAPACITY).0);
+        .or_insert_with(|| bus::Sender::channel(CHANNEL_CAPACITY).0);
     (sender.clone(), sender.subscribe())
 }
 
@@ -100,13 +98,16 @@ impl BroadcastQueryClientOptions {
 }
 
 /// Handle for a [`broadcast_query_client`] subscription.
+///
+/// Dropping the handle stops the subscription (the `Drop` impl unsubscribes);
+/// use [`BroadcastHandle::into_task`] when you need to await the loop.
 pub struct BroadcastHandle {
     /// Cooperative stop flag; also set by [`BroadcastHandle::unsubscribe`].
     pub unsubscribe: Arc<AtomicBool>,
     /// The receiving task; aborting it also stops the subscription. Dropping
-    /// the handle stops the loop as well (the stop signal drops with it).
-    pub task: JoinHandle<()>,
-    stop_signal: tokio::sync::watch::Sender<bool>,
+    /// the handle stops the loop as well (the `Drop` impl unsubscribes).
+    pub task: Option<SpawnHandle>,
+    stop_signal: Watch<bool>,
     /// Re-entrancy guard, raised while a remote snapshot is being applied.
     applying_remote: Arc<AtomicBool>,
 }
@@ -115,7 +116,7 @@ impl BroadcastHandle {
     /// Stop the subscription and release the channel (idempotent).
     pub fn unsubscribe(&self) {
         self.unsubscribe.store(true, Ordering::SeqCst);
-        let _ = self.stop_signal.send(true);
+        self.stop_signal.send(true);
     }
 
     /// Stop the subscription and return the completion task.
@@ -124,10 +125,19 @@ impl BroadcastHandle {
     /// subscription and await the loop, because unmatched fields of a
     /// destructured struct are only dropped at the end of the enclosing
     /// block (a partially moved `Drop` type cannot stop itself).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the task was already taken via a previous `into_task`
+    /// call; a handle yields its task exactly once.
     #[must_use]
-    pub fn into_task(self) -> tokio::task::JoinHandle<()> {
+    pub fn into_task(mut self) -> SpawnHandle {
+        let task = self
+            .task
+            .take()
+            .expect("into_task consumes a handle whose task was never taken");
         self.unsubscribe();
-        self.task
+        task
     }
 
     /// Whether a remote snapshot is currently being applied (the re-entrancy
@@ -135,6 +145,12 @@ impl BroadcastHandle {
     #[must_use]
     pub fn is_applying_remote(&self) -> bool {
         self.applying_remote.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for BroadcastHandle {
+    fn drop(&mut self) {
+        self.unsubscribe();
     }
 }
 
@@ -169,21 +185,27 @@ pub fn broadcast_query_client_with_options(
 ) -> BroadcastHandle {
     let (_sender, mut receiver) = channel_entry(&options.channel);
     let unsubscribe = Arc::new(AtomicBool::new(false));
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let (stop_tx, mut stop_rx) = Watch::new(false);
     let applying_remote = Arc::new(AtomicBool::new(false));
 
     let task_client = client.clone();
     let task_flag = Arc::clone(&unsubscribe);
     let task_guard = Arc::clone(&applying_remote);
     let task_channel = options.channel.clone();
-    let task = tokio::spawn(async move {
+    let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+    let task = async move {
         loop {
-            let message = tokio::select! {
-                // A `changed()` error means the handle was dropped: stop.
-                _ = stop_rx.changed() => break,
-                incoming = receiver.recv() => match incoming {
+            // Race the stop signal against the next incoming snapshot.
+            let stop_fut = stop_rx.changed();
+            let msg_fut = receiver.recv();
+            futures::pin_mut!(stop_fut, msg_fut);
+            let message = match futures::future::select(stop_fut, msg_fut).await {
+                futures::future::Either::Left((_, _)) => {
+                    break;
+                }
+                futures::future::Either::Right((incoming, _)) => match incoming {
                     Ok(message) => message,
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    Err(bus::RecvError::Lagged(skipped)) => {
                         tracing::debug!(
                             skipped = skipped,
                             channel = %task_channel,
@@ -191,7 +213,9 @@ pub fn broadcast_query_client_with_options(
                         );
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(bus::RecvError::Closed) => {
+                        break;
+                    }
                 },
             };
             if task_flag.load(Ordering::SeqCst) {
@@ -205,11 +229,14 @@ pub fn broadcast_query_client_with_options(
         }
         drop(receiver);
         maybe_remove_channel(&task_channel);
-    });
+        let _ = done_tx.send(());
+    };
+    let handle = client.runtime().spawn(Box::pin(task));
+    let task = spawn_handle(Box::new(move || handle.abort()), done_rx);
 
     BroadcastHandle {
         unsubscribe,
-        task,
+        task: Some(task),
         stop_signal: stop_tx,
         applying_remote,
     }
@@ -231,19 +258,13 @@ pub fn publish_state(client: &QueryClient, channel: &str) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         registry
             .entry(channel.to_string())
-            .or_insert_with(|| broadcast::channel(CHANNEL_CAPACITY).0)
+            .or_insert_with(|| bus::Sender::channel(CHANNEL_CAPACITY).0)
             .clone()
     };
     if sender.receiver_count() == 0 {
         return;
     }
-    if let Err(error) = sender.send(snapshot) {
-        tracing::debug!(
-            error = %error,
-            channel = %channel,
-            "rs-query broadcast: publish had no receivers"
-        );
-    }
+    sender.send(&snapshot);
 }
 
 #[cfg(test)]
@@ -301,13 +322,13 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(channel);
         for _ in 0..200 {
-            if handle.task.is_finished() {
+            if handle.task.as_ref().is_some_and(SpawnHandle::is_finished) {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
-            handle.task.is_finished(),
+            handle.task.as_ref().is_some_and(SpawnHandle::is_finished),
             "closed channel must end the subscription task"
         );
         handle.unsubscribe();
@@ -476,15 +497,15 @@ mod tests {
         set_string(&a, "a-key", "value");
 
         let handle = broadcast_query_client(&b, channel);
-        publish_state(&a, channel);
 
-        // Raise the cooperative flag without firing the watch signal (the
-        // handle is forgotten so `stop_rx.changed()` never fires): the loop
-        // must exit at the flag check right after receiving the message,
-        // before applying it.
+        // Raise the cooperative flag before publishing, without firing the
+        // watch signal (the handle is forgotten so `stop_rx.changed()` never
+        // fires): the loop must exit at the flag check right after receiving
+        // the message, before applying it.
         let flag = Arc::clone(&handle.unsubscribe);
         std::mem::forget(handle);
         flag.store(true, Ordering::SeqCst);
+        publish_state(&a, channel);
 
         // Yield so the receiving task consumes the message and hits the flag
         // check; the snapshot must not have been applied.
@@ -549,7 +570,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             registry
                 .entry(channel.to_string())
-                .or_insert_with(|| broadcast::channel(CHANNEL_CAPACITY).0)
+                .or_insert_with(|| bus::Sender::channel(CHANNEL_CAPACITY).0)
                 .clone()
         };
         let stop = Arc::new(AtomicBool::new(false));
