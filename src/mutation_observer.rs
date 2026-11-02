@@ -8,26 +8,27 @@
 //! cache events via [`MutationObserver::subscribe_filtered`].
 
 use crate::QueryClient;
+use crate::bus;
 use crate::error::QueryError;
 use crate::mutation::{MutateOptions, Mutation, execute_mutation_full_tracked};
 use crate::mutation_cache::{MutationCache, MutationCacheEvent};
+use crate::runtime::SpawnedTask;
 use crate::state::MutationState;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 
 /// Stream of cache events filtered to the entries created by one observer.
 ///
 /// Events for unrelated mutations are skipped; `ScopeResumed` and `Cleared`
 /// are global and always delivered.
 pub struct MutationEventStream {
-    rx: broadcast::Receiver<MutationCacheEvent>,
+    rx: bus::Receiver<MutationCacheEvent>,
     entry_ids: Arc<Mutex<Vec<u64>>>,
 }
 
 impl MutationEventStream {
     pub(crate) fn new(
-        rx: broadcast::Receiver<MutationCacheEvent>,
+        rx: bus::Receiver<MutationCacheEvent>,
         entry_ids: Arc<Mutex<Vec<u64>>>,
     ) -> Self {
         Self { rx, entry_ids }
@@ -53,8 +54,8 @@ impl MutationEventStream {
                         return Some(event);
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return None,
+                Err(bus::RecvError::Lagged(_)) => {}
+                Err(bus::RecvError::Closed) => return None,
             }
         }
     }
@@ -88,17 +89,19 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Mutatio
         }
     }
 
-    /// Execute the mutation on the current tokio runtime.
+    /// Execute the mutation on the client's runtime.
     ///
     /// The tracked state switches to [`MutationState::Loading`] immediately and
     /// to `Success`/`Error` when the spawned execution settles. The returned
-    /// handle resolves with the mutation result.
+    /// handle resolves with the mutation result (`Err(cancelled)` when the
+    /// task is aborted first). Dropping the handle without awaiting or
+    /// detaching aborts the execution (structured concurrency).
     pub fn mutate(
         &self,
         client: &QueryClient,
         params: P,
         per_call: Option<MutateOptions<T, P>>,
-    ) -> tokio::task::JoinHandle<Result<T, QueryError>> {
+    ) -> SpawnedTask<Result<T, QueryError>> {
         *self
             .state
             .lock()
@@ -113,8 +116,10 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Mutatio
         // Capture the reset-generation at submit time: a later `reset` must
         // suppress this execution's state write.
         let observed_generation = self.generation.load(Ordering::SeqCst);
+        let runtime = client.runtime().clone();
 
-        tokio::spawn(async move {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let task = async move {
             let on_entry_added = |id: u64| {
                 entry_ids
                     .lock()
@@ -139,8 +144,10 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Mutatio
                     Err(error) => MutationState::Error(error.clone()),
                 };
             }
-            result
-        })
+            let _ = tx.send(result);
+        };
+        let handle = runtime.spawn(Box::pin(task));
+        SpawnedTask::new(handle, rx, Arc::new(|| Err(QueryError::cancelled())))
     }
 
     /// Clear the tracked state back to [`MutationState::Idle`].
@@ -166,7 +173,7 @@ impl<T: Clone + Send + Sync + 'static, P: Clone + Send + Sync + 'static> Mutatio
 
     /// Subscribe to every cache event (unfiltered).
     #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<MutationCacheEvent> {
+    pub fn subscribe(&self) -> bus::Receiver<MutationCacheEvent> {
         self.cache.subscribe()
     }
 
@@ -195,7 +202,7 @@ mod tests {
     use std::time::Duration;
 
     fn client() -> QueryClient {
-        QueryClient::new()
+        crate::test_support::tokio_client()
     }
 
     #[tokio::test]
@@ -221,7 +228,7 @@ mod tests {
         // Loading is recorded synchronously, before the handle resolves.
         assert!(observer.current_result().is_loading());
 
-        let data = handle.await.expect("task joins").expect("succeeds");
+        let data = handle.await.expect("succeeds");
         assert_eq!(data, "result_42");
 
         let result = observer.current_result();
@@ -244,7 +251,7 @@ mod tests {
         let handle = observer.mutate(&client(), 1, None);
         assert!(observer.current_result().is_loading());
 
-        let error = handle.await.expect("task joins").unwrap_err();
+        let error = handle.await.unwrap_err();
         assert_eq!(error.to_string(), "boom");
 
         let result = observer.current_result();
@@ -271,7 +278,7 @@ mod tests {
         assert!(observer.current_result().is_idle());
 
         // The in-flight execution is not cancelled and still resolves.
-        let data = handle.await.expect("task joins").expect("succeeds");
+        let data = handle.await.expect("succeeds");
         assert_eq!(data, "slow_7");
         // The late completion must not clobber the reset state.
         assert!(observer.current_result().is_idle());
@@ -284,13 +291,13 @@ mod tests {
             Arc::clone(&cache),
             Mutation::new(|param: i32| async move { Ok(format!("result_{param}")) }),
         );
-        let first = observer.mutate(&client(), 1, None).await.unwrap().unwrap();
+        let first = observer.mutate(&client(), 1, None).await.unwrap();
         assert_eq!(first, "result_1");
 
         observer.reset();
         assert!(observer.current_result().is_idle());
 
-        let second = observer.mutate(&client(), 2, None).await.unwrap().unwrap();
+        let second = observer.mutate(&client(), 2, None).await.unwrap();
         assert_eq!(second, "result_2");
         assert_eq!(
             observer.current_result().data(),
@@ -309,7 +316,7 @@ mod tests {
         let mut rx = observer.subscribe();
 
         let handle = observer.mutate(&client(), 3, None);
-        handle.await.expect("task joins").expect("succeeds");
+        handle.await.expect("succeeds");
 
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -351,7 +358,7 @@ mod tests {
             "first filtered event is the observer's own Added: {first:?}"
         );
 
-        handle.await.expect("task joins").expect("succeeds");
+        handle.await.expect("succeeds");
         let mut seen_updated = 0;
         while let Some(event) = stream.next().await {
             match event {
@@ -384,7 +391,7 @@ mod tests {
             None,
         ));
         let handle = observer.mutate(&client(), 1, None);
-        handle.await.expect("task joins").expect("succeeds");
+        handle.await.expect("succeeds");
         let own = observer.last_entry_id().expect("entry assigned");
 
         let first = stream.next().await.expect("own Added event");
@@ -444,7 +451,7 @@ mod tests {
             let _ = cache.add(crate::mutation_cache::MutationCacheEntry::new(None, None));
         }
         let handle = observer.mutate(&client(), 9, None);
-        handle.await.expect("task joins").expect("succeeds");
+        handle.await.expect("succeeds");
         let own = observer.last_entry_id().expect("entry assigned");
 
         let first = stream.next().await.expect("event after lag");
