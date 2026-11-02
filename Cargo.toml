@@ -1,25 +1,21 @@
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", features = ["default", "test-support"] }
+quoin-core = { path = "../quoin/quoin-core", version = "0.1" }
 thiserror = "2"
-tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros"] }
-tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 dashmap = "6"
-futures-timer = "3.0"
 futures = "0.3"
-pretty_assertions = "1"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
-chrono = { version = "0.4", optional = true }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros", "test-util"] }
+quoin-testkit = { path = "../quoin/quoin-testkit", version = "0.1", features = ["tokio"] }
+pretty_assertions = "1"
 
 [features]
 default = []
 serde = ["dep:serde", "dep:serde_json"]
-devtools = ["dep:chrono", "dep:gpui-component"]
+devtools = []
 
 [lib]
 name = "rs_query"
@@ -45,12 +41,12 @@ autolib = false
 autotests = false
 build = false
 categories = ["asynchronous", "caching", "gui"]
-description = "TanStack Query-inspired async state management for GPUI"
+description = "TanStack Query-inspired async state management, portable to every quoin-supported UI framework"
 documentation = "https://docs.rs/rs-query"
 edition = "2024"
 exclude = ["docs/*", ".github/*", ".DS_Store"]
-keywords = ["gpui", "query", "async", "cache", "tanstack"]
+keywords = ["query", "async", "cache", "tanstack", "quoin"]
 license = "MIT"
 name = "rs-query"
 readme = "README.md"
-version = "0.1.0"
+version = "0.2.0"
