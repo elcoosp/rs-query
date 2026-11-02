@@ -11,10 +11,10 @@
 
 use crate::error::QueryError;
 use crate::network::{NetworkMode, OnlineManager, can_retry};
+use quoin_core::CancellationToken;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 /// Maximum backoff delay, matching `TanStack` Query's 30 s cap.
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -87,6 +87,7 @@ pub struct Retryer {
     failure_count: u32,
     failure_reason: Option<QueryError>,
     is_paused: bool,
+    timer: Option<std::sync::Arc<dyn crate::timeout_manager::SleepProvider>>,
 }
 
 impl Default for Retryer {
@@ -104,7 +105,19 @@ impl Retryer {
             failure_count: 0,
             failure_reason: None,
             is_paused: false,
+            timer: None,
         }
+    }
+
+    /// Installs a custom [`SleepProvider`] for the backoff waits (tests use
+    /// this to drive pauses with a deterministic timer).
+    #[must_use]
+    pub fn with_timer(
+        mut self,
+        timer: std::sync::Arc<dyn crate::timeout_manager::SleepProvider>,
+    ) -> Self {
+        self.timer = Some(timer);
+        self
     }
 
     /// Failures observed so far (0-based, pre-increment semantics).
@@ -185,9 +198,15 @@ impl Retryer {
                     if !self.decision.should_retry(&error, attempt) {
                         return Err(error);
                     }
-                    crate::timeout_manager::TimeoutManager::default()
-                        .sleep(retry_delay(attempt))
-                        .await;
+                    let delay = retry_delay(attempt);
+                    match &self.timer {
+                        Some(timer) => timer.sleep(delay).await,
+                        None => {
+                            crate::timeout_manager::TimeoutManager::default()
+                                .sleep(delay)
+                                .await;
+                        }
+                    }
                 }
             }
         }
@@ -197,7 +216,28 @@ impl Retryer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Tokio-clock sleep provider so paused-time tests drive the backoff.
+    #[derive(Debug)]
+    struct TokioSleep;
+
+    impl crate::timeout_manager::SleepProvider for TokioSleep {
+        fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(tokio::time::sleep(duration))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn paused_retryer(decision: RetryDecision) -> Retryer {
+        Retryer::new(decision).with_timer(std::sync::Arc::new(TokioSleep))
+    }
 
     #[test]
     fn test_retry_delay_first_is_one_second() {
@@ -343,7 +383,7 @@ mod tests {
         let online = OnlineManager::new();
         online.set_online(false);
         let task_online = online.clone();
-        let mut retryer = Retryer::new(RetryDecision::Count(3));
+        let mut retryer = paused_retryer(RetryDecision::Count(3));
         let token = CancellationToken::new();
         let calls = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&calls);
@@ -522,7 +562,7 @@ mod tests {
     async fn test_retryer_parks_in_pause_loop_until_online() {
         let online = OnlineManager::new();
         online.set_online(false);
-        let mut retryer = Retryer::new(RetryDecision::Count(1));
+        let mut retryer = paused_retryer(RetryDecision::Count(1));
         let token = CancellationToken::new();
         let calls = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&calls);
@@ -578,7 +618,7 @@ mod tests {
     async fn test_retryer_cancelled_while_parked_in_pause_loop() {
         let online = OnlineManager::new();
         online.set_online(false);
-        let mut retryer = Retryer::new(RetryDecision::Count(3));
+        let mut retryer = paused_retryer(RetryDecision::Count(3));
         let token = CancellationToken::new();
         let calls = Arc::new(AtomicU32::new(0));
         let counter = Arc::clone(&calls);
