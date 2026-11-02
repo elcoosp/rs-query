@@ -1,12 +1,12 @@
 // src/observer.rs
 //! Query observer for reactive state updates
 
+use crate::bus;
 use crate::network::can_fetch;
 use crate::options::PlaceholderData;
 use crate::{QueryClient, QueryError, QueryKey, QueryOptions, QueryState};
 use std::marker::PhantomData;
 use std::time::Instant;
-use tokio::sync::broadcast;
 
 /// Variant of a query state update, used for notifications.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,7 +76,7 @@ pub struct QueryObserver<T: Clone + Send + Sync + 'static> {
     pub key: QueryKey,
     state: QueryState<T>,
     client: QueryClient,
-    receiver: broadcast::Receiver<QueryStateUpdate>,
+    receiver: bus::Receiver<QueryStateUpdate>,
     options: QueryOptions,
     fetch_started_at: Option<Instant>,
     placeholder_data: Option<PlaceholderData<T>>,
@@ -309,10 +309,8 @@ impl<T: Clone + Send + Sync + 'static> QueryObserver<T> {
     pub fn try_recv(&mut self) -> Option<QueryStateUpdate> {
         match self.receiver.try_recv() {
             Ok(update) => Some(update),
-            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
-                None
-            }
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+            Err(crate::bus::TryRecvError::Empty | crate::bus::TryRecvError::Closed) => None,
+            Err(crate::bus::TryRecvError::Lagged(n)) => {
                 let mut last = None;
                 for _ in 0..n {
                     match self.receiver.try_recv() {
@@ -859,8 +857,11 @@ mod tests {
         client.set_in_flight(
             &key,
             crate::client::InFlightTask {
-                abort_handle: handle.abort_handle(),
-                cancel_token: tokio_util::sync::CancellationToken::new(),
+                abort: {
+                    let handle = handle;
+                    Box::new(move || handle.abort())
+                },
+                cancel_token: quoin_core::CancellationToken::new(),
             },
         );
 
@@ -899,12 +900,9 @@ mod tests {
 
         // The registered fetch function is runnable too: execute the query
         // once and observe its data land.
-        let state = crate::executor::execute_query(
-            &client,
-            &query,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
+        let state =
+            crate::executor::execute_query(&client, &query, quoin_core::CancellationToken::new())
+                .await;
         assert_eq!(state.data(), Some(&"fetched".to_string()));
     }
 
@@ -927,12 +925,9 @@ mod tests {
 
         // The registered fetch function is runnable too: executing the query
         // replaces the stale data with the fetched value.
-        let state = crate::executor::execute_query(
-            &client,
-            &query,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
+        let state =
+            crate::executor::execute_query(&client, &query, quoin_core::CancellationToken::new())
+                .await;
         assert!(state.is_success());
         assert_eq!(state.data(), Some(&"fetched".to_string()));
     }
@@ -956,12 +951,9 @@ mod tests {
 
         // The registered fetch function is runnable too: executing the query
         // overwrites the seeded initial data.
-        let state = crate::executor::execute_query(
-            &client,
-            &query,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
+        let state =
+            crate::executor::execute_query(&client, &query, quoin_core::CancellationToken::new())
+                .await;
         assert_eq!(state.data(), Some(&"fetched".to_string()));
     }
 
