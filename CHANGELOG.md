@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this
 project adheres to [Semantic Versioning](https://semver.org/). Generated with
 [git-cliff](https://git-cliff.org).
+## [0.2.0] - 2026-11-02
+
+### Breaking Changes — quoin migration
+
+- **gpui and tokio are gone from the dependency tree.** rs-query now depends only on
+  `quoin-core` (+ `futures`); the reactive layer is generic over
+  `quoin_core::ReactiveContext` and the runtime layer goes through the new object-safe
+  `QueryRuntime` seam (`PoolRuntime` default: quoin's shared worker pool + portable
+  timers; `ExecutorRuntime`: any framework executor). See
+  `docs/quoin-migration-plan.md` for the full contract.
+- `spawn_query(cx, client, query, callback)` → `spawn_query(client, query) ->
+  SpawnedTask<QueryState<T>>` (awaitable, abortable, drop-cancels; panic-isolated
+  fetches surface as custom error states). Same for `spawn_mutation`.
+- `spawn_infinite_query(cx, query, _cb)` → `spawn_infinite_query(client, query)`; the
+  page loop runs on the client's runtime with a capacity-1 request slot (drop-newest,
+  as before).
+- `hooks::*` return the framework's own signals (`C::Signal<...>`) instead of gpui
+  entities; new bindings `use_query` / `use_mutation` / `use_infinite_query` join the
+  existing activity hooks. Dropping a binding cancels its pump.
+- `CancellationToken` is now quoin's (re-exported at the crate root); subscriptions
+  return `bus::Receiver` (bounded broadcast with `Lagged` semantics); the online
+  manager and stop signals use a runtime-free `watch` cell.
+- `devtools` is headless (cache rows, timestamped transition timeline with filters,
+  actions, production-wired collector); the gpui-component panel is removed.
+- `QueryState`/`MutationState` derive `PartialEq` (signal write gating); removed
+  `From<tokio::task::JoinError>`; `TokioSleepProvider` → `QuoinSleepProvider`
+  (runtime-free); `QueryClient::with_runtime` / `QueryClient::with_context(&cx)` added;
+  `QueryClient::subscribe_all()` added (client-wide update stream).
+
+### Added
+- `docs/quoin-migration-plan.md` — the migration contract (module-by-module, quoin
+  changes, test strategy).
+- 713 tests (from 704): the 41 gpui-based tests are ported to runtime/testkit-based
+  equivalents; new binding, bus, watch, runtime and devtools suites run headless on
+  quoin-testkit.
+
 ## [0.1.0] - 2026-11-01
 
 ### Bug Fixes
