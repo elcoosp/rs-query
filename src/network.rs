@@ -7,7 +7,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::watch;
+
+use crate::watch::{Watch, Watcher};
 
 /// How a query or mutation interacts with network connectivity.
 ///
@@ -57,7 +58,7 @@ pub fn can_retry(mode: NetworkMode, online: bool) -> bool {
 #[derive(Clone, Debug)]
 pub struct OnlineManager {
     online: Arc<AtomicBool>,
-    tx: watch::Sender<bool>,
+    tx: Watch<bool>,
 }
 
 impl Default for OnlineManager {
@@ -70,10 +71,10 @@ impl OnlineManager {
     /// Create an online manager that starts in the online state.
     #[must_use]
     pub fn new() -> Self {
-        let (tx, _rx) = watch::channel(true);
+        let (watch, _rx) = Watch::new(true);
         Self {
             online: Arc::new(AtomicBool::new(true)),
-            tx,
+            tx: watch,
         }
     }
 
@@ -87,14 +88,17 @@ impl OnlineManager {
     pub fn set_online(&self, online: bool) {
         if self.is_online() != online {
             self.online.store(online, Ordering::Relaxed);
-            let _ = self.tx.send(online);
+            self.tx.send(online);
         }
     }
 
-    /// Subscribe to connectivity changes; the current value is delivered
-    /// immediately through the returned receiver.
+    /// Subscribe to connectivity changes.
+    ///
+    /// The returned watcher starts "unseen": the first `changed()` resolves
+    /// only when connectivity actually changes; read the current state with
+    /// [`Watcher::borrow`]/[`Watcher::peek`].
     #[must_use]
-    pub fn subscribe(&self) -> watch::Receiver<bool> {
+    pub fn subscribe(&self) -> Watcher<bool> {
         self.tx.subscribe()
     }
 }
@@ -160,12 +164,12 @@ mod tests {
     async fn test_online_manager_set_online_notifies_on_change() {
         let manager = OnlineManager::new();
         let mut rx = manager.subscribe();
-        assert!(*rx.borrow_and_update());
+        assert!(rx.borrow());
 
         manager.set_online(false);
         assert!(!manager.is_online());
         rx.changed().await.expect("change should be observed");
-        assert!(!*rx.borrow());
+        assert!(!rx.borrow());
 
         manager.set_online(true);
         assert!(manager.is_online());
@@ -175,9 +179,9 @@ mod tests {
     fn test_online_manager_set_same_value_is_noop() {
         let manager = OnlineManager::new();
         let mut rx = manager.subscribe();
-        assert!(*rx.borrow_and_update());
+        assert!(rx.borrow());
         manager.set_online(true);
-        assert!(!rx.has_changed().expect("has_changed should succeed"));
+        assert!(!rx.has_changed(), "same value must not notify");
     }
 
     #[test]
