@@ -26,6 +26,30 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+/// Paces the background garbage-collection loop.
+const GC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Runs [`QueryClient::gc_internal`] periodically forever.
+///
+/// Native: a dedicated OS thread (blocking sleep, detached). `wasm32`: a
+/// main-thread local task paced by quoin's portable timer — the browser has
+/// no threads, and `std::thread::spawn` would panic instantly there.
+fn spawn_gc_loop(cache: Arc<DashMap<String, CacheEntry>>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(move || loop {
+        std::thread::sleep(GC_INTERVAL);
+        QueryClient::gc_internal(&cache);
+    });
+
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            quoin_core::sleep(GC_INTERVAL).await;
+            QueryClient::gc_internal(&cache);
+        }
+    });
+}
+
 /// Cache entry for type-erased storage
 #[derive(Clone)]
 pub struct CacheEntry {
@@ -134,14 +158,13 @@ impl QueryClient {
             activity_tx,
             runtime,
         };
-        // Spawn background garbage collection thread.
-        let cache = Arc::clone(&client.cache);
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(60));
-                Self::gc_internal(&cache);
-            }
-        });
+        // Spawn background garbage collection.
+        //
+        // Native: a dedicated OS thread. `wasm32` has no threads (a
+        // `std::thread::spawn` there panics instantly), so the collector
+        // runs as a main-thread local task paced by quoin's portable timer
+        // (a browser timeout that yields to the event loop between runs).
+        spawn_gc_loop(Arc::clone(&client.cache));
         client
     }
 
