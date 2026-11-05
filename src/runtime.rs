@@ -159,13 +159,25 @@ impl QueryRuntime for PoolRuntime {
         // releases its structured-concurrency guard: abort ownership moves
         // to the `SpawnHandle`.
         let (abort_handle, abort_registration) = futures::future::AbortHandle::new_pair();
-        quoin_core::pool::spawn_pooled(futures::future::Abortable::new(
+        let task = futures::future::Abortable::new(
             async move {
                 future.await;
                 let _ = tx.send(());
             },
             abort_registration,
-        ));
+        );
+        // Native: quoin's shared worker pool. `wasm32`: the browser main
+        // thread — the pool is OS-thread based and would panic there, while
+        // `spawn_local` runs the (already `Send`, hence `'static`) task on
+        // the event loop exactly like the platform expects.
+        #[cfg(not(target_arch = "wasm32"))]
+        quoin_core::pool::spawn_pooled(task);
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
+            // The abort result is observed through the `SpawnHandle`'s
+            // oneshot, not through the task output.
+            let _ = task.await;
+        });
         SpawnHandle::new(Box::new(move || abort_handle.abort()), rx)
     }
 
