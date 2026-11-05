@@ -7,6 +7,12 @@ futures = "0.3"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
+# `wasm32` task execution: the GC loop and the default `PoolRuntime` run
+# their futures on the browser main thread via `spawn_local` (the worker
+# pool is OS-thread based and would panic on wasm).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
 [dev-dependencies]
 tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros", "test-util"] }
 quoin-testkit = { path = "../quoin/quoin-testkit", version = "0.1", features = ["tokio"] }
