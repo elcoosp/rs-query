@@ -1,0 +1,23 @@
+/*
+ * rs-query docs — brand accent.
+ * Derived from the project logo's orange ribbon (sampled #cd8a48, hue ≈ 30°,
+ * highlight ≈ #e0913e). The logo's blue (#3d62a5) was rejected as the accent
+ * because it sits too close to Starlight's default blue.
+ * Contrast (WCAG, scripts/verify_contrast.py):
+ *   accent-high on light bg (#fff): 7.64:1 — AAA
+ *   accent      on light bg (#fff): 3.83:1 — AA (UI)
+ *   accent-high on dark bg (#1b1c22): 10.28:1 — AAA
+ *   accent      on dark bg (#1b1c22):  6.71:1 — AA (UI)
+ */
+:root,
+[data-theme='light'] {
+	--sl-color-accent-low: hsl(30 65% 93%);
+	--sl-color-accent: hsl(30 68% 44%);
+	--sl-color-accent-high: hsl(24 72% 30%);
+}
+
+[data-theme='dark'] {
+	--sl-color-accent-low: hsl(25 40% 16%);
+	--sl-color-accent: hsl(31 72% 56%);
+	--sl-color-accent-high: hsl(35 82% 72%);
+}
