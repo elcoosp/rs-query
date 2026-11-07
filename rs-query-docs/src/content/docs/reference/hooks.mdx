@@ -1,0 +1,81 @@
+---
+title: Framework Hooks
+description: The ten quoin bindings — use_query, use_mutation, use_infinite_query, use_queries, and the activity hooks.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+The `hooks` module is generic over any `quoin_core::ReactiveContext`. Each binding returns the host framework's own `Signal` type and stays in sync through lag-tolerant cache pumps. Dropping a binding cancels its pump and aborts its fetch.
+
+## Query bindings
+
+| Binding                                        | Returns                                                              |
+| ---------------------------------------------- | -------------------------------------------------------------------- |
+| `use_query(&cx, &client, &query)`               | Binding: `state` signal (`QueryState<T>`), `refetch()`, `abort_fetch()` |
+| `use_infinite_query(&cx, &client, &query)`      | Binding: `state` signal (`QueryState<InfiniteData<T, P>>`) + pagination controls |
+| `use_mutation(&cx, &client, &mutation)`         | Binding: `mutate(params, MutateOptions)`, `reset()`                   |
+| `use_queries(&cx, &client, &queries)`           | Combined results signal via `QueriesObserver`                         |
+
+### The query binding
+
+```rust
+let todo = use_query(&cx, &client, &query);
+todo.state.get();     // QueryState<Todo>
+todo.refetch();       // re-run now
+todo.abort_fetch();   // cancel in-flight
+```
+
+### The infinite binding
+
+```rust
+let feed = use_infinite_query(&cx, &client, &query);
+feed.fetch_next_page();
+feed.fetch_previous_page();
+feed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
+feed.has_next_page();          feed.has_previous_page();
+feed.is_fetching_next_page();  feed.is_fetching_previous_page();
+feed.observer();               // Arc<InfiniteQueryObserver<T, P>>
+```
+
+### The mutation binding
+
+```rust
+let save = use_mutation(&cx, &client, &save_mutation);
+save.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));
+save.reset();
+```
+
+## Activity bindings
+
+| Binding                                       | Returns              | Description                                        |
+| --------------------------------------------- | -------------------- | -------------------------------------------------- |
+| `use_is_fetching(&cx, &client)`                | `Signal<bool>`        | Any query fetching                                 |
+| `use_is_mutating(&cx, &client)`                | `Signal<bool>`        | Any mutation running                               |
+| `use_fetching_count(&cx, &client)`             | `Signal<usize>`       | Number of in-flight fetches                        |
+| `use_mutating_count(&cx, &client)`             | `Signal<usize>`       | Number of running mutations                        |
+| `use_any_fetching(&cx, &[clients])`            | `Signal<bool>`        | Activity across several clients                    |
+| `use_activity_feed(&cx, rx: Receiver<E>)`      | `Signal<Vec<E>>`      | Capped event buffer — wire `client.subscribe_activity()` |
+
+## Utility helpers
+
+Exported for adapter authors building custom bindings:
+
+| Helper                                      | Description                                        |
+| ------------------------------------------- | -------------------------------------------------- |
+| `read_query_state::<T>(...)`                 | Read the current state behind a cache key          |
+| `push_capped(buffer, item, capacity)`        | Ring-buffer push used by the activity feed         |
+| `drain_ready::<E>(rx)`                       | Drain ready events from a bus receiver             |
+
+## House rules
+
+1. Build the client with `QueryClient::with_context(&cx)` so timers and fetches ride the framework executor.
+2. One binding per component — bindings own a pump; sharing one binding across views reintroduces manual sync.
+3. Keep `set_is_restoring` scoped tight around hydration; bindings hold fetches while the gate is set.
+
+The pumps are lag-tolerant by design: a slow view thread misses intermediate writes and converges on the latest state, so no queue can grow unboundedly behind a busy frame.
+
+## Next steps
+
+<LinkCard title="Guide: Framework bindings" href="/rs-query/guides/framework-bindings/" description="Task-oriented patterns for all ten bindings." />
+<LinkCard title="Reference: Observers" href="/rs-query/reference/observers/" description="The flags behind every binding's signal." />
