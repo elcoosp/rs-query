@@ -1,0 +1,79 @@
+---
+title: Architecture — the Runtime Seam and Quoin
+description: How rs-query stays framework-free with quoin-core, a runtime seam, and headless managers.
+type: explanation
+---
+
+import { FileTree, LinkCard } from '@astrojs/starlight/components';
+
+rs-query is a TanStack Query port whose defining constraint is portability: one crate must run headless, on five UI frameworks, and on wasm. This page explains the architecture that makes that possible — where the seams are, what quoin provides, and why the module map looks the way it does.
+
+## Two couplings to remove
+
+A query engine needs exactly two platform services: *somewhere to run futures* (a spawn and timers) and *something to observe* (signals). Early rs-query versions hardcoded both — tokio for the runtime, gpui for reactivity — which anchored the crate to one stack per service. Version 0.2 removed both couplings:
+
+- **Runtime** crosses the object-safe `QueryRuntime` seam. The default `PoolRuntime` runs tasks on quoin's shared worker pool with portable timers; `ExecutorRuntime` forwards to any executor you hand it; tests inject quoin-testkit's paused-time executor. On wasm the pool runs futures on the main thread via `spawn_local`.
+- **Reactivity** is generic over `quoin_core::ReactiveContext`. The `hooks` module emits your framework's own `Signal` type through lag-tolerant pumps, so gpui, leptos, dioxus, xilem, and floem each get native-feeling bindings from one implementation.
+
+Everything else — caching, retries, deduplication, invalidation, persistence — is plain Rust with no platform dependency at all.
+
+## The module map
+
+<FileTree>
+        - src/
+                - lib.rs — public re-exports
+                - key.rs — QueryKey hierarchy + prefix matching
+                - state.rs — QueryState/MutationState + status enums
+                - options.rs — QueryOptions (TanStack option surface)
+                - filters.rs — QueryFilters / MutationFilters + match_query/match_mutation
+                - retryer.rs — retry decisions + min(1000·2ⁿ, 30 s) backoff
+                - network.rs — NetworkMode + OnlineManager
+                - notify_manager.rs — batched notifications
+                - timeout_manager.rs — injectable timer source
+                - focus_manager.rs — focus events
+                - query.rs — the Query builder
+                - client.rs — QueryClient: cache, dedup, cancellation, bulk operations
+                - executor.rs — fetch/mutation execution (retry, pause, restore gate)
+                - observer.rs — QueryObserver + result flags
+                - infinite.rs / infinite_executor.rs — pagination
+                - mutation.rs / mutation_cache.rs / mutation_observer.rs — mutations
+                - queries_observer.rs — QueriesObserver (useQueries core)
+                - runtime.rs — the QueryRuntime seam
+                - bus.rs — bounded broadcast channel (runtime-free)
+                - watch.rs — watch cell (online/stop signals)
+                - hooks.rs — quoin signal bindings
+                - sharing.rs — structural sharing (PartialEqAny)
+                - cancellation.rs — cancellable_fetch
+                - hydration.rs — dehydrate/hydrate
+                - persister.rs / persist_client.rs — persistence layers
+                - broadcast.rs — cross-instance cache sync
+                - streamed_query.rs — streamedQuery port
+                - updater.rs — Updater / functional_update
+                - devtools.rs — headless devtools (feature "devtools")
+</FileTree>
+
+## The data path
+
+A fetch travels through six stations:
+
+1. **Builder** — `Query::new(key, fetch_fn)` assembles options.
+2. **Executor** — `executor.rs` runs the pipeline: dedup check → restore gate → network-mode gate → fetch → retries (`retryer.rs`) → cache write.
+3. **Cache** — `client.rs` stores `QueryState` per `cache_key`, sweeps `gc_time`, and fans out updates.
+4. **Notify** — `notify_manager.rs` collapses the burst into one batch.
+5. **Observer** — `observer.rs` derives flags (`is_stale`, `failure_count`, `is_paused`…) from the raw state.
+6. **Binding** — `hooks.rs` pushes the derived result into a framework signal.
+
+Cancellation rides alongside: every station holds a `CancellationToken`, so an abort is cooperative and reaches the fetch closure between awaits.
+
+## Why bounded channels and watch cells
+
+`bus.rs` and `watch.rs` exist because the crate cannot depend on tokio's channels. The bus is a bounded broadcast channel with explicit `Lagged` semantics — a slow consumer catches up on the latest state instead of replaying history — and the watch cell publishes single-value signals (online/offline, stop flags) with no runtime. Both are the reason the whole stack stays headless.
+
+## Quality gates
+
+The architecture is enforced by CI: `cargo clippy --all-features -- -D warnings` at pedantic level with zero allows, 713 framework-free tests, `cargo doc --no-deps` with `missing_docs = "warn"` so every public item is documented, and coverage on Codecov. The porting contract in `docs/port-plan.md` and the quoin migration contract in `docs/quoin-migration-plan.md` keep the upstream semantics auditable module by module.
+
+## Next steps
+
+<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="What the cache computes on every write." />
+<LinkCard title="Reference: Runtime, network, and managers" href="/rs-query/reference/runtime-and-network/" description="The seam's exact signatures." />
