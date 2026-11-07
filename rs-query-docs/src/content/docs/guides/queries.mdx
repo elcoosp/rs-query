@@ -1,0 +1,101 @@
+---
+title: Running Queries
+description: Spawn, execute, prefetch, and cancel queries — the four imperative entry points.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+rs-query gives you four ways to move a query from definition to data. This guide shows when to reach for each one: `spawn_query` for fire-and-await tasks, `execute_query` for awaited execution, `prefetch_query` for warmups, and `ensure_query_data` for read-through semantics. It closes with cancellation, which works the same way in all four.
+
+## Choose the entry point
+
+| You want…                                             | Use                                | Returns                    |
+| ----------------------------------------------------- | ---------------------------------- | -------------------------- |
+| An awaitable, abortable task on the client's runtime   | `spawn_query(&client, &query)`     | `SpawnedTask<QueryState<T>>` |
+| An awaited result with the full retry/pause pipeline   | `execute_query(&client, &query)`   | `QueryState<T>`            |
+| A warmup that never fails your code path               | `client.prefetch_query(&query)`    | `()` — errors are logged   |
+| Read-through: cached data if fresh, fetch otherwise    | `client.ensure_query_data(&query)` | `QueryState<T>`            |
+
+## Spawn and await
+
+`spawn_query` is the primary entry point. It submits the fetch to the client's runtime — the default `PoolRuntime`, or the framework executor when you built the client with `with_context`:
+
+```rust
+use rs_query::{spawn_query, Query, QueryClient, QueryKey};
+
+let client = QueryClient::new();
+let query = Query::new(QueryKey::new("users"), || async {
+    Ok(vec!["Ada", "Alan"])
+});
+
+let handle = spawn_query(&client, &query);
+let state = handle.await;
+```
+
+The handle is abortable: dropping it before `await` cancels the fetch cooperatively through a `CancellationToken`. Panics inside the fetch closure do not poison the runtime — they surface as a custom error state.
+
+## Await inline with `execute_query`
+
+When you want the result without holding a handle, `execute_query` runs the same pipeline — retries, network-mode pausing, restore gate — and awaits it directly:
+
+```rust
+use rs_query::execute_query;
+
+let state = execute_query(&client, &query).await;
+```
+
+## Warm the cache with `prefetch_query`
+
+`client.prefetch_query` runs `fetch_query` and logs-then-discards any error, so a warmup can never poison your error handling:
+
+```rust
+client.prefetch_query(&query).await;
+```
+
+The result lands in the cache under the query's key, ready for the next observer or `ensure_query_data` call.
+
+## Read through with `ensure_query_data`
+
+`client.ensure_query_data` short-circuits when fresh data exists and fetches otherwise — the TanStack `ensureQueryData` semantics:
+
+```rust
+let state = client.ensure_query_data(&query).await;
+if let Some(data) = state.data() {
+    // fresh or newly fetched data
+}
+```
+
+## Configure retries per query
+
+Retry behavior lives on the query builder (or in [QueryOptions](/rs-query/reference/query-options/)). The default backoff is TanStack-exact: `min(1000 ms · 2ⁿ, 30 s)` with no jitter:
+
+```rust
+use rs_query::{Query, RetryConfig};
+use std::time::Duration;
+
+let query = Query::new(key, || async { fetch_things().await })
+    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)));
+```
+
+<Aside type="note">
+`failure_count` and `failure_reason` for the current fetch are visible on every [observer result](/rs-query/reference/observers/), so UI can render attempt numbers without extra plumbing.
+</Aside>
+
+## Cancel a fetch
+
+Cancellation is cooperative and key-scoped:
+
+```rust
+client.cancel_query(&key);                       // one key
+client.cancel_queries(&QueryFilters::with_key(   // every "users" query
+    QueryKey::new("users"),
+));
+```
+
+A cancelled fetch produces `QueryError::Cancelled { revert, silent }`. When `revert` is set, the query rolls back to its pre-fetch state; when `silent` is set — for example a cancel-on-unmount — the error does not surface as a query error state.
+
+## Next steps
+
+<LinkCard title="Guide: Working with keys and filters" href="/rs-query/guides/keys-and-filters/" description="Prefix matching, predicates, and the bulk operations." />
+<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="Every method, including fetch_query and ensure_query_data." />
