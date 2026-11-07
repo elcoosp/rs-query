@@ -1,0 +1,84 @@
+---
+title: Hydration and Dehydration
+description: Move query state between a server and client with dehydrate_state and hydrate_with_options, including error redaction.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+Hydration moves cache state from one process to another — a server into a browser, a background job into an app start. rs-query ports TanStack's `dehydrate`/`hydrate` pair as `dehydrate_state` and `hydrate_with_options`, with predicates, error redaction, and a newer-data guard. This guide walks a full round trip.
+
+## Dehydrate on the producer side
+
+`dehydrate_state` snapshots every qualifying query and mutation into a `DehydratedState`:
+
+```rust
+use rs_query::{DehydrateOptions, dehydrate_state};
+
+let dehydrated = dehydrate_state(&client, DehydrateOptions::default());
+// dehydrated.dehydrated_at_ms, dehydrated.queries, dehydrated.mutations
+```
+
+Each `DehydratedQuery` carries `query_key` (segments), `query_hash`, `data_json`, `error_json`, `fetched_at_ms`, freshness bookkeeping (`is_stale`, `stale_time_ms`, `gc_time_ms`), `meta`, and a `query_type` tag — `QUERY_TYPE_QUERY` or `QUERY_TYPE_INFINITE` — so infinite queries round-trip with their pages.
+
+## Filter what dehydrates
+
+Two predicates decide inclusion; `should_redact_errors` defaults to `true`:
+
+```rust
+use rs_query::DehydrateOptions;
+
+let opts = DehydrateOptions::new()
+    .should_dehydrate_query(Arc::new(|q| !q.is_stale))
+    .should_dehydrate_mutation(Arc::new(|_m| false))
+    .should_redact_errors(true)
+    .serialize_data(Arc::new(|data| my_json(data)));
+```
+
+<Aside type="caution">
+With `should_redact_errors(true)` — the default — dehydrated errors become `QueryError::Redacted`, whose text is `redacted`, mirroring TanStack's `Error('redacted')`. Leaking server-side error details to the client is a security decision you make explicitly, not an accident.
+</Aside>
+
+## Hydrate on the consumer side
+
+`hydrate_with_options` writes the snapshot into a fresh client. The newer-data guard keeps cache entries whose local data is newer than the incoming record — late hydration never clobbers fresh data:
+
+```rust
+use rs_query::{HydrateOptions, hydrate_with_options};
+
+let opts = HydrateOptions::new().should_overwrite(false);
+hydrate_with_options(&client, &dehydrated, opts);
+```
+
+During hydration, each restored query's `fetchStatus` resets to idle — restored data never looks mid-fetch. Default options from the receiving client apply to restored entries.
+
+## Gate observers during restore
+
+While you restore (or load a persister), set the restore gate. Observers and bindings hold fetches and report `is_restoring` instead of racing the restore:
+
+```rust
+client.set_is_restoring(true);
+hydrate_with_options(&client, &dehydrated, opts);
+client.set_is_restoring(false);
+```
+
+The [client persister](/rs-query/guides/persistence/) uses exactly this gate in its restore step.
+
+## A full round trip
+
+```rust
+// Producer (server):
+let dehydrated = dehydrate_state(&server_client, DehydrateOptions::default());
+send_to_client(serialize(&dehydrated));
+
+// Consumer (browser):
+client.set_is_restoring(true);
+hydrate_with_options(&client, &deserialized, HydrateOptions::new());
+client.set_is_restoring(false);
+// First observers mount against restored data; stale ones refetch on mount.
+```
+
+## Next steps
+
+<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Automate the round trip with persisters." />
+<LinkCard title="Reference: Persistence and hydration API" href="/rs-query/reference/persistence-and-hydration/" description="Every hydration type and option." />
