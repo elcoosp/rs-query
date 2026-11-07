@@ -1,0 +1,15 @@
+{
+        "config": {
+                "default": true,
+                "MD013": false,  // long lines are fine; tables and JSX need them
+                "MD033": false,  // MDX components (Card, Tabs, ...) are the point
+                "MD036": false,
+                "MD041": false,  // MDX import lines precede the first heading
+                "MD046": false,  // FileTree children indent like code blocks but are not
+                "MD060": false,  // aligned table columns are deliberate
+                "MD024": { "siblings_only": true },
+                "MD012": { "maximum": 2 }
+        },
+        "globs": ["src/content/docs/**/*.mdx"],
+        "ignores": ["node_modules", "dist", ".astro"]
+}
