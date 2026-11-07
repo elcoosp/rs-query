@@ -1,0 +1,93 @@
+---
+title: QueryOptions
+description: The complete QueryOptions surface — staleness, GC, retries, triggers, network mode, and constants.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+`QueryOptions` is the flat option surface that mirrors TanStack v5's per-query options, field for field. Every builder method consumes and returns `Self`. Options attach to a `Query` via builder methods, flow through `QueryClient::set_default_options`, and ride on `set_query_data` calls.
+
+## Fields and builders
+
+| Option (builder)                                        | Type             | Default                | Description                                              |
+| ------------------------------------------------------- | ---------------- | ---------------------- | -------------------------------------------------------- |
+| `stale_time` (`.stale_time(Duration)`)                   | `Duration`        | `0`                    | Data older than this is stale                             |
+| `stale_time_static` (`.stale_time_static()`)             | `bool`            | `false`                | Never stale — `staleTime: 'static'`                       |
+| `gc_time` (`.gc_time(Duration)`)                         | `Duration`        | `DEFAULT_GC_TIME` (5 min) | Idle eviction window                                   |
+| `retry` (`.retry(RetryConfig)`)                          | `RetryConfig`     | see below              | Attempt count and backoff                                 |
+| `enabled` (`.enabled(bool)`)                             | `bool`            | `true`                 | Master gate for automatic fetches                         |
+| `enabled_fn` (`.enabled_fn(f)`)                          | `Option<Arc<dyn Fn() -> bool>>` | none     | Dynamic gate evaluated at fetch decision time             |
+| `refetch_on_window_focus` (`.refetch_on_window_focus(t)`) | `RefetchTrigger` | `Enabled`             | Focus refetch policy                                      |
+| `refetch_on_reconnect` (`.refetch_on_reconnect(t)`)      | `RefetchTrigger`  | `Enabled`              | Reconnect refetch policy                                  |
+| `refetch_on_mount` (`.refetch_on_mount(t)`)              | `RefetchTrigger`  | `Enabled`              | Mount refetch policy                                      |
+| `refetch_interval` (`.refetch_interval(d)`)              | `Duration`        | none                   | Poll while observers exist                                |
+| `refetch_interval_in_background` (`.refetch_interval_in_background(b)`) | `bool` | `false`      | Keep polling with no active observer                      |
+| `structural_sharing` (`.structural_sharing(bool)`)       | `bool`            | `true`                 | `Arc` reuse when new data `PartialEq`-compares equal       |
+| `network_mode` (`.network_mode(mode)`)                   | `NetworkMode`     | `Online`               | Offline start/retry semantics                             |
+| `retry_on_mount` (`.retry_on_mount(bool)`)               | `bool`            | `true`                 | Retry a failed query on the next mount                     |
+| `throw_on_error` (`.throw_on_error(bool)`)               | `bool`            | `false`                | Surface errors to the caller instead of the error state    |
+| `notify_on_change_props` (`.notify_on_change_props(v)`)  | `Option<Vec<String>>` | none              | Restrict change notifications to the named properties      |
+| `meta` (`.meta(key, value)`)                             | `BTreeMap<String, String>` | empty        | Free-form metadata; travels with dehydration               |
+
+`is_enabled()` resolves the effective gate: `enabled && (enabled_fn.is_none() || enabled_fn())`.
+
+## `RetryConfig`
+
+| Builder                              | Default              | Description                                    |
+| ------------------------------------ | -------------------- | ---------------------------------------------- |
+| `RetryConfig::new(max_retries)`       | —                    | Attempt budget                                 |
+| `.base_delay(Duration)`               | `BASE_RETRY_DELAY` (1 s) | Delay before the first retry               |
+| `.max_delay(Duration)`                | `MAX_RETRY_DELAY` (30 s) | Backoff ceiling                            |
+| `.exponential_backoff(bool)`          | `true`               | Double each attempt when enabled               |
+| `.delay_for_attempt(n) -> Duration`   | —                    | `min(1000 ms · 2ⁿ, 30 s)` when backoff is on   |
+| `.should_retry(n) -> bool`            | —                    | Whether attempt `n` is within budget           |
+
+The retryer module adds the decision layer: `RetryDecision::Never`, `RetryDecision::Count(n)`, `RetryDecision::Always`, and a closure decision, applied by `Retryer` with `retry_delay` as the math. Failure counts and reasons surface on observer results as `failure_count`/`failure_reason`.
+
+## `PlaceholderData<T>`
+
+| Constructor          | Behavior                                            |
+| -------------------- | --------------------------------------------------- |
+| `PlaceholderData::value(data)` | Always show this data while loading        |
+| `PlaceholderData::function(f)` | Derive from the previous query's data       |
+| `.keep_previous()`            | Reuse the previous key's data (`keepPreviousData`) |
+| `.resolve(previous) -> T`      | Evaluate against `Option<&T>` at read time   |
+
+## `RefetchTrigger`
+
+| Variant    | Refetches…                        |
+| ---------- | --------------------------------- |
+| `Enabled`   | Only when the data is stale (default) |
+| `Always`    | Regardless of staleness           |
+| `Disabled`  | Never, from this trigger          |
+
+`.allows_refetch(is_stale)` encodes the rule; `.is_enabled()` distinguishes `Disabled` from the rest.
+
+## Constants
+
+| Constant            | Value     | Role                       |
+| ------------------- | --------- | -------------------------- |
+| `BASE_RETRY_DELAY`   | `1 s`     | First retry delay          |
+| `MAX_RETRY_DELAY`    | `30 s`    | Backoff ceiling            |
+| `DEFAULT_GC_TIME`    | `5 min`   | Default cache eviction window |
+
+## Example
+
+```rust
+use std::time::Duration;
+use rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};
+
+let options = QueryOptions::default()
+    .stale_time(Duration::from_secs(60))
+    .gc_time(Duration::from_secs(600))
+    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))
+    .refetch_on_reconnect(RefetchTrigger::Always)
+    .network_mode(NetworkMode::OfflineFirst)
+    .meta("source", "api");
+```
+
+## Next steps
+
+<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="Where defaults and options meet the cache." />
+<LinkCard title="Reference: Errors and cancellation" href="/rs-query/reference/errors-and-cancellation/" description="What happens when every retry fails." />
