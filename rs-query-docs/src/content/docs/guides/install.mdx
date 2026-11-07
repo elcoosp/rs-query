@@ -1,0 +1,80 @@
+---
+title: Installation
+description: Add rs-query to a Rust project with a sibling quoin checkout and optional feature gates.
+type: how-to
+---
+
+import { FileTree, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+
+rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. Until the quoin crates are published, you check out both repositories side by side and use path dependencies. This guide sets up that layout and shows the optional feature gates.
+
+## Check out both repositories
+
+Clone the two repositories into the same parent directory:
+
+```bash
+git clone https://github.com/elcoosp/quoin
+git clone https://github.com/elcoosp/rs-query
+```
+
+The resulting layout must look like this, because rs-query resolves its quoin dependency as `../quoin/quoin-core`:
+
+<FileTree>
+  - your-projects/
+    - quoin/
+    - rs-query/
+    - your-app/
+</FileTree>
+
+## Depend on rs-query
+
+<Tabs>
+  <TabItem label="Sibling checkout (recommended)">
+    From your application crate, point at the local rs-query checkout:
+
+    ```toml
+    [dependencies]
+    rs-query = { path = "../rs-query" }
+    ```
+  </TabItem>
+  <TabItem label="Pinned git revision">
+    For CI or teammates without the full checkout layout, vendor both repositories with a workspace or a script, then depend on the vendored path. A bare `git` dependency on rs-query alone fails to resolve, because `quoin-core` is a path dependency that Cargo cannot fetch from the rs-query repository.
+  </TabItem>
+</Tabs>
+
+Verify the toolchain resolves:
+
+```bash
+cargo check
+```
+
+## Choose feature gates
+
+rs-query ships with two optional features. Both are opt-in and add nothing to the default build:
+
+| Feature    | What it enables                                                              | Pulls in               |
+| ---------- | ---------------------------------------------------------------------------- | ---------------------- |
+| *(none)*   | The full query engine, observers, mutations, runtime, offline support        | `quoin-core`, `futures` |
+| `serde`    | JSON persistence/hydration helpers (`serialize_persisted_query`, redaction-friendly hydration payloads) | `serde`, `serde_json`  |
+| `devtools` | Headless devtools state + collector (cache rows, transition timeline, actions) | *(nothing extra)*      |
+
+Enable them as needed:
+
+```toml
+[dependencies]
+rs-query = { path = "../rs-query", features = ["serde", "devtools"] }
+```
+
+## Runtime requirements
+
+There is no runtime requirement. By default rs-query spawns fetches on quoin's shared worker pool with portable timers — no tokio, no gpui, no async executor in your dependency tree. Two deployment targets are supported:
+
+- **Native** — the default `PoolRuntime` runs tasks on the shared worker pool.
+- **wasm32** — the pool and GC loop run on the browser main thread via `spawn_local`; OS-thread pools would panic on wasm.
+
+Inside a quoin application, build the client from the framework context so fetches and timers use the framework executor: `QueryClient::with_context(&cx)`.
+
+## Next steps
+
+<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Run and invalidate your first query." />
+<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="How the runtime seam keeps rs-query framework-free." />
