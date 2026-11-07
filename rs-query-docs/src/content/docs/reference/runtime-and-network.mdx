@@ -1,0 +1,87 @@
+---
+title: Runtime, Network, and Managers
+description: The QueryRuntime seam, PoolRuntime and ExecutorRuntime, NetworkMode, OnlineManager, and the three managers.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+rs-query runs nowhere in particular by design: spawning, timers, and signals cross a runtime seam. This page documents the seam, the network layer, and the three managers (notify, timeout, focus).
+
+## `QueryRuntime` — the seam
+
+| Item                                        | Description                                                     |
+| ------------------------------------------- | --------------------------------------------------------------- |
+| `QueryRuntime`                               | Object-safe trait: task spawning, timers, cancellation handles  |
+| `PoolRuntime`                                 | Default: quoin's shared worker pool + portable timers            |
+| `ExecutorRuntime::new(executor)`              | Run on any framework executor you supply                        |
+| `SpawnedTask<T>`                              | Awaitable task handle — dropping it aborts cooperatively        |
+| `SpawnHandle`                                 | Lower-level spawn handle (abort + join)                         |
+| `BoxFuture`                                   | Boxed future type used across the seam                          |
+
+Choose a runtime once, at client construction: `QueryClient::new()` uses `PoolRuntime`, `QueryClient::with_context(&cx)` uses the framework's executor, `QueryClient::with_runtime(arc)` injects your own — the seam deterministic tests use with quoin-testkit's paused-time executor.
+
+On `wasm32`, the pool and GC loop run their futures on the browser main thread via `spawn_local`; the OS-thread pool would panic there.
+
+## `NetworkMode` and helpers
+
+| Variant        | Fetch may start offline | Retries continue offline |
+| -------------- | ----------------------- | ------------------------ |
+| `Online` (default) | No                   | No                       |
+| `Always`        | Yes                     | Yes                      |
+| `OfflineFirst`  | Yes (first attempt)     | No — retries pause       |
+
+| Helper                              | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `can_fetch(mode, online) -> bool`    | Whether a fetch may *start* under this connectivity |
+| `can_retry(mode, online) -> bool`    | Whether a retry may *continue*                      |
+
+## `OnlineManager`
+
+| Member                          | Description                                            |
+| ------------------------------- | ------------------------------------------------------ |
+| `OnlineManager::new()`           | Starts online                                          |
+| `.set_online(bool)`              | Feed platform connectivity truth; drives pause/resume  |
+| watch-based signals              | Runtime-free `watch` cell publishes the state          |
+
+The client's copy lives at `client.online_manager()`; `client.handle_reconnect()` runs the reconnect sequence on top of it.
+
+## The three managers
+
+### `NotifyManager`
+
+Collapses notification bursts: nested batches coalesce so one cache write storm produces one signal flush. Every cache notification passes through it.
+
+### `TimeoutManager` and `SleepProvider`
+
+All sleeping goes through an injectable timer source:
+
+| Item                            | Description                                            |
+| ------------------------------- | ------------------------------------------------------ |
+| `TimeoutManager`                 | Schedules retries, GC sweeps, and refetch intervals    |
+| `SleepProvider`                   | Trait for timer sources                                |
+| `QuoinSleepProvider`              | Runtime-free default — portable timers, no tokio       |
+
+Swap the provider for deterministic tests: quoin-testkit's paused-time executor advances virtual clocks, so retry backoffs run instantly in CI.
+
+### `FocusManager`
+
+Tracks application focus events that drive `refetch_on_window_focus`. Like `OnlineManager`, your platform adapter feeds it; the crate never touches OS APIs.
+
+## Example: a deterministic test client
+
+```rust
+use std::sync::Arc;
+use rs_query::{ExecutorRuntime, QueryClient};
+
+let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
+    quoin_testkit::TokioExecutor::global(),
+)));
+```
+
+Inside a `#[tokio::test]` with `start_paused = true`, every internal sleep is virtual-time controlled.
+
+## Next steps
+
+<LinkCard title="Guide: Offline support and network modes" href="/rs-query/guides/offline-and-network-modes/" description="The behavioral story on top of these types." />
+<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="Why the seam exists and what quoin provides." />
