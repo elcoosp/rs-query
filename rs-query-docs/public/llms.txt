@@ -1,0 +1,54 @@
+# rs-query
+
+> TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.
+
+https://github.com/elcoosp/rs-query
+
+## Overview
+
+- [Page Not Found](/404/): The page you requested does not exist in the rs-query documentation.
+- [rs-query — TanStack Query v5 parity for Rust](/): Declarative, cache-aware async state management for Rust, portable to every quoin-supported UI framework.
+
+## Tutorials — learning-oriented
+
+- [Your First Query](/tutorials/first-query/): Go from an empty Rust crate to a running, cached, cancelable query with rs-query.
+- [Queries in a Quoin App](/tutorials/quoin-app/): Wire rs-query into a gpui, leptos, dioxus, xilem, or floem application through the quoin reactive layer.
+
+## Guides — task-oriented how-tos
+
+- [Headless Devtools](/guides/devtools/): Inspect cache rows and a filtered transition timeline with the feature-gated devtools module.
+- [Framework Bindings](/guides/framework-bindings/): Observe queries and mutations from any quoin-supported framework — gpui, leptos, dioxus, xilem, or floem.
+- [Hydration and Dehydration](/guides/hydration/): Move query state between a server and client with dehydrate_state and hydrate_with_options, including error redaction.
+- [Infinite Queries and Pagination](/guides/infinite-queries/): Fetch bidirectional, windowed page lists with InfiniteQuery, page params, and max_pages.
+- [Installation](/guides/install/): Add rs-query to a Rust project with a sibling quoin checkout and optional feature gates.
+- [Working with Keys and Filters](/guides/keys-and-filters/): Build hierarchical query keys and drive bulk cache operations with filters, predicates, and refetch types.
+- [Mutations and Optimistic Updates](/guides/mutations/): Run mutations with on_mutate rollbacks, scoped serialization, cache callbacks, and invalidation wiring.
+- [Offline Support and Network Modes](/guides/offline-and-network-modes/): Configure NetworkMode semantics, drive the OnlineManager, and resume paused work on reconnect.
+- [Persisting the Cache](/guides/persistence/): Save queries individually or the whole client, with expiry, buster versioning, and retry strategies.
+- [Running Queries](/guides/queries/): Spawn, execute, prefetch, and cancel queries — the four imperative entry points.
+- [Streamed Queries](/guides/streamed-queries/): Accumulate a stream of partial results into one cache entry with streamed_query and RefetchMode.
+
+## Reference — information-oriented API docs
+
+- [QueryClient](/reference/client/): The cache, deduplication table, defaults, and runtime entry points — every QueryClient method.
+- [Errors and Cancellation](/reference/errors-and-cancellation/): Every QueryError variant, its TanStack counterpart, and the cancellation toolkit.
+- [Framework Hooks](/reference/hooks/): The ten quoin bindings — use_query, use_mutation, use_infinite_query, use_queries, and the activity hooks.
+- [InfiniteQuery API](/reference/infinite-queries/): InfiniteQuery, InfiniteData, spawn_infinite_query, and InfiniteQueryObserver signatures.
+- [QueryKey and Filters](/reference/keys-and-filters/): QueryKey construction and hashing, the four filter structs, snapshots, and the match functions.
+- [Mutation API](/reference/mutations/): Mutation, MutateOptions, MutationState, MutationCache, MutationScope, and MutationObserver signatures.
+- [Observers and Result Flags](/reference/observers/): QueryObserver, QueriesObserver with combine, and the QueryResultFlags surface.
+- [Persistence and Hydration API](/reference/persistence-and-hydration/): Dehydrate/hydrate, the per-query persister, the client persister, and broadcast sync — every type and option.
+- [QueryOptions](/reference/query-options/): The complete QueryOptions surface — staleness, GC, retries, triggers, network mode, and constants.
+- [Query and QueryState](/reference/query/): The Query builder and the QueryState state machine with every status enum.
+- [Runtime, Network, and Managers](/reference/runtime-and-network/): The QueryRuntime seam, PoolRuntime and ExecutorRuntime, NetworkMode, OnlineManager, and the three managers.
+- [Utilities](/reference/utilities/): Streamed query config, Updater and functional updates, and the devtools types.
+
+## Explanation — understanding-oriented
+
+- [Architecture — the Runtime Seam and Quoin](/explanation/architecture/): How rs-query stays framework-free with quoin-core, a runtime seam, and headless managers.
+- [The Caching Model Explained](/explanation/caching-model/): Stale-while-revalidate, two timestamps, structural sharing, and the state machine — why the cache behaves as it does.
+- [TanStack Query v5 Parity](/explanation/tanstack-parity/): What parity means in rs-query — the audited contract, the mapping table, and the deliberate divergences.
+
+## Repository
+
+- [Source code](https://github.com/elcoosp/rs-query): the rs-query crate this documentation describes.
