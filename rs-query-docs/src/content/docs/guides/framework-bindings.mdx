@@ -1,0 +1,87 @@
+---
+title: Framework Bindings
+description: Observe queries and mutations from any quoin-supported framework — gpui, leptos, dioxus, xilem, or floem.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+The `hooks` module is generic over `quoin_core::ReactiveContext`. You write the calls once; they compile against any quoin adapter and return that framework's own `Signal` type. This guide covers all ten bindings and the house rules that keep them lag-tolerant.
+
+## The ten bindings
+
+| Binding                                                     | Returns                                    | Replaces (TanStack)     |
+| ----------------------------------------------------------- | ------------------------------------------ | ----------------------- |
+| `use_query(&cx, &client, &query)`                            | binding with `state` signal                 | `useQuery`              |
+| `use_mutation(&cx, &client, &mutation)`                      | binding with `mutate`/`reset`               | `useMutation`           |
+| `use_infinite_query(&cx, &client, &query)`                   | pagination binding                          | `useInfiniteQuery`      |
+| `use_queries(&cx, &client, &queries)`                        | combined results signal                     | `useQueries`            |
+| `use_is_fetching(&cx, &client)`                              | `Signal<bool>`                              | `useIsFetching`         |
+| `use_is_mutating(&cx, &client)`                              | `Signal<bool>`                              | `useIsMutating`         |
+| `use_fetching_count(&cx, &client)`                           | `Signal<usize>`                             | filter variant          |
+| `use_mutating_count(&cx, &client)`                           | `Signal<usize>`                             | filter variant          |
+| `use_any_fetching(&cx, &[clients])`                          | `Signal<bool>` across several clients       | —                       |
+| `use_activity_feed(&cx, rx)`                                 | capped `Signal<Vec<E>>` of cache events     | `useMutationState`-like |
+
+## The query binding
+
+`use_query` returns a binding with three capabilities: the `state` signal, `refetch()`, and `abort_fetch()`:
+
+```rust
+let todo = use_query(&cx, &client, &query);
+todo.state.get();    // QueryState<Todo>
+todo.refetch();
+todo.abort_fetch();
+```
+
+Dropping the binding cancels its pump and aborts the in-flight fetch. Mount one binding per component that needs the data — the cache deduplicates the fetches.
+
+## The mutation binding
+
+`use_mutation` exposes `mutate` and `reset`. Per-call callbacks go in `MutateOptions` and fire after the mutation's own hooks:
+
+```rust
+let save = use_mutation(&cx, &client, &save_mutation);
+save.mutate(patch, MutateOptions::new()
+    .on_success(|_client, _data| toast("saved"))
+    .on_error(|_client, error| toast(&error.to_string())));
+save.reset();
+```
+
+## Composing with `use_queries` and `combine`
+
+`use_queries` observes several queries at once. `QueriesObserver::combine` folds their states into one derived value — the `useQueries` `combine` option:
+
+```rust
+let combined = observer.combine(|states| {
+    states.iter().filter(|s| s.is_success()).count()
+});
+```
+
+## Feeds and counters for dashboards
+
+Status bars and devtool-ish UIs ride the activity hooks instead of polling:
+
+```rust
+let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
+let feed = use_activity_feed(&cx, client.subscribe_activity());
+```
+
+`use_activity_feed` takes a `bus::Receiver<E>` — `client.subscribe_activity()` yields `ActivityEvent`s as fetch and mutation activity changes — and caps the buffer so a chatty cache cannot grow the signal unboundedly.
+
+## House rules
+
+<Aside type="note">
+Three rules keep bindings correct on every adapter:
+</Aside>
+
+1. **Build the client from the context** — `QueryClient::with_context(&cx)` — so timers and fetches use the framework executor.
+2. **One binding per component** — bindings own a pump; sharing one binding across views re-introduces manual sync.
+3. **Respect the restore gate** — during hydration, bindings hold fetches; keep `set_is_restoring` scoped tight around the restore.
+
+Under the hood the pumps are lag-tolerant: a slow view thread misses intermediate cache writes and catches up on the latest state instead of queueing every update.
+
+## Next steps
+
+<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="Exact signatures for all ten bindings." />
+<LinkCard title="Tutorial: Queries in a quoin app" href="/rs-query/tutorials/quoin-app/" description="The end-to-end reactive loop." />
