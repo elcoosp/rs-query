@@ -1,0 +1,94 @@
+---
+title: QueryKey and Filters
+description: QueryKey construction and hashing, the four filter structs, snapshots, and the match functions.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+Keys identify; filters select. `QueryKey` builds the hierarchical identity of a query, and the filter structs describe *which* queries a bulk operation touches. Both are plain data with builder methods.
+
+## `QueryKey`
+
+| Member                                        | Description                                            |
+| --------------------------------------------- | ------------------------------------------------------ |
+| `QueryKey::new(segment)`                       | Start a key with a root segment                         |
+| `.with(label, value) -> Self`                  | Append a labelled segment — `with("id", 42)`            |
+| `.segment(name) -> Self`                       | Append a plain segment                                  |
+| `QueryKey::from_segments(iter)`                | Build from an iterator of strings                       |
+| `.cache_key() -> &str`                          | Stable hashed identity used by the cache and devtools   |
+| `.segments() -> &[String]`                      | The raw segments                                        |
+| `.starts_with(&prefix) -> bool`                 | Prefix match — the rule behind key filters              |
+
+## `QueryFilters`
+
+| Builder                        | Default | Description                                          |
+| ------------------------------ | ------- | ---------------------------------------------------- |
+| `QueryFilters::all()`           | —       | Match everything                                     |
+| `QueryFilters::with_key(key)`   | —       | Match keys with this prefix                          |
+| `.exact()`                      | prefix  | Exact key match only                                 |
+| `.active()` / `.inactive()`      | both    | At least one active observer / none                  |
+| `.stale()`                      | any     | Stale by flag or by `stale_time`                     |
+| `.status(status)`               | any     | `QueryStatus::Pending/Error/Success`                 |
+| `.fetch_status(f)`              | any     | `FetchStatus::Idle/Fetching/Paused`                  |
+| `.predicate(p)`                 | —       | `Arc<dyn Fn(&QuerySnapshot) -> bool>`                |
+| `.is_stale_only() -> bool`      | —       | Whether this filter reduces to "stale"               |
+
+## `InvalidateQueryFilters` and `RefetchQueryFilters`
+
+```rust
+InvalidateQueryFilters::new()
+    .filters(QueryFilters::with_key(QueryKey::new("users")))
+    .refetch_type(RefetchType::Active)
+```
+
+| Struct                  | Builders                                       | Used by                    |
+| ----------------------- | ---------------------------------------------- | -------------------------- |
+| `InvalidateQueryFilters` | `.filters(f)`, `.refetch_type(t)`              | `invalidate_queries_filtered` |
+| `RefetchQueryFilters`    | `.filters(f)`, `.cancel_refetch(bool)`, `.throw_on_error(bool)` | `refetch_queries` |
+
+`RefetchType`: `All` (refetch every match), `Active` (refetch active, mark inactive stale — the TanStack invalidation default), `Inactive` (the inverse), `None` (mark stale, refetch nothing).
+
+## Snapshots
+
+Filters and predicates see immutable snapshots, not live queries:
+
+| Field (`QuerySnapshot`) | Type          | Meaning                                  |
+| ----------------------- | ------------- | ---------------------------------------- |
+| `key`                    | `QueryKey`    | The query's key                          |
+| `is_active`              | `bool`        | Subscribed observer exists and is enabled |
+| `is_stale`               | `bool`        | Stale by flag or `stale_time`            |
+| `fetch_status`           | `FetchStatus` | Aggregate fetch status                   |
+| `status`                 | `QueryStatus` | Aggregate status                         |
+| `has_data`               | `bool`        | Cached data exists                       |
+
+`QuerySnapshot::new(key, is_active, is_stale, fetch_status, status, has_data)` builds one for tests. `QueryType::All/Active/Inactive` tags filter categories.
+
+## Mutation-side mirrors
+
+| Item                        | Fields / builders                                                     |
+| --------------------------- | --------------------------------------------------------------------- |
+| `MutationSnapshot`           | `mutation_key: Option<QueryKey>`, `status: MutationStatus`, `is_paused: bool` |
+| `MutationFilters`            | `all()`, `with_key(k)`, `.exact()`, `.status(s)`, `.paused()`, `.predicate(p)` |
+| `match_query(snapshot, filters)`      | The matcher the client uses for queries     |
+| `match_mutation(snapshot, filters)`   | The matcher for mutations                   |
+
+## Example: preview then act
+
+```rust
+use std::sync::Arc;
+use rs_query::{QueryFilters, QueryKey};
+
+let stale_users = QueryFilters::with_key(QueryKey::new("users"))
+    .stale()
+    .predicate(Arc::new(|snap| snap.fetch_status == rs_query::FetchStatus::Idle));
+
+let matched = client.query_snapshots(&stale_users);
+println!("would reset {} queries", matched.len());
+let _ = client.reset_queries(&stale_users);
+```
+
+## Next steps
+
+<LinkCard title="Guide: Working with keys and filters" href="/rs-query/guides/keys-and-filters/" description="Task-oriented patterns for the same API." />
+<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="The bulk operations these filters drive." />
