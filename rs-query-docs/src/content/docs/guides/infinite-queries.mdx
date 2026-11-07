@@ -1,0 +1,97 @@
+---
+title: Infinite Queries and Pagination
+description: Fetch bidirectional, windowed page lists with InfiniteQuery, page params, and max_pages.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+An `InfiniteQuery<T, P>` paginates: it accumulates an `InfiniteData<T, P>` — pages plus the params that produced them — and fetches in either direction using param callbacks you provide. This guide covers definition, bidirectional fetching, and windowing with `max_pages`.
+
+## Define the query
+
+`InfiniteQuery::new` takes a key, a fetch closure, and the initial page param. The closure receives the current page param, and the param callbacks derive the next and previous params from the last and first pages:
+
+```rust
+use rs_query::{InfiniteQuery, QueryKey};
+
+let query = InfiniteQuery::<Vec<Todo>, u64>::new(
+    QueryKey::new("todos").segment("page"),
+    |page: u64| async move { fetch_todo_page(page).await },
+    1, // initial_page_param
+)
+.get_next_page_param(|last_page, _pages| {
+    if last_page.is_empty() { None } else { Some(last_page.len() as u64 + 1) }
+})
+.max_pages(5);
+```
+
+Returning `None` from a param callback marks the end of the list — `has_next_page` flips to `false`.
+
+## Run it
+
+`spawn_infinite_query` runs the page loop on the client's runtime. Like `spawn_query`, it returns an awaitable, abortable task:
+
+```rust
+use rs_query::spawn_infinite_query;
+
+let task = spawn_infinite_query(&client, &query);
+let state = task.await; // QueryState<InfiniteData<Vec<Todo>, u64>>
+```
+
+The state's data is an `InfiniteData<Vec<Todo>, u64>`: `pages` in fetch order, `page_params` alongside, plus `first_page()`, `last_page()`, and `page_count()`.
+
+## Fetch in both directions
+
+The observer exposes direction-aware controls. `fetch_next_page` appends; `fetch_previous_page` prepends — `FetchDirection::Forward` and `Backward` track which is in flight:
+
+```rust
+// From an infinite binding or InfiniteQueryObserver:
+handle.fetch_next_page();
+handle.fetch_previous_page();
+
+// With TanStack's default flags made explicit:
+handle.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
+
+handle.has_next_page();          // a next param exists
+handle.has_previous_page();      // a previous param exists
+handle.is_fetching_next_page();  // forward fetch in flight
+handle.is_fetching_previous_page();
+```
+
+<Aside type="tip">
+Check `is_fetching_next_page` in your view to show a spinner at the bottom of the list and `is_fetching_previous_page` for the top — both flags can be true at once on bidirectional lists.
+</Aside>
+
+## Window the list with `max_pages`
+
+`.max_pages(n)` keeps at most `n` pages: appending evicts from the front, prepending evicts from the back. This bounds memory for long feeds. The `InfiniteData` you read always holds the current window.
+
+## Append pages from the cache layer
+
+When you manage data manually — for example after a websocket update — `QueryClient` exposes the page mutators:
+
+```rust
+use rs_query::QueryOptions;
+
+client.append_infinite_page(&key, page, param, QueryOptions::default())?;
+client.prepend_infinite_page(&key, page, param, QueryOptions::default())?;
+client.set_infinite_data(&key, data, QueryOptions::default());
+```
+
+## Observe from a view
+
+In a quoin app, `use_infinite_query` returns the binding with all the controls above and the state signal:
+
+```rust
+let todos = use_infinite_query(&cx, &client, &query);
+todos.state.get();          // QueryState<InfiniteData<Vec<Todo>, u64>>
+todos.fetch_next_page();    // wire to a scroll listener
+```
+
+`use_queries` composes several queries (infinite included) into one signal with a `combine` step — see [Framework bindings](/rs-query/guides/framework-bindings/).
+
+## Next steps
+
+<LinkCard title="Guide: Streamed queries" href="/rs-query/guides/streamed-queries/" description="Accumulate a live stream into one cache entry." />
+<LinkCard title="Reference: InfiniteQuery API" href="/rs-query/reference/infinite-queries/" description="Signatures for InfiniteQuery, InfiniteData, and the observer." />
