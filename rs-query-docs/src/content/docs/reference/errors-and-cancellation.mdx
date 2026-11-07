@@ -1,0 +1,72 @@
+---
+title: Errors and Cancellation
+description: Every QueryError variant, its TanStack counterpart, and the cancellation toolkit.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+`QueryError` is the single error type across queries, mutations, and persistence. Nine variants cover the failure modes; two of them encode cancellation semantics. The cancellation toolkit — `CancellationToken` and `cancellable_fetch` — cooperatively stops work.
+
+## `QueryError`
+
+| Variant                    | Payload                  | `Display`                       | Meaning                                                     |
+| -------------------------- | ------------------------ | ------------------------------- | ----------------------------------------------------------- |
+| `Network`                   | `String`                 | `Network error: …`               | Connection-level failure (offline, refused, I/O)            |
+| `Serialization`             | `String`                 | `Serialization error: …`         | (De)serialization failed during persist/restore             |
+| `Cancelled { revert, silent }` | `bool, bool`          | `Query was cancelled`            | Mirrors `CancelledError { revert, silent }` — see below     |
+| `Timeout`                   | `String`                 | `Timeout error: …`               | Operation exceeded its time budget                          |
+| `MissingQueryFn`            | —                        | `Missing queryFn`                | No fetch closure registered for the query                   |
+| `Paused`                    | —                        | `Fetch paused (offline)`         | The fetch is paused because the app is offline              |
+| `UndefinedData`             | —                        | `Query data cannot be undefined` | The fetch produced no data                                  |
+| `Redacted`                  | —                        | `redacted`                       | Dehydrated under `should_redact_errors` — mirrors `Error('redacted')` |
+| `Custom`                    | `String`                 | the message                      | Free-form caller error — also the landing spot for fetch panics |
+
+Constructors: `QueryError::network(msg)`, `::serialization(msg)`, `::timeout(msg)`, `::custom(msg)`. The type derives `Error`, `Debug`, `Clone`, and `PartialEq` via `thiserror`.
+
+## Cancellation semantics
+
+`Cancelled { revert, silent }` carries two flags:
+
+- **`revert: true`** — the caller should restore the pre-fetch state; `cancel_queries`-style semantics where the partial work undoes.
+- **`silent: true`** — the error must not surface as a query error state. Cancel-on-unmount and mount-time teardown use this path; the UI never sees a flash of error.
+
+Typical sources: `client.cancel_query(&key)`, `client.cancel_queries(&filters)`, dropping a `SpawnedTask`, unmounting a binding, and a superseding `refetch` with `cancel_refetch: true`.
+
+## `CancellationToken`
+
+Re-exported from quoin at the crate root:
+
+```rust
+use rs_query::CancellationToken;
+
+let token = CancellationToken::new();
+let token2 = token.clone();
+
+// In the worker: poll or select on the token.
+// From the owner: token.cancel();
+```
+
+Every spawned task and binding holds one; this is why aborting is cooperative — the fetch closure observes the token between awaits rather than being killed mid-write.
+
+## `cancellable_fetch`
+
+`cancellable_fetch` wraps a plain future with a token so hand-rolled fetchers participate in the same protocol:
+
+```rust
+use rs_query::cancellable_fetch;
+
+let result = cancellable_fetch(token.clone(), async {
+    raw_http_get(url).await
+}).await;
+// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.
+```
+
+## Mapping to error states
+
+When a fetch exhausts retries, the last error lands in `QueryState::Error { error, stale_data }` and observers expose it through `failure_reason`. Mutations land in `MutationState::Error(error)`. With `throw_on_error(true)` the error propagates to the caller instead of settling into the cache.
+
+## Next steps
+
+<LinkCard title="Guide: Running queries" href="/rs-query/guides/queries/" description="Cancellation patterns in context." />
+<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Retry budgets and throw_on_error." />
