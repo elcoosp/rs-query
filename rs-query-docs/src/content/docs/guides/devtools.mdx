@@ -1,0 +1,77 @@
+---
+title: Headless Devtools
+description: Inspect cache rows and a filtered transition timeline with the feature-gated devtools module.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+The `devtools` feature builds a headless inspector: cache rows, a timestamped state-transition timeline with filters, and cache actions. It renders nothing — any framework can draw it, or you can plumb the state into quoin-devtools' `EventLog`. This guide wires a recorder and reads it back.
+
+<Aside type="note">
+Enable the feature first: `rs-query = { path = "../rs-query", features = ["devtools"] }`. The module is `rs_query::devtools` and adds no dependencies.
+</Aside>
+
+## Start a recorder
+
+`DevtoolsState` wraps a client clone and records transitions from it:
+
+```rust
+use rs_query::devtools::DevtoolsState;
+
+let devtools = DevtoolsState::with_capacity(client.clone(), 512);
+devtools.record_from_client(); // subscribe + start collecting
+```
+
+`record_from_client` subscribes to the client's update stream and appends every state transition to the timeline until you call `stop_recording()`. `is_recording()` reports the current state.
+
+## Read cache rows
+
+`cache_rows` returns one `CacheRow` per cached query — key, status, fetch status, data timestamp, staleness:
+
+```rust
+for row in devtools.cache_rows() {
+    println!("{:?} {:?} {:?} in_flight={}",
+        row.key, row.status, row.fetch_status, row.in_flight);
+}
+```
+
+`row_fetch_status(in_flight)` is the helper the rows use to derive a `FetchStatus` from the in-flight flag.
+
+## Filter the timeline
+
+The timeline stores timestamped `TimelineEvent`s. `TimelineFilter` narrows by kind, cache key, and text search:
+
+```rust
+use rs_query::devtools::{TimelineFilter, TimelineKind};
+
+devtools.set_filter(TimelineFilter::new()
+    .kind(TimelineKind::Status)
+    .key_prefix("users")
+    .search("error"));
+
+for event in devtools.timeline() {
+    println!("{} {:?} {}", event.at_ms, event.kind, event.key);
+}
+```
+
+`timeline_len()` counts stored events; `clear_timeline()` empties it without touching the cache.
+
+## Drive cache actions
+
+The panel doubles as a control surface — the actions go through the client's normal pipeline, so filters and deduplication apply:
+
+```rust
+devtools.refetch("users/id=42");
+devtools.invalidate("users");
+devtools.remove("users/id=42");
+```
+
+## Render it in your framework
+
+The state is plain data with signal-friendly accessors. In a quoin app, read `cache_rows()` and `timeline()` inside your own signal pump and draw the UI you want — rows on the left, timeline on the right is the common layout. Every accessor is snapshot-based, so a slow renderer cannot corrupt the recorder.
+
+## Next steps
+
+<LinkCard title="Reference: Utilities" href="/rs-query/reference/utilities/" description="The devtools type signatures." />
+<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="What the timeline transitions actually mean." />
