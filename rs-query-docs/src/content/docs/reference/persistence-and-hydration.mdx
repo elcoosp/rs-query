@@ -1,0 +1,86 @@
+---
+title: Persistence and Hydration API
+description: Dehydrate/hydrate, the per-query persister, the client persister, and broadcast sync — every type and option.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+Three layers move cache state across time and process boundaries: `dehydrate`/`hydrate` produce and consume snapshots, the query persister stores individual results, and the client persister round-trips whole clients. Broadcast sync keeps live clients in step. This page is the signature reference.
+
+## Hydration types
+
+| Type / function                              | Description                                            |
+| -------------------------------------------- | ------------------------------------------------------ |
+| `dehydrate_state(&client, DehydrateOptions) -> DehydratedState` | Snapshot qualifying queries and mutations |
+| `hydrate_with_options(&client, &state, HydrateOptions)`         | Write a snapshot into a client            |
+| `DehydratedState`                             | `dehydrated_at_ms`, `queries: Vec<DehydratedQuery>`, `mutations: Vec<DehydratedMutation>` |
+| `DehydratedQuery`                             | `query_hash`, `query_key: Vec<String>`, `data_json`, `error_json`, `fetched_at_ms`, `is_stale`, `stale_time_ms`, `gc_time_ms`, `meta`, `query_type` |
+| `DehydratedMutation`                          | `mutation_key`, `data_updated_at_ms`, `is_paused`      |
+| `QUERY_TYPE_QUERY` / `QUERY_TYPE_INFINITE`     | `query_type` tags — infinite queries round-trip their pages |
+
+### `DehydrateOptions`
+
+| Option                      | Default   | Description                                        |
+| --------------------------- | --------- | -------------------------------------------------- |
+| `should_dehydrate_query(f)`  | everything | `Arc<dyn Fn(&DehydratedQuery) -> bool>`            |
+| `should_dehydrate_mutation(f)` | everything | `Arc<dyn Fn(&DehydratedMutation) -> bool>`        |
+| `should_redact_errors`       | `true`     | Replace errors with `QueryError::Redacted` (`"redacted"`) |
+| `serialize_data(f)`          | JSON default | Custom `Arc` serializer for `data_json`          |
+
+### `HydrateOptions`
+
+| Option              | Default | Description                                              |
+| ------------------- | ------- | -------------------------------------------------------- |
+| `should_overwrite`   | `false` | Overwrite locally *newer* cached data (the newer-data guard) |
+
+Hydration resets each restored query's `fetchStatus` to idle and applies the client's default options.
+
+## Per-query persister
+
+| Item                                        | Description                                            |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `QueryPersister::new(QueryPersisterOptions)` | The `experimental_createQueryPersister` port           |
+| `QueryPersisterOptions::new(storage)`        | Storage backend plus the knobs below                   |
+| `.with_max_age(Duration)`                    | Entries older than this read as absent                 |
+| `.with_buster(String)`                       | Version stamp; mismatch reads as absent                |
+| `.with_prefix(String)`                       | Namespace keys in the store                            |
+| `QueryStorage`                                | Trait: async key/value over `PersistedQuery` records   |
+| `InMemoryQueryStorage`                        | Built-in backend                                       |
+| `PersistedQuery` / `PersistedQueryState`      | Stored record and its state                            |
+| `serialize_persisted_query` / `deserialize_persisted_query` | JSON helpers behind the `serde` feature  |
+
+Restore is selective (touched-by-observer queries only) and a GC pass evicts expired records.
+
+## Client persister
+
+| Item                                            | Description                                        |
+| ----------------------------------------------- | -------------------------------------------------- |
+| `persist_query_client(&client, &options) -> PersistQueryClientHandle` | Restore + throttled save loop |
+| `persist_query_client_restore(&client, ...)`     | Restore step alone                                 |
+| `persist_query_client_save(&client, ...)`        | Save step alone                                    |
+| `PersistQueryClientOptions::new(persister)`       | `.with_max_age(...)` (default 24 h), `.with_buster(...)` |
+| `ClientPersister`                                 | Trait for the whole-client store                   |
+| `InMemoryClientPersister`                         | Built-in backend                                   |
+| `PersistedClient`                                 | `timestamp_ms`, `buster`, `client_state: DehydratedState` |
+| `PersistQueryClientHandle`                        | `unsubscribe`, save task handle                    |
+| `persist_with_retry(&client, ..., strategy)`      | Retry failing restores                             |
+| `remove_oldest_query`                             | Strategy: evict the oldest query each round        |
+| `MAX_RESTORE_RETRIES`                             | Retry ceiling for `persist_with_retry`             |
+
+## Broadcast sync
+
+| Item                                        | Description                                            |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `broadcast_query_client(&client, channel) -> BroadcastHandle` | Live sync across client instances    |
+| `broadcast_query_client_with_options(&client, channel, opts)` | Option-object form                   |
+| `BroadcastQueryClientOptions::new().with_channel(s)` | Channel configuration                          |
+| `BroadcastHandle`                             | `unsubscribe()`, `into_task()`, `is_applying_remote()` |
+| `publish_state(&client, channel)`             | One-shot snapshot push                                 |
+
+A re-entrancy guard guarantees remote updates are applied but never re-broadcast — no echo loops between tabs.
+
+## Next steps
+
+<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Task-oriented walkthrough of these layers." />
+<LinkCard title="Guide: Hydration and dehydration" href="/rs-query/guides/hydration/" description="Server-to-client round trips." />
