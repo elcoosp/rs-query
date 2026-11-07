@@ -1,0 +1,57 @@
+---
+title: The Caching Model Explained
+description: Stale-while-revalidate, two timestamps, structural sharing, and the state machine — why the cache behaves as it does.
+type: explanation
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+rs-query's cache is a stale-while-revalidate store over a state machine, inherited from TanStack Query v5. Once the model clicks, every option — `stale_time`, `gc_time`, `refetch_on_mount`, `structural_sharing` — becomes predictable. This page explains the *why* behind the behavior documented in the reference.
+
+## Two clocks, not one
+
+Every cached query carries two independent notions of time:
+
+- **Freshness** (`stale_time`) — how long data may be served *without* a refetch. Fresh data satisfies reads instantly. When `stale_time` elapses, the data is *stale*: still served, but flagged for refresh.
+- **Retention** (`gc_time`) — how long an unused query stays in memory after its last observer leaves. Garbage collection never deletes data someone is watching; it evicts the forgotten.
+
+The two clocks answer different questions — "is this data good enough?" and "should we remember it?" — which is why they are configured separately and default to `0` (immediately stale) and 5 minutes (evict after 5 idle minutes).
+
+## The state machine
+
+`QueryState<T>` has seven variants, and each exists to answer a rendering question:
+
+- `Idle` — nothing has happened; render nothing.
+- `Loading` — first fetch, nothing to show; render a spinner.
+- `LoadingWithPlaceholder(T)` — first fetch, but placeholder data renders instead of a spinner.
+- `Refetching(T)` — background refresh over visible data; render data *and* a subtle indicator.
+- `Success(T)` — fresh data; render and stop thinking.
+- `Stale(T)` — data served but flagged; render and maybe refetch on the next trigger.
+- `Error { error, stale_data }` — the fetch failed; if `stale_data` exists you render it with a banner, otherwise the error.
+
+The pairing with `QueryStatus` (is there data?) and `FetchStatus` (is something running?) is deliberate: status×fetch-status is the compressed view the flags and dashboards use, while the enum is the exhaustive view components match on.
+
+## Deduplication and identity
+
+Identity is the `cache_key()` hash of the `QueryKey`. A fetch for `users/id=42` and a concurrent observer for `users/id=42` coalesce into one in-flight fetch — the second caller subscribes to the first's result. This is what makes "one binding per component" safe: three components asking for the same key produce one HTTP call.
+
+## Structural sharing
+
+A refetch usually returns data that *mostly* equals the old data. Structural sharing (`sharing.rs`) compares new and old with `PartialEq` and reuses the old `Arc` when they are equal; observers detect the reuse with `Arc::ptr_eq` and skip the signal write. Downstream, equality checks stay cheap and views re-render less. Disable it per query with `.structural_sharing(false)` when data is large and rarely equal.
+
+## Invalidation is lazy until someone watches
+
+`invalidate_queries_filtered` with `RefetchType::None` only flips the stale flag. Nothing refetches until a trigger — an active observer, a mount, a focus event, a reconnect — asks for data. This laziness is the model's core economy: closed screens cost nothing, and reopening one refetches exactly what it renders. The `RefetchType` matrix (all/active/inactive/none) exists because the answer to "who refetches now?" genuinely differs per call site: optimistic writes want `Active`, nightly warmups want `All`, and cache pruning wants `None`.
+
+## Why retries look like `min(1000 · 2ⁿ, 30 s)`
+
+TanStack v5's backoff doubles each attempt from a 1-second base and caps at 30 seconds, with no jitter — deterministic math a test can assert. `RetryConfig` reproduces it exactly (`delay_for_attempt`), and the `Retryer` adds the decision layer: never, count-bounded, always, or a closure. Failures surface as `failure_count`/`failure_reason` on observers because retry progress is UI-relevant ("attempt 3 of 5…").
+
+## Where persistence fits
+
+Persistence layers serialize this model, they do not change it. The query persister stores result records with `max_age` and a `buster`; the client persister dehydrates the whole cache with timestamps; hydration restores with a newer-data guard and resets `fetchStatus` to idle — because a restored query is *stale data*, not *running work*.
+
+## Next steps
+
+<LinkCard title="Explanation: TanStack v5 parity" href="/rs-query/explanation/tanstack-parity/" description="How the semantics were audited and ported." />
+<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The state machine's exact API." />
