@@ -1,0 +1,78 @@
+---
+title: Utilities
+description: Streamed query config, Updater and functional updates, and the devtools types.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+The utilities round out the API surface: `streamed_query` for stream-producing fetches, `Updater` for value-or-function writes, and the `devtools` module for headless inspection.
+
+## `streamed_query` and config
+
+| Item                                | Description                                                  |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `streamed_query(closure)`            | Wrap a `Stream<Item = Result<T, E>>` producer for use as a fetch closure |
+| `StreamedQueryConfig<T>`              | Accumulator configuration                                    |
+| `.refetch_mode(RefetchMode)`          | What happens to cached data when a refetch starts            |
+| `.reducer(f)`                         | Fold each streamed item into the accumulator (default: push)  |
+| `.initial_value(value)`               | Seed for the accumulator                                     |
+
+| `RefetchMode` | Refetch behavior                                        |
+| ------------- | ------------------------------------------------------- |
+| `Replace`      | Clear cached data when the refetch starts (default)      |
+| `Append`       | Keep old data; append new items after it                 |
+| `Reset`        | Reset to `initial_value` when the refetch starts         |
+
+## `Updater<T>` and functional updates
+
+`Updater<T>` accepts either a value or a function of the previous value — the port of TanStack's value-or-function update style:
+
+```rust
+use rs_query::{Updater, functional_update};
+
+// Value form:
+let next = Updater::Value(42);
+// Functional form:
+let next = Updater::Function(|prev: i64| prev + 1);
+
+// Apply it against a current value:
+let applied = functional_update(next, 40); // 41
+```
+
+`set_query_data` accepts an `Updater`, so optimistic patches can derive from the current cached data without reading it first.
+
+## Devtools types (feature `devtools`)
+
+| Item                              | Description                                            |
+| --------------------------------- | ------------------------------------------------------ |
+| `DevtoolsState::new(client)`       | Recorder with default timeline capacity                |
+| `::with_capacity(client, usize)`   | Explicit capacity                                      |
+| `.record_from_client()` / `.stop_recording()` | Subscribe and collect / stop                |
+| `.is_recording() -> bool`          | Recorder state                                         |
+| `.cache_rows() -> Vec<CacheRow>`    | One row per cached query                               |
+| `.timeline() -> Vec<TimelineEvent>` | Timestamped transitions (filtered)                     |
+| `.timeline_len() -> usize` / `.clear_timeline()` | Size / reset                              |
+| `.set_filter(TimelineFilter)` / `.filter()` | Narrow by kind, key prefix, text search        |
+| `.refetch(cache_key)` / `.invalidate(cache_key)` / `.remove(cache_key)` | Cache actions    |
+| `CacheRow`                         | Key, status, fetch status, timestamps, staleness       |
+| `TimelineEvent` / `TimelineKind`    | One transition; its category                           |
+| `TimelineFilter`                    | `.kind(...)`, `.key_prefix(...)`, `.search(...)`       |
+| `row_fetch_status(in_flight)`       | Derive a `FetchStatus` from the in-flight flag         |
+
+## Example: value-or-function write
+
+```rust
+use rs_query::{QueryOptions, QueryKey, Updater};
+
+client.set_query_data::<i64>(
+    &QueryKey::new("counter"),
+    Updater::Function(|current| current + 1),
+    QueryOptions::default(),
+);
+```
+
+## Next steps
+
+<LinkCard title="Guide: Streamed queries" href="/rs-query/guides/streamed-queries/" description="Streaming patterns." />
+<LinkCard title="Guide: Headless devtools" href="/rs-query/guides/devtools/" description="Wire the recorder into your app." />
