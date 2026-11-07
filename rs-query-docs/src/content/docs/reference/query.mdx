@@ -1,0 +1,87 @@
+---
+title: Query and QueryState
+description: The Query builder and the QueryState state machine with every status enum.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+`Query<T>` describes one cacheable fetch: a `QueryKey`, an async fetch closure, and options. Running it produces a `QueryState<T>` — an exhaustive enum of cache situations. This page documents the builder, the state machine, and the three status enums every observer and snapshot uses.
+
+## `Query<T>` builder
+
+| Builder                            | Default            | Description                                                  |
+| ---------------------------------- | ------------------ | ------------------------------------------------------------ |
+| `Query::new(key, fetch_fn)`         | —                  | Key plus async closure returning `Result<T, E>`               |
+| `.stale_time(Duration)`             | `0` (immediately stale) | Freshness window after a successful fetch               |
+| `.stale_time_static()`              | —                  | Data never goes stale (`staleTime: 'static'`)                 |
+| `.gc_time(Duration)`                | `DEFAULT_GC_TIME`  | Idle eviction window                                          |
+| `.retry(RetryConfig)`               | `RetryConfig::default()` | Attempt count and backoff                               |
+| `.initial_data(data)`               | none               | Seed the cache as if fetched — marked with a timestamp of zero |
+| `.placeholder_data(PlaceholderData)` | none              | Show data while loading; never persisted to the cache         |
+| `.select(f)`                        | identity           | Transform the data for observers without changing the cache    |
+| `.enabled(bool)` / `.enabled_fn(f)` | enabled            | Gate automatic fetches                                         |
+| `.network_mode(mode)`               | `NetworkMode::Online` | Offline start/retry semantics                               |
+| `.structural_sharing(bool)`         | enabled            | `Arc` reuse when new data compares equal to old                |
+
+`initial_data` and `placeholder_data` differ in one sentence: initial data **is** cache data (with an old timestamp, so it is stale), placeholder data is **display-only** during loading and never enters the cache. `PlaceholderData` builds with `.value(data)`, `.function(f)` (derive from the previous query's data), or `.keep_previous()`.
+
+## `QueryState<T>`
+
+| Variant                       | Meaning                                                        |
+| ----------------------------- | -------------------------------------------------------------- |
+| `Idle`                         | Never run, or reset                                            |
+| `Loading`                      | First fetch in flight, nothing to show                         |
+| `LoadingWithPlaceholder(T)`    | First fetch in flight over placeholder data                    |
+| `Refetching(T)`                | Background refetch in flight over existing data                |
+| `Success(T)`                   | Fresh data available                                           |
+| `Stale(T)`                     | Data older than `stale_time`                                   |
+| `Error { error, stale_data }`  | Last fetch failed; previously cached data may still render     |
+
+Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `unwrap()`, `has_data()`, `status()`, `fetch_status()`, plus the predicates `is_idle()`, `is_loading()`, `is_refetching()`, `is_success()`, `is_stale()`, `is_error()`, and `error() -> Option<&QueryError>`.
+
+## Status enums
+
+### `QueryStatus` — is there data?
+
+| Variant   | `as_str()`   | Meaning                                        |
+| --------- | ------------ | ---------------------------------------------- |
+| `Pending`  | `"pending"`  | No data yet (idle, first load, paused await)    |
+| `Error`    | `"error"`    | Last fetch failed and no data is available      |
+| `Success`  | `"success"`  | Data is available                               |
+
+### `FetchStatus` — is something running?
+
+| Variant    | `as_str()`    | Meaning                                  |
+| ---------- | ------------- | ---------------------------------------- |
+| `Idle`      | `"idle"`      | Not fetching                             |
+| `Fetching`  | `"fetching"`  | A fetch is in flight                     |
+| `Paused`    | `"paused"`    | A fetch wants to run but is offline-paused |
+
+### `MutationStatus`
+
+`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documented fully on the [mutation reference](/rs-query/reference/mutations/).
+
+### `FetchDirection`
+
+`Forward` (pages append) and `Backward` (pages prepend) — the infinite-query pagination direction.
+
+## Example: exhaustive rendering
+
+```rust
+use rs_query::{QueryState, QueryStatus, FetchStatus};
+
+fn label(state: &QueryState<Vec<String>>) -> String {
+    match (state.status(), state.fetch_status()) {
+        (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
+        (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
+        (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
+        (status, fetch) => format!("{:?}/{:?}", status, fetch),
+    }
+}
+```
+
+## Next steps
+
+<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="The full option surface with defaults." />
+<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="Why the state machine looks like this." />
