@@ -1,0 +1,52 @@
+---
+title: rs-query — TanStack Query v5 parity for Rust
+description: Declarative, cache-aware async state management for Rust, portable to every quoin-supported UI framework.
+type: overview
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+**rs-query** is a Rust port of the [TanStack Query](https://tanstack.com/query) stack. You describe *what* data your application needs with a `Query` and a `QueryKey`; the crate handles caching, deduplication, retries, cancellation, invalidation, offline pause/resume, persistence, and hydration. The reactive layer is generic over [quoin](https://github.com/elcoosp/quoin)'s `ReactiveContext`, so the same code runs headless — or inside a quoin application on **gpui, leptos, dioxus, xilem, or floem**.
+
+No runtime is hardcoded: rs-query depends on `quoin-core` only and spawns work on a shared worker pool with portable timers. Version 0.2 targets **TanStack Query v5 parity** — the porting contract is audited upstream semantics, not a loose inspiration.
+
+<CardGrid stagger>
+  <Card title="Learn">
+    Take the [first-query tutorial](/rs-query/tutorials/first-query/) to go from an empty crate to a running, cached, cancelable fetch in about ten minutes.
+  </Card>
+  <Card title="Do">
+    Jump into the [guides](/rs-query/guides/install/) when you have a task: invalidate with filters, add optimistic mutations, persist the cache, or survive offline.
+  </Card>
+  <Card title="Look up">
+    The [reference](/rs-query/reference/client/) documents every public type with signatures, defaults, and examples. Nothing here is invented — each entry maps to source.
+  </Card>
+  <Card title="Understand">
+    Read the [explanations](/rs-query/explanation/architecture/) for the runtime seam, the caching model, and what TanStack v5 parity means in practice.
+  </Card>
+</CardGrid>
+
+## What you get
+
+- **A query engine** — `Query<T>` builders with `stale_time`, `gc_time`, `initial_data`, `placeholder_data`, and `select` transformations; stale-while-revalidate caching with structural sharing.
+- **TanStack-exact retry math** — `min(1000 · 2ⁿ, 30 s)` backoff, four retry decision modes, `failure_count` and `failure_reason` surfaced on observers.
+- **Mutations with lifecycle hooks** — `on_mutate` with rollback closures, scoped serialization, invalidation wiring, and cache-level callbacks.
+- **Filters everywhere** — key prefixes, exact matches, active/inactive, stale, status, and predicates drive `invalidate_queries_filtered`, `refetch_queries`, `cancel_queries`, `reset_queries`, and `remove_queries`.
+- **Offline first** — `NetworkMode` semantics, an `OnlineManager` with watch-based connectivity, and paused-fetch resume on reconnect.
+- **Persistence and hydration** — per-query persisters with `max_age` and `buster`, whole-client save/restore loops, `dehydrate`/`hydrate` with error redaction, and cross-instance broadcast sync.
+
+## The golden path
+
+Every new user completes the same workflow, headless or in a framework app:
+
+1. Hold a `QueryClient` in your application state.
+2. Describe a `Query` with a `QueryKey` and an async fetch closure.
+3. Run it with `spawn_query` (headless) or observe it with `use_query` (quoin app).
+4. Invalidate the key after a mutation; the cache refetches what is active.
+
+Start with the tutorial below — everything else builds on it.
+
+## Next steps
+
+<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Create a client, run a query, and inspect the state machine." />
+<LinkCard title="Installation" href="/rs-query/guides/install/" description="Wire rs-query into your project with a sibling quoin checkout." />
+<LinkCard title="GitHub repository" href="https://github.com/elcoosp/rs-query" description="Source, CI, and the 713-test quality gate." />
