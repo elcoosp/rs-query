@@ -1,0 +1,92 @@
+---
+title: Persisting the Cache
+description: Save queries individually or the whole client, with expiry, buster versioning, and retry strategies.
+type: how-to
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+rs-query ships two persistence layers with distinct jobs: the **query persister** stores individual query results (the `experimental_createQueryPersister` port), and the **client persister** dehydrates and restores the whole client in one record. This guide sets up both and finishes with cross-instance broadcast sync.
+
+<Aside type="note">
+Enable the `serde` feature for the JSON (de)serialization helpers used by real storage backends. The built-in storages are in-memory; implement the storage traits for your platform — IndexedDB, SQLite, a file.
+</Aside>
+
+## Per-query persistence
+
+`QueryPersister` caches each query's result under its key in a `QueryStorage`. Configure expiry with `max_age` and version-stamp entries with `buster`:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};
+
+let persister = QueryPersister::new(
+    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))
+        .with_buster("v1".into())
+        .with_max_age(Duration::from_secs(60 * 60 * 24))
+        .with_prefix("app".into()),
+);
+```
+
+The persister restores selectively — only queries touched by observers — and expired entries (past `max_age`) or mismatched busters are treated as absent. A GC pass evicts stale records.
+
+Implement `QueryStorage` to plug in a backend: it is an async key/value surface with `get`/`set`/`remove`/`clear` over `PersistedQuery` records. With the `serde` feature, `serialize_persisted_query` and `deserialize_persisted_query` handle the JSON conversion.
+
+## Whole-client persistence
+
+`persist_query_client` restores the dehydrated client state, then runs a throttled save loop on every cache change:
+
+```rust
+use std::sync::Arc;
+use rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};
+
+let handle = persist_query_client(
+    &client,
+    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),
+).await;
+```
+
+`PersistQueryClientOptions` also takes `.with_max_age(...)` and `.with_buster(...)` — defaults are 24 hours and an empty buster, matching TanStack. The returned `PersistQueryClientHandle` carries the save task and an `unsubscribe()` to stop the loop.
+
+## Restore and save as separate steps
+
+For full control — server-rendered HTML hydration, custom storage lifecycles — run the pieces yourself:
+
+```rust
+use rs_query::{persist_query_client_restore, persist_query_client_save};
+
+// Restore before creating observers:
+let restored = persist_query_client_restore(&client, &persister, &opts).await;
+
+// Save on demand:
+persist_query_client_save(&client, &persister, &opts).await;
+```
+
+## Retry a failing restore
+
+Corrupt or oversized records can make restores fail. `persist_with_retry` retries the restore, evicting the oldest query each round — the `remove_oldest_query` strategy — up to `MAX_RESTORE_RETRIES`:
+
+```rust
+use rs_query::{persist_with_retry, remove_oldest_query};
+
+persist_with_retry(&client, &persister, &opts, remove_oldest_query).await;
+```
+
+## Sync clients across tabs with broadcast
+
+`broadcast_query_client` keeps multiple `QueryClient` instances in sync through a channel. Remote updates apply with a re-entrancy guard, so an applied remote update is never re-broadcast:
+
+```rust
+use rs_query::broadcast_query_client;
+
+let handle = broadcast_query_client(&client, "app-cache");
+// handle.unsubscribe() stops syncing; handle.into_task() hands it to the runtime.
+```
+
+Pass `BroadcastQueryClientOptions::new().with_channel("app-cache")` to `broadcast_query_client_with_options` when you need the channel option object form. `publish_state(&client, "app-cache")` pushes a one-shot snapshot.
+
+## Next steps
+
+<LinkCard title="Guide: Hydration and dehydration" href="/rs-query/guides/hydration/" description="The dehydrate/hydrate layer the client persister builds on." />
+<LinkCard title="Reference: Persistence and hydration API" href="/rs-query/reference/persistence-and-hydration/" description="Every trait, option, and function signature." />
