@@ -1,0 +1,82 @@
+---
+title: Observers and Result Flags
+description: QueryObserver, QueriesObserver with combine, and the QueryResultFlags surface.
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+Observers turn cache state into render-ready results. `QueryObserver<T>` watches one query and derives TanStack's full boolean/timestamp flag block; `QueriesObserver<T>` watches many and supports `combine`. Framework bindings build on both.
+
+## `QueryObserver<T>`
+
+Constructed over a client, a key, and options; it subscribes to the cache and re-derives its result on every relevant update.
+
+```rust
+use std::sync::Arc;
+use rs_query::{QueryObserver, QueryOptions};
+
+let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());
+```
+
+The observer exposes the current `QueryState<T>`, the `QueryResultFlags` block, and `QueryStateUpdate` notifications on its bus receiver.
+
+## `QueryResultFlags`
+
+TanStack `QueryObserverResult` parity — every field, its type, and meaning:
+
+| Field                 | Type              | Meaning                                                |
+| --------------------- | ----------------- | ------------------------------------------------------ |
+| `data_updated_at`      | `Option<Instant>` | Last successful data write (observer-local)            |
+| `error_updated_at`     | `Option<Instant>` | Last error                                             |
+| `error_update_count`   | `u32`             | Errors this observer has observed                      |
+| `failure_count`        | `u32`             | Failed attempts for the current fetch (resets on fetch/success) |
+| `failure_reason`       | `Option<QueryError>` | Last failure reason                                 |
+| `is_fetched`           | `bool`            | Any fetch completed (success or error)                 |
+| `is_fetched_after_mount` | `bool`          | A fetch completed after this observer was constructed  |
+| `is_loading_error`     | `bool`            | Last fetch failed with no data available               |
+| `is_refetch_error`     | `bool`            | Last fetch failed but data is available                |
+| `is_placeholder_data`  | `bool`            | Placeholder is currently shown                         |
+| `is_paused`            | `bool`            | Network mode forbids starting a fetch now              |
+| `is_enabled`           | `bool`            | Options resolve to enabled                             |
+
+## `QueryStateUpdate` and `QueryStateVariant`
+
+Subscriptions deliver `QueryStateUpdate { key: String, state_variant: QueryStateVariant }` — the cache key plus the kind of transition. `QueryStateVariant` covers the transition classes (success, error, and the loading family) so consumers can filter without deserializing full states.
+
+## `QueriesObserver<T>`
+
+Coordinates a list of query specs, with TanStack's `combine`:
+
+| Method                                  | Description                                            |
+| --------------------------------------- | ------------------------------------------------------ |
+| `QueriesObserver::new(&client, specs: Vec<Query<T>>)` | Build over specs                          |
+| `.set_specs(specs) -> Vec<SpawnedTask<QueryState<T>>>` | Swap specs; returns the new tasks         |
+| `.run_all() -> Vec<SpawnedTask<...>>`    | Fetch every spec                                       |
+| `.refresh(idx) -> Option<SpawnedTask<...>>` | Refetch one index                                   |
+| `.sync()`                                | Reconcile observer state with the specs                |
+| `.results() -> &[QueryState<T>]`         | Current states                                         |
+| `.combine(f) -> R`                       | Fold all states into one derived value                 |
+| `.len()` / `.is_empty()` / `.specs()`    | Size and spec access                                   |
+
+`combine` is what powers `use_queries`: derive a `bool` like "all loaded", a tuple of rows, or any reduction — the signal updates when any input changes.
+
+## `MutationObserver<T, P>`
+
+The mutation-side observer: subscribes one mutation's `MutationState<T>` transitions for `use_mutation`. Pair it with `MutationFilters` through the cache when you need aggregate counts instead.
+
+## Example: combine for a composite view
+
+```rust
+use rs_query::QueriesObserver;
+
+let combined = observer.combine(|states| {
+    let loaded = states.iter().filter(|s| s.is_success()).count();
+    (loaded, states.len())
+});
+```
+
+## Next steps
+
+<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="The bindings that consume these observers." />
+<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The states the flags are derived from." />
