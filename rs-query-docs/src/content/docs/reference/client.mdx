@@ -1,0 +1,106 @@
+---
+title: QueryClient
+description: The cache, deduplication table, defaults, and runtime entry points — every QueryClient method.
+type: reference
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+`QueryClient` is the heart of rs-query. It owns the query cache, the deduplication table, default options, the online manager, and the runtime seam. It is cheap to clone; every clone shares the same cache. Create one with `QueryClient::new()` (default `PoolRuntime`), `QueryClient::with_runtime(...)`, or `QueryClient::with_context(&cx)` inside a quoin app.
+
+## Construction
+
+| Method                                   | Description                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `QueryClient::new()`                      | Default client on the shared worker pool (`PoolRuntime`)           |
+| `QueryClient::with_runtime(Arc<dyn QueryRuntime>)` | Custom runtime seam — deterministic tests, framework executors |
+| `QueryClient::with_context(&cx)`          | Build from a quoin `ReactiveContext`; fetches ride the framework executor |
+| `.runtime() -> &Arc<dyn QueryRuntime>`    | The runtime seam in use                                            |
+
+## Reading data
+
+| Method                                                | Description                                              |
+| ----------------------------------------------------- | -------------------------------------------------------- |
+| `get_query_data::<T>(&key) -> Option<T>`               | Cached data for the key, cloned                          |
+| `get_infinite_data::<T, P>(&key) -> Option<InfiniteData<T, P>>` | Pages and params of an infinite query           |
+| `get_query_options(&key) -> Option<QueryOptions>`      | The options the cache holds for this query               |
+| `get_query_state(&key) -> Option<QueryStateSnapshot>`  | Status/fetch-status/staleness snapshot                   |
+| `is_stale(&key) -> bool`                               | Stale by flag or by elapsed `stale_time`                 |
+| `query_snapshots(&filters) -> Vec<QuerySnapshot>`      | Filter-matched snapshots — preview bulk operations       |
+
+## Writing data
+
+| Method                                                          | Description                                   |
+| --------------------------------------------------------------- | --------------------------------------------- |
+| `set_query_data::<T>(&key, data, QueryOptions)`                   | Write data into the cache; notifies observers |
+| `set_infinite_data::<T, P>(&key, data, QueryOptions)`             | Replace an infinite query's pages             |
+| `append_infinite_page::<T, P>(&key, page, param, QueryOptions)`   | Append one page with windowing applied        |
+| `prepend_infinite_page::<T, P>(&key, page, param, QueryOptions)`  | Prepend one page with windowing applied       |
+| `set_default_options(options)` / `get_default_options()`          | Client-wide option defaults                   |
+
+## Imperative fetching
+
+| Method                                        | Description                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| `fetch_query::<T>(&query) -> QueryState<T>`    | Run the fetch now with retries forced off (TanStack `query()` semantics) |
+| `prefetch_query::<T>(&query)`                  | `fetch_query` that logs and discards errors — warmup                      |
+| `ensure_query_data::<T>(&query) -> QueryState<T>` | Return fresh cached data, fetch otherwise (TanStack `ensureQueryData`) |
+
+<Aside type="note">
+These three are client *methods* — the README of the crate lists them under "imperative API", and they live on `QueryClient`, not as free functions.
+</Aside>
+
+## Bulk operations
+
+All filter-based operations return the count of affected queries:
+
+| Method                                                | Description                                        |
+| ----------------------------------------------------- | -------------------------------------------------- |
+| `invalidate_queries(&pattern)`                         | Mark everything under `pattern` stale              |
+| `invalidate_queries_filtered(InvalidateQueryFilters)`  | Filters + `RefetchType` matrix                     |
+| `refetch_queries(&filters, RefetchQueryFilters)`       | Refetch with `cancel_refetch`/`throw_on_error`     |
+| `cancel_queries(&filters)` / `cancel_query(&key)`      | Cooperative cancellation                           |
+| `reset_queries(&filters)`                              | Back to `Idle`; drops data                         |
+| `remove_queries(&filters)`                             | Evict from the cache                               |
+| `refetch_all_stale()`                                  | Refetch every stale query                          |
+| `clear()`                                              | Drop the whole cache                               |
+| `gc()`                                                 | Sweep queries past `gc_time`                       |
+| `is_fetching_filtered(&filters) -> usize`              | Count matching in-flight queries                   |
+
+## Lifecycle and introspection
+
+| Method                                   | Description                                                   |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| `mount()` / `unmount()`                   | Register/tear down focus, online, and GC global handlers       |
+| `handle_reconnect()`                      | Run the reconnect sequence: refetch triggers + resume paused   |
+| `resume_paused_mutations() -> usize`      | Resume `OfflineFirst` mutations paused while offline           |
+| `is_fetching()` / `fetching_count()`      | Global fetch activity                                          |
+| `is_mutating()` / `mutating_count()`      | Global mutation activity                                       |
+| `is_in_flight(&key) -> bool`              | Dedup check for a key                                          |
+| `is_restoring()` / `set_is_restoring(bool)` | Hydration gate; holds fetches while restoring                |
+| `online_manager() -> &OnlineManager`      | The connectivity manager                                       |
+| `subscribe(&cache_key)`                   | `bus::Receiver<QueryStateUpdate>` for one query                |
+| `subscribe_all()`                         | Client-wide update stream                                      |
+| `subscribe_activity()`                    | `bus::Receiver<ActivityEvent>` — feeds `use_activity_feed`     |
+| `notify_subscribers(&cache_key, variant)` | Force-notify a key's subscribers                               |
+
+## Example: a client with defaults
+
+```rust
+use std::time::Duration;
+use rs_query::{QueryClient, QueryOptions};
+
+let client = QueryClient::new();
+client.set_default_options(
+    QueryOptions::default()
+        .stale_time(Duration::from_secs(30))
+        .gc_time(Duration::from_secs(300)),
+);
+```
+
+Every query created afterwards inherits these defaults unless it overrides them.
+
+## Next steps
+
+<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The builder and the state machine." />
+<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Every option, default, and trigger." />
