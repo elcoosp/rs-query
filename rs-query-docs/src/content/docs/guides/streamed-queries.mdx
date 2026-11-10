@@ -4,7 +4,7 @@ description: Accumulate a stream of partial results into one cache entry with st
 type: how-to
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 `streamed_query` is the port of TanStack's `streamedQuery` utility: the fetch closure returns a `Stream` of partial values instead of one future result, and the cache accumulates them into a single entry. Use it for server-sent events, chunked uploads, or any producer that emits progress.
 
@@ -12,16 +12,14 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 Wrap a stream-returning closure with `streamed_query`, then use the resulting value where a `Query` fetch closure goes:
 
-```rust
-use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};
+<Code lang="rust" code={`use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};
 
 let fetch = streamed_query(|_signal| async_stream {
     for chunk in chunks {
-        yield chunk;
+                    yield chunk;
     }
 })
-.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));
-```
+.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));`} />
 
 <Aside type="note">
 The exact stream combinator depends on your producer — any `Stream<Item = Result<T, E>>` works. The config's type parameter is the accumulated value type.
@@ -37,14 +35,12 @@ When a refetch starts, existing cached data can confuse the accumulation. `Refet
 | `Append`  | Keep old data; append the new stream's items after it        |
 | `Reset`   | Reset to the configured `initial_value` when the refetch starts |
 
-```rust
-use rs_query::RefetchMode;
+<Code lang="rust" code={`use rs_query::RefetchMode;
 
 let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
     .refetch_mode(RefetchMode::Reset)
     .initial_value(Vec::new())
-    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));
-```
+    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));`} />
 
 `.reducer(f)` customizes how each streamed item folds into the accumulator; the default appends. `.initial_value(v)` seeds the accumulator for `Reset` mode.
 
@@ -52,15 +48,13 @@ let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
 
 The wrapped value runs through `spawn_query`, `execute_query`, `ensure_query_data`, and the observers unchanged — the state machine, retries, and offline pausing all apply:
 
-```rust
-let query = Query::new(QueryKey::new("logs"), move || cfg_stream());
+<Code lang="rust" code={`let query = Query::new(QueryKey::new("logs"), move || cfg_stream());
 let handle = rs_query::spawn_query(&client, &query);
-let state = handle.await;
-```
+let state = handle.await;`} />
 
 Observers see intermediate states as the accumulator grows, so views render progress without extra code.
 
 ## Next steps
 
-<LinkCard title="Reference: Utilities" href="/rs-query/reference/utilities/" description="StreamedQueryConfig, RefetchMode, Updater, and devtools types." />
-<LinkCard title="Guide: Infinite queries" href="/rs-query/guides/infinite-queries/" description="When pages are the right shape instead of a stream." />
+<LinkCard title="Reference: Utilities" href="/reference/utilities/" description="StreamedQueryConfig, RefetchMode, Updater, and devtools types." />
+<LinkCard title="Guide: Infinite queries" href="/guides/infinite-queries/" description="When pages are the right shape instead of a stream." />

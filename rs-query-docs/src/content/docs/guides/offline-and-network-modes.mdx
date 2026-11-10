@@ -4,7 +4,7 @@ description: Configure NetworkMode semantics, drive the OnlineManager, and resum
 type: how-to
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 rs-query reproduces TanStack v5's offline story: a per-query `NetworkMode` decides whether fetches *start* and whether retries *continue*, an `OnlineManager` tracks connectivity, and paused work resumes automatically on reconnect. This guide wires the whole loop.
 
@@ -18,11 +18,9 @@ rs-query reproduces TanStack v5's offline story: a per-query `NetworkMode` decid
 | `Always`       | Yes                   | Yes                       | Local-first work, IPC, storage  |
 | `OfflineFirst` | Yes — the first attempt runs | No — retries pause   | Write-then-retry mutations      |
 
-```rust
-use rs_query::{NetworkMode, QueryOptions};
+<Code lang="rust" code={`use rs_query::{NetworkMode, QueryOptions};
 
-let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);
-```
+let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);`} />
 
 The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the matrix if you need the decision in your own code.
 
@@ -30,15 +28,13 @@ The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the m
 
 `OnlineManager` starts online and takes truth from your platform's connectivity callbacks — there is no OS listener baked in, which keeps the crate runtime-free:
 
-```rust
-use rs_query::OnlineManager;
+<Code lang="rust" code={`use rs_query::OnlineManager;
 
 let online = OnlineManager::new(); // starts online
 
 // Wire these to your platform:
 online.set_online(false); // in-flight retries pause; new fetches pause per mode
-online.set_online(true);  // paused work resumes
-```
+online.set_online(true);  // paused work resumes`} />
 
 The client owns one: `client.online_manager()` returns it, and `client.handle_reconnect()` runs the full reconnect sequence — refetch triggers for queries and `resume_paused_mutations`.
 
@@ -56,14 +52,12 @@ When connectivity returns, paused fetches resume from where they stopped — att
 
 Control whether stale data refreshes when the connection comes back, and how eagerly:
 
-```rust
-use rs_query::{QueryOptions, RefetchTrigger};
+<Code lang="rust" code={`use rs_query::{QueryOptions, RefetchTrigger};
 
 let options = QueryOptions::default()
     .refetch_on_reconnect(RefetchTrigger::Always) // even fresh data refetches
     .refetch_on_mount(RefetchTrigger::Enabled)    // default: refetch if stale
-    .refetch_on_window_focus(RefetchTrigger::Disabled);
-```
+    .refetch_on_window_focus(RefetchTrigger::Disabled);`} />
 
 `RefetchTrigger` has three variants: `Enabled` (refetch when stale — the default), `Always`, and `Disabled`.
 
@@ -77,5 +71,5 @@ Focus and reconnect refetches run through the same `refetch_queries` pipeline as
 
 ## Next steps
 
-<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Make offline data survive restarts." />
-<LinkCard title="Reference: Runtime, network, and managers" href="/rs-query/reference/runtime-and-network/" description="OnlineManager, managers, and the runtime seam." />
+<LinkCard title="Guide: Persisting the cache" href="/guides/persistence/" description="Make offline data survive restarts." />
+<LinkCard title="Reference: Runtime, network, and managers" href="/reference/runtime-and-network/" description="OnlineManager, managers, and the runtime seam." />

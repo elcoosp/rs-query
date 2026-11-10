@@ -4,7 +4,7 @@ description: Observe queries and mutations from any quoin-supported framework �
 type: how-to
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 The `hooks` module is generic over `quoin_core::ReactiveContext`. You write the calls once; they compile against any quoin adapter and return that framework's own `Signal` type. This guide covers all ten bindings and the house rules that keep them lag-tolerant.
 
@@ -27,12 +27,10 @@ The `hooks` module is generic over `quoin_core::ReactiveContext`. You write the 
 
 `use_query` returns a binding with three capabilities: the `state` signal, `refetch()`, and `abort_fetch()`:
 
-```rust
-let todo = use_query(&cx, &client, &query);
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
 todo.state.get();    // QueryState<Todo>
 todo.refetch();
-todo.abort_fetch();
-```
+todo.abort_fetch();`} />
 
 Dropping the binding cancels its pump and aborts the in-flight fetch. Mount one binding per component that needs the data — the cache deduplicates the fetches.
 
@@ -40,32 +38,26 @@ Dropping the binding cancels its pump and aborts the in-flight fetch. Mount one 
 
 `use_mutation` exposes `mutate` and `reset`. Per-call callbacks go in `MutateOptions` and fire after the mutation's own hooks:
 
-```rust
-let save = use_mutation(&cx, &client, &save_mutation);
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
 save.mutate(patch, MutateOptions::new()
     .on_success(|_client, _data| toast("saved"))
     .on_error(|_client, error| toast(&error.to_string())));
-save.reset();
-```
+save.reset();`} />
 
 ## Composing with `use_queries` and `combine`
 
 `use_queries` observes several queries at once. `QueriesObserver::combine` folds their states into one derived value — the `useQueries` `combine` option:
 
-```rust
-let combined = observer.combine(|states| {
+<Code lang="rust" code={`let combined = observer.combine(|states| {
     states.iter().filter(|s| s.is_success()).count()
-});
-```
+});`} />
 
 ## Feeds and counters for dashboards
 
 Status bars and devtool-ish UIs ride the activity hooks instead of polling:
 
-```rust
-let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
-let feed = use_activity_feed(&cx, client.subscribe_activity());
-```
+<Code lang="rust" code={`let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
+let feed = use_activity_feed(&cx, client.subscribe_activity());`} />
 
 `use_activity_feed` takes a `bus::Receiver<E>` — `client.subscribe_activity()` yields `ActivityEvent`s as fetch and mutation activity changes — and caps the buffer so a chatty cache cannot grow the signal unboundedly.
 
@@ -83,5 +75,5 @@ Under the hood the pumps are lag-tolerant: a slow view thread misses intermediat
 
 ## Next steps
 
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="Exact signatures for all ten bindings." />
-<LinkCard title="Tutorial: Queries in a quoin app" href="/rs-query/tutorials/quoin-app/" description="The end-to-end reactive loop." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="Exact signatures for all ten bindings." />
+<LinkCard title="Tutorial: Queries in a quoin app" href="/tutorials/quoin-app/" description="The end-to-end reactive loop." />

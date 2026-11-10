@@ -4,7 +4,7 @@ description: The cache, deduplication table, defaults, and runtime entry points 
 type: reference
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 `QueryClient` is the heart of rs-query. It owns the query cache, the deduplication table, default options, the online manager, and the runtime seam. It is cheap to clone; every clone shares the same cache. Create one with `QueryClient::new()` (default `PoolRuntime`), `QueryClient::with_runtime(...)`, or `QueryClient::with_context(&cx)` inside a quoin app.
 
@@ -86,21 +86,19 @@ All filter-based operations return the count of affected queries:
 
 ## Example: a client with defaults
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{QueryClient, QueryOptions};
 
 let client = QueryClient::new();
 client.set_default_options(
     QueryOptions::default()
-        .stale_time(Duration::from_secs(30))
-        .gc_time(Duration::from_secs(300)),
-);
-```
+                    .stale_time(Duration::from_secs(30))
+                    .gc_time(Duration::from_secs(300)),
+);`} />
 
 Every query created afterwards inherits these defaults unless it overrides them.
 
 ## Next steps
 
-<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The builder and the state machine." />
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Every option, default, and trigger." />
+<LinkCard title="Reference: Query and QueryState" href="/reference/query/" description="The builder and the state machine." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="Every option, default, and trigger." />

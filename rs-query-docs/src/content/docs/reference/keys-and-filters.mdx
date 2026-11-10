@@ -4,7 +4,7 @@ description: QueryKey construction and hashing, the four filter structs, snapsho
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 Keys identify; filters select. `QueryKey` builds the hierarchical identity of a query, and the filter structs describe *which* queries a bulk operation touches. Both are plain data with builder methods.
 
@@ -36,11 +36,9 @@ Keys identify; filters select. `QueryKey` builds the hierarchical identity of a 
 
 ## `InvalidateQueryFilters` and `RefetchQueryFilters`
 
-```rust
-InvalidateQueryFilters::new()
+<Code lang="rust" code={`InvalidateQueryFilters::new()
     .filters(QueryFilters::with_key(QueryKey::new("users")))
-    .refetch_type(RefetchType::Active)
-```
+    .refetch_type(RefetchType::Active)`} />
 
 | Struct                  | Builders                                       | Used by                    |
 | ----------------------- | ---------------------------------------------- | -------------------------- |
@@ -75,8 +73,7 @@ Filters and predicates see immutable snapshots, not live queries:
 
 ## Example: preview then act
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{QueryFilters, QueryKey};
 
 let stale_users = QueryFilters::with_key(QueryKey::new("users"))
@@ -85,10 +82,9 @@ let stale_users = QueryFilters::with_key(QueryKey::new("users"))
 
 let matched = client.query_snapshots(&stale_users);
 println!("would reset {} queries", matched.len());
-let _ = client.reset_queries(&stale_users);
-```
+let _ = client.reset_queries(&stale_users);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Working with keys and filters" href="/rs-query/guides/keys-and-filters/" description="Task-oriented patterns for the same API." />
-<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="The bulk operations these filters drive." />
+<LinkCard title="Guide: Working with keys and filters" href="/guides/keys-and-filters/" description="Task-oriented patterns for the same API." />
+<LinkCard title="Reference: QueryClient" href="/reference/client/" description="The bulk operations these filters drive." />

@@ -4,7 +4,7 @@ description: The Query builder and the QueryState state machine with every statu
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 `Query<T>` describes one cacheable fetch: a `QueryKey`, an async fetch closure, and options. Running it produces a `QueryState<T>` — an exhaustive enum of cache situations. This page documents the builder, the state machine, and the three status enums every observer and snapshot uses.
 
@@ -60,7 +60,7 @@ Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `u
 
 ### `MutationStatus`
 
-`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documented fully on the [mutation reference](/rs-query/reference/mutations/).
+`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documented fully on the [mutation reference](/reference/mutations/).
 
 ### `FetchDirection`
 
@@ -68,20 +68,18 @@ Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `u
 
 ## Example: exhaustive rendering
 
-```rust
-use rs_query::{QueryState, QueryStatus, FetchStatus};
+<Code lang="rust" code={`use rs_query::{QueryState, QueryStatus, FetchStatus};
 
 fn label(state: &QueryState<Vec<String>>) -> String {
     match (state.status(), state.fetch_status()) {
-        (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
-        (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
-        (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
-        (status, fetch) => format!("{:?}/{:?}", status, fetch),
+                    (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
+                    (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
+                    (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
+                    (status, fetch) => format!("{:?}/{:?}", status, fetch),
     }
-}
-```
+}`} />
 
 ## Next steps
 
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="The full option surface with defaults." />
-<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="Why the state machine looks like this." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="The full option surface with defaults." />
+<LinkCard title="Explanation: The caching model" href="/explanation/caching-model/" description="Why the state machine looks like this." />

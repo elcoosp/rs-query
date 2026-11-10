@@ -4,7 +4,7 @@ description: The complete QueryOptions surface — staleness, GC, retries, trigg
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 `QueryOptions` is the flat option surface that mirrors TanStack v5's per-query options, field for field. Every builder method consumes and returns `Self`. Options attach to a `Query` via builder methods, flow through `QueryClient::set_default_options`, and ride on `set_query_data` calls.
 
@@ -74,8 +74,7 @@ The retryer module adds the decision layer: `RetryDecision::Never`, `RetryDecisi
 
 ## Example
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};
 
 let options = QueryOptions::default()
@@ -84,10 +83,9 @@ let options = QueryOptions::default()
     .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))
     .refetch_on_reconnect(RefetchTrigger::Always)
     .network_mode(NetworkMode::OfflineFirst)
-    .meta("source", "api");
-```
+    .meta("source", "api");`} />
 
 ## Next steps
 
-<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="Where defaults and options meet the cache." />
-<LinkCard title="Reference: Errors and cancellation" href="/rs-query/reference/errors-and-cancellation/" description="What happens when every retry fails." />
+<LinkCard title="Reference: QueryClient" href="/reference/client/" description="Where defaults and options meet the cache." />
+<LinkCard title="Reference: Errors and cancellation" href="/reference/errors-and-cancellation/" description="What happens when every retry fails." />

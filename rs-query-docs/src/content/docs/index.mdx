@@ -1,10 +1,21 @@
 ---
 title: rs-query — TanStack Query v5 parity for Rust
+template: splash
 description: Declarative, cache-aware async state management for Rust, portable to every quoin-supported UI framework.
 type: overview
+hero:
+  title: "rs-query — TanStack Query v5 parity for Rust"
+  tagline: "Declarative, cache-aware async state management for Rust, portable to every quoin-supported UI framework."
+  image:
+    file: ../../assets/logo.png
+    alt: "rs-query — TanStack Query v5 parity for Rust"
+  actions:
+    - text: Start the tutorial
+      link: /tutorials/first-query/
+      icon: right-arrow
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkButton, LinkCard } from '@astrojs/starlight/components';
 
 **rs-query** is a Rust port of the [TanStack Query](https://tanstack.com/query) stack. You describe *what* data your application needs with a `Query` and a `QueryKey`; the crate handles caching, deduplication, retries, cancellation, invalidation, offline pause/resume, persistence, and hydration. The reactive layer is generic over [quoin](https://github.com/elcoosp/quoin)'s `ReactiveContext`, so the same code runs headless — or inside a quoin application on **gpui, leptos, dioxus, xilem, or floem**.
 
@@ -12,18 +23,20 @@ No runtime is hardcoded: rs-query depends on `quoin-core` only and spawns work o
 
 <CardGrid stagger>
   <Card title="Learn">
-    Take the [first-query tutorial](/rs-query/tutorials/first-query/) to go from an empty crate to a running, cached, cancelable fetch in about ten minutes.
+    Take the [first-query tutorial](/tutorials/first-query/) to go from an empty crate to a running, cached, cancelable fetch in about ten minutes.
   </Card>
   <Card title="Do">
-    Jump into the [guides](/rs-query/guides/install/) when you have a task: invalidate with filters, add optimistic mutations, persist the cache, or survive offline.
+    Jump into the [guides](/guides/install/) when you have a task: invalidate with filters, add optimistic mutations, persist the cache, or survive offline.
   </Card>
   <Card title="Look up">
-    The [reference](/rs-query/reference/client/) documents every public type with signatures, defaults, and examples. Nothing here is invented — each entry maps to source.
+    The [reference](/reference/client/) documents every public type with signatures, defaults, and examples. Nothing here is invented — each entry maps to source.
   </Card>
   <Card title="Understand">
-    Read the [explanations](/rs-query/explanation/architecture/) for the runtime seam, the caching model, and what TanStack v5 parity means in practice.
+    Read the [explanations](/explanation/architecture/) for the runtime seam, the caching model, and what TanStack v5 parity means in practice.
   </Card>
 </CardGrid>
+
+<LinkButton href="/tutorials/first-query/" icon="right-arrow">Start the tutorial</LinkButton>
 
 ## What you get
 
@@ -47,6 +60,6 @@ Start with the tutorial below — everything else builds on it.
 
 ## Next steps
 
-<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Create a client, run a query, and inspect the state machine." />
-<LinkCard title="Installation" href="/rs-query/guides/install/" description="Wire rs-query into your project with a sibling quoin checkout." />
+<LinkCard title="Tutorial: Your first query" href="/tutorials/first-query/" description="Create a client, run a query, and inspect the state machine." />
+<LinkCard title="Installation" href="/guides/install/" description="Wire rs-query into your project with a sibling quoin checkout." />
 <LinkCard title="GitHub repository" href="https://github.com/elcoosp/rs-query" description="Source, CI, and the 713-test quality gate." />

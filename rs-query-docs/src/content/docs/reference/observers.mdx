@@ -4,7 +4,7 @@ description: QueryObserver, QueriesObserver with combine, and the QueryResultFla
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 Observers turn cache state into render-ready results. `QueryObserver<T>` watches one query and derives TanStack's full boolean/timestamp flag block; `QueriesObserver<T>` watches many and supports `combine`. Framework bindings build on both.
 
@@ -12,12 +12,10 @@ Observers turn cache state into render-ready results. `QueryObserver<T>` watches
 
 Constructed over a client, a key, and options; it subscribes to the cache and re-derives its result on every relevant update.
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{QueryObserver, QueryOptions};
 
-let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());
-```
+let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());`} />
 
 The observer exposes the current `QueryState<T>`, the `QueryResultFlags` block, and `QueryStateUpdate` notifications on its bus receiver.
 
@@ -67,16 +65,14 @@ The mutation-side observer: subscribes one mutation's `MutationState<T>` transit
 
 ## Example: combine for a composite view
 
-```rust
-use rs_query::QueriesObserver;
+<Code lang="rust" code={`use rs_query::QueriesObserver;
 
 let combined = observer.combine(|states| {
     let loaded = states.iter().filter(|s| s.is_success()).count();
     (loaded, states.len())
-});
-```
+});`} />
 
 ## Next steps
 
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="The bindings that consume these observers." />
-<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The states the flags are derived from." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="The bindings that consume these observers." />
+<LinkCard title="Reference: Query and QueryState" href="/reference/query/" description="The states the flags are derived from." />

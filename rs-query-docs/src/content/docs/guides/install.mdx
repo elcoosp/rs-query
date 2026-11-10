@@ -4,7 +4,7 @@ description: Add rs-query to a Rust project with a sibling quoin checkout and op
 type: how-to
 ---
 
-import { FileTree, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, FileTree, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
 rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. Until the quoin crates are published, you check out both repositories side by side and use path dependencies. This guide sets up that layout and shows the optional feature gates.
 
@@ -12,10 +12,8 @@ rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. U
 
 Clone the two repositories into the same parent directory:
 
-```bash
-git clone https://github.com/elcoosp/quoin
-git clone https://github.com/elcoosp/rs-query
-```
+<Code lang="bash" code={`git clone https://github.com/elcoosp/quoin
+git clone https://github.com/elcoosp/rs-query`} />
 
 The resulting layout must look like this, because rs-query resolves its quoin dependency as `../quoin/quoin-core`:
 
@@ -32,10 +30,8 @@ The resulting layout must look like this, because rs-query resolves its quoin de
   <TabItem label="Sibling checkout (recommended)">
     From your application crate, point at the local rs-query checkout:
 
-    ```toml
-    [dependencies]
-    rs-query = { path = "../rs-query" }
-    ```
+<Code lang="toml" code={`  [dependencies]
+  rs-query = { path = "../rs-query" }`} />
   </TabItem>
   <TabItem label="Pinned git revision">
     For CI or teammates without the full checkout layout, vendor both repositories with a workspace or a script, then depend on the vendored path. A bare `git` dependency on rs-query alone fails to resolve, because `quoin-core` is a path dependency that Cargo cannot fetch from the rs-query repository.
@@ -44,9 +40,7 @@ The resulting layout must look like this, because rs-query resolves its quoin de
 
 Verify the toolchain resolves:
 
-```bash
-cargo check
-```
+<Code lang="bash" code={`cargo check`} />
 
 ## Choose feature gates
 
@@ -60,10 +54,8 @@ rs-query ships with two optional features. Both are opt-in and add nothing to th
 
 Enable them as needed:
 
-```toml
-[dependencies]
-rs-query = { path = "../rs-query", features = ["serde", "devtools"] }
-```
+<Code lang="toml" code={`[dependencies]
+rs-query = { path = "../rs-query", features = ["serde", "devtools"] }`} />
 
 ## Runtime requirements
 
@@ -76,5 +68,5 @@ Inside a quoin application, build the client from the framework context so fetch
 
 ## Next steps
 
-<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Run and invalidate your first query." />
-<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="How the runtime seam keeps rs-query framework-free." />
+<LinkCard title="Tutorial: Your first query" href="/tutorials/first-query/" description="Run and invalidate your first query." />
+<LinkCard title="Explanation: Architecture" href="/explanation/architecture/" description="How the runtime seam keeps rs-query framework-free." />

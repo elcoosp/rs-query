@@ -4,9 +4,9 @@ description: Mutation, MutateOptions, MutationState, MutationCache, MutationScop
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
-`Mutation<T, P>` runs an async write with lifecycle hooks, retry control, and scope serialization. The `MutationCache` tracks entries and broadcasts events. This page is the signature reference; the [mutation guide](/rs-query/guides/mutations/) shows the patterns.
+`Mutation<T, P>` runs an async write with lifecycle hooks, retry control, and scope serialization. The `MutationCache` tracks entries and broadcasts events. This page is the signature reference; the [mutation guide](/guides/mutations/) shows the patterns.
 
 ## `Mutation<T, P>` builder
 
@@ -84,17 +84,15 @@ Side-effect order, TanStack-exact: cache `on_mutate` → options `on_mutate` →
 
 ## Example: scoped saves with cache callbacks
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{MutationCache, MutationCacheConfig, MutationScope};
 
 let cache = MutationCache::with_config(MutationCacheConfig {
     on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),
     ..MutationCacheConfig::default()
-});
-```
+});`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Mutations and optimistic updates" href="/rs-query/guides/mutations/" description="The optimistic-update walkthrough." />
-<LinkCard title="Reference: Errors and cancellation" href="/rs-query/reference/errors-and-cancellation/" description="QueryError, the type behind every failure." />
+<LinkCard title="Guide: Mutations and optimistic updates" href="/guides/mutations/" description="The optimistic-update walkthrough." />
+<LinkCard title="Reference: Errors and cancellation" href="/reference/errors-and-cancellation/" description="QueryError, the type behind every failure." />

@@ -4,7 +4,7 @@ description: The ten quoin bindings — use_query, use_mutation, use_infinite_qu
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 The `hooks` module is generic over any `quoin_core::ReactiveContext`. Each binding returns the host framework's own `Signal` type and stays in sync through lag-tolerant cache pumps. Dropping a binding cancels its pump and aborts its fetch.
 
@@ -19,32 +19,26 @@ The `hooks` module is generic over any `quoin_core::ReactiveContext`. Each bindi
 
 ### The query binding
 
-```rust
-let todo = use_query(&cx, &client, &query);
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
 todo.state.get();     // QueryState<Todo>
 todo.refetch();       // re-run now
-todo.abort_fetch();   // cancel in-flight
-```
+todo.abort_fetch();   // cancel in-flight`} />
 
 ### The infinite binding
 
-```rust
-let feed = use_infinite_query(&cx, &client, &query);
+<Code lang="rust" code={`let feed = use_infinite_query(&cx, &client, &query);
 feed.fetch_next_page();
 feed.fetch_previous_page();
 feed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
 feed.has_next_page();          feed.has_previous_page();
 feed.is_fetching_next_page();  feed.is_fetching_previous_page();
-feed.observer();               // Arc<InfiniteQueryObserver<T, P>>
-```
+feed.observer();               // Arc<InfiniteQueryObserver<T, P>>`} />
 
 ### The mutation binding
 
-```rust
-let save = use_mutation(&cx, &client, &save_mutation);
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
 save.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));
-save.reset();
-```
+save.reset();`} />
 
 ## Activity bindings
 
@@ -77,5 +71,5 @@ The pumps are lag-tolerant by design: a slow view thread misses intermediate wri
 
 ## Next steps
 
-<LinkCard title="Guide: Framework bindings" href="/rs-query/guides/framework-bindings/" description="Task-oriented patterns for all ten bindings." />
-<LinkCard title="Reference: Observers" href="/rs-query/reference/observers/" description="The flags behind every binding's signal." />
+<LinkCard title="Guide: Framework bindings" href="/guides/framework-bindings/" description="Task-oriented patterns for all ten bindings." />
+<LinkCard title="Reference: Observers" href="/reference/observers/" description="The flags behind every binding's signal." />

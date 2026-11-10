@@ -4,7 +4,7 @@ description: Streamed query config, Updater and functional updates, and the devt
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 The utilities round out the API surface: `streamed_query` for stream-producing fetches, `Updater` for value-or-function writes, and the `devtools` module for headless inspection.
 
@@ -28,8 +28,7 @@ The utilities round out the API surface: `streamed_query` for stream-producing f
 
 `Updater<T>` accepts either a value or a function of the previous value — the port of TanStack's value-or-function update style:
 
-```rust
-use rs_query::{Updater, functional_update};
+<Code lang="rust" code={`use rs_query::{Updater, functional_update};
 
 // Value form:
 let next = Updater::Value(42);
@@ -37,8 +36,7 @@ let next = Updater::Value(42);
 let next = Updater::Function(|prev: i64| prev + 1);
 
 // Apply it against a current value:
-let applied = functional_update(next, 40); // 41
-```
+let applied = functional_update(next, 40); // 41`} />
 
 `set_query_data` accepts an `Updater`, so optimistic patches can derive from the current cached data without reading it first.
 
@@ -62,17 +60,15 @@ let applied = functional_update(next, 40); // 41
 
 ## Example: value-or-function write
 
-```rust
-use rs_query::{QueryOptions, QueryKey, Updater};
+<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey, Updater};
 
 client.set_query_data::<i64>(
     &QueryKey::new("counter"),
     Updater::Function(|current| current + 1),
     QueryOptions::default(),
-);
-```
+);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Streamed queries" href="/rs-query/guides/streamed-queries/" description="Streaming patterns." />
-<LinkCard title="Guide: Headless devtools" href="/rs-query/guides/devtools/" description="Wire the recorder into your app." />
+<LinkCard title="Guide: Streamed queries" href="/guides/streamed-queries/" description="Streaming patterns." />
+<LinkCard title="Guide: Headless devtools" href="/guides/devtools/" description="Wire the recorder into your app." />

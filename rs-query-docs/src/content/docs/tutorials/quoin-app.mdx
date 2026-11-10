@@ -4,24 +4,22 @@ description: Wire rs-query into a gpui, leptos, dioxus, xilem, or floem applicat
 type: tutorial
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
-In this tutorial you take the headless query from the [first tutorial](/rs-query/tutorials/first-query/) and observe it from inside a quoin application. The bindings are generic over any `quoin_core::ReactiveContext`, so the code below is identical on gpui, leptos, dioxus, xilem, and floem — only the surrounding view syntax differs. Every binding returns your framework's **own** signal type.
+In this tutorial you take the headless query from the [first tutorial](/tutorials/first-query/) and observe it from inside a quoin application. The bindings are generic over any `quoin_core::ReactiveContext`, so the code below is identical on gpui, leptos, dioxus, xilem, and floem — only the surrounding view syntax differs. Every binding returns your framework's **own** signal type.
 
 <Aside type="note">
-Prerequisites: a quoin application skeleton with a `ReactiveContext` available (usually `cx`), and the [installation](/rs-query/guides/install/) from the first tutorial.
+Prerequisites: a quoin application skeleton with a `ReactiveContext` available (usually `cx`), and the [installation](/guides/install/) from the first tutorial.
 </Aside>
 
 ## 1. Build the client from the framework context
 
 Construct the client with `QueryClient::with_context(&cx)` so fetches and timers ride the framework's own executor instead of the default worker pool:
 
-```rust
-use rs_query::QueryClient;
+<Code lang="rust" code={`use rs_query::QueryClient;
 
 // Inside your app setup:
-let client = QueryClient::with_context(&cx);
-```
+let client = QueryClient::with_context(&cx);`} />
 
 Store the client in your application state. Like `QueryClient::new()`, it is cheap to clone and shares one cache across clones.
 
@@ -29,15 +27,13 @@ Store the client in your application state. Like `QueryClient::new()`, it is che
 
 Inside a component, call `use_query` with the context, the client, and the query. The binding pumps cache updates into a framework signal and stays in sync through lag-tolerant cache pumps:
 
-```rust
-use rs_query::use_query;
+<Code lang="rust" code={`use rs_query::use_query;
 
 // Inside a component, where cx is the framework's ReactiveContext:
 let todo = use_query(&cx, &client, &query);
 
 // todo.state is the framework's own signal: read it from your view.
-let state = todo.state.get(); // QueryState<Todo>
-```
+let state = todo.state.get(); // QueryState<Todo>`} />
 
 Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-on-unmount is the default behavior, not an opt-in.
 
@@ -45,47 +41,41 @@ Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-
 
 `QueryState<T>` has a variant for every cache situation, so `match` covers rendering exhaustively:
 
-```rust
-match state {
+<Code lang="rust" code={`match state {
     rs_query::QueryState::Idle | rs_query::QueryState::Loading => render_spinner(),
     rs_query::QueryState::LoadingWithPlaceholder(data)
     | rs_query::QueryState::Success(data)
     | rs_query::QueryState::Stale(data)
     | rs_query::QueryState::Refetching(data) => render_todo(data),
     rs_query::QueryState::Error { error, stale_data } => match stale_data {
-        Some(data) => render_todo_with_banner(data, error),
-        None => render_error(error),
+                    Some(data) => render_todo_with_banner(data, error),
+                    None => render_error(error),
     },
-}
-```
+}`} />
 
 <Aside type="tip">
-You rarely write this match by hand. The [QueryObserver](/rs-query/reference/observers/) result flags — `is_placeholder_data`, `is_refetch_error`, `is_paused` — exist to turn these branches into compact boolean logic.
+You rarely write this match by hand. The [QueryObserver](/reference/observers/) result flags — `is_placeholder_data`, `is_refetch_error`, `is_paused` — exist to turn these branches into compact boolean logic.
 </Aside>
 
 ## 4. Trigger a refetch from the view
 
 The binding exposes `refetch` and `abort_fetch` for user-driven actions:
 
-```rust
-todo.refetch();     // re-run the query now
-todo.abort_fetch(); // cancel the in-flight fetch
-```
+<Code lang="rust" code={`todo.refetch();     // re-run the query now
+todo.abort_fetch(); // cancel the in-flight fetch`} />
 
 ## 5. Mutate and invalidate
 
-Wire a save button to a mutation with `use_mutation`, and invalidate the list key on success. The mutation lifecycle runs cache-level and options-level hooks in TanStack order (see [Mutations and optimistic updates](/rs-query/guides/mutations/)):
+Wire a save button to a mutation with `use_mutation`, and invalidate the list key on success. The mutation lifecycle runs cache-level and options-level hooks in TanStack order (see [Mutations and optimistic updates](/guides/mutations/)):
 
-```rust
-use rs_query::{Mutation, MutateOptions};
+<Code lang="rust" code={`use rs_query::{Mutation, MutateOptions};
 
 let save = use_mutation(&cx, &client, &save_mutation);
 
 // On button click:
 save.mutate(patch, MutateOptions::new().on_success(|_client, _data| {
     // the mutation's own invalidates_key already refetched active queries
-}));
-```
+}));`} />
 
 The signal updates again when the invalidated query refetches — no manual wiring between mutation and view.
 
@@ -93,11 +83,9 @@ The signal updates again when the invalidated query refetches — no manual wiri
 
 If the client restores persisted state at startup, hold the `is_restoring` flag until the restore finishes. Bindings respect the gate and hold `fetchStatus` at `idle` while it is set:
 
-```rust
-client.set_is_restoring(true);
+<Code lang="rust" code={`client.set_is_restoring(true);
 // ... restore ...
-client.set_is_restoring(false);
-```
+client.set_is_restoring(false);`} />
 
 ## What you built
 
@@ -105,5 +93,5 @@ A framework-bound query with cancel-on-unmount, exhaustive state rendering, user
 
 ## Next steps
 
-<LinkCard title="Guide: Framework bindings" href="/rs-query/guides/framework-bindings/" description="All ten hooks, including use_queries with combine and the activity feed." />
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="Signatures and returns for every binding." />
+<LinkCard title="Guide: Framework bindings" href="/guides/framework-bindings/" description="All ten hooks, including use_queries with combine and the activity feed." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="Signatures and returns for every binding." />

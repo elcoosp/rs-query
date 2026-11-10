@@ -4,7 +4,7 @@ description: Every QueryError variant, its TanStack counterpart, and the cancell
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 `QueryError` is the single error type across queries, mutations, and persistence. Nine variants cover the failure modes; two of them encode cancellation semantics. The cancellation toolkit — `CancellationToken` and `cancellable_fetch` — cooperatively stops work.
 
@@ -37,15 +37,13 @@ Typical sources: `client.cancel_query(&key)`, `client.cancel_queries(&filters)`,
 
 Re-exported from quoin at the crate root:
 
-```rust
-use rs_query::CancellationToken;
+<Code lang="rust" code={`use rs_query::CancellationToken;
 
 let token = CancellationToken::new();
 let token2 = token.clone();
 
 // In the worker: poll or select on the token.
-// From the owner: token.cancel();
-```
+// From the owner: token.cancel();`} />
 
 Every spawned task and binding holds one; this is why aborting is cooperative — the fetch closure observes the token between awaits rather than being killed mid-write.
 
@@ -53,14 +51,12 @@ Every spawned task and binding holds one; this is why aborting is cooperative �
 
 `cancellable_fetch` wraps a plain future with a token so hand-rolled fetchers participate in the same protocol:
 
-```rust
-use rs_query::cancellable_fetch;
+<Code lang="rust" code={`use rs_query::cancellable_fetch;
 
 let result = cancellable_fetch(token.clone(), async {
     raw_http_get(url).await
 }).await;
-// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.
-```
+// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.`} />
 
 ## Mapping to error states
 
@@ -68,5 +64,5 @@ When a fetch exhausts retries, the last error lands in `QueryState::Error { erro
 
 ## Next steps
 
-<LinkCard title="Guide: Running queries" href="/rs-query/guides/queries/" description="Cancellation patterns in context." />
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Retry budgets and throw_on_error." />
+<LinkCard title="Guide: Running queries" href="/guides/queries/" description="Cancellation patterns in context." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="Retry budgets and throw_on_error." />

@@ -4,9 +4,9 @@ description: InfiniteQuery, InfiniteData, spawn_infinite_query, and InfiniteQuer
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
-`InfiniteQuery<T, P>` paginates with caller-provided param callbacks, accumulating an `InfiniteData<T, P>`. This page lists every signature; the [pagination guide](/rs-query/guides/infinite-queries/) shows the flow.
+`InfiniteQuery<T, P>` paginates with caller-provided param callbacks, accumulating an `InfiniteData<T, P>`. This page lists every signature; the [pagination guide](/guides/infinite-queries/) shows the flow.
 
 ## `InfiniteQuery<T, P>` builder
 
@@ -58,12 +58,11 @@ The page loop runs on the client's runtime with a capacity-1 request slot: a req
 
 ## Dehydration
 
-Infinite queries dehydrate with `query_type = QUERY_TYPE_INFINITE` and rehydrate into the same pages/params shape — see [persistence and hydration](/rs-query/reference/persistence-and-hydration/).
+Infinite queries dehydrate with `query_type = QUERY_TYPE_INFINITE` and rehydrate into the same pages/params shape — see [persistence and hydration](/reference/persistence-and-hydration/).
 
 ## Example: windowed two-way pager
 
-```rust
-use rs_query::{InfiniteQuery, QueryKey};
+<Code lang="rust" code={`use rs_query::{InfiniteQuery, QueryKey};
 
 let query = InfiniteQuery::<Vec<Msg>, i64>::new(
     QueryKey::new("messages"),
@@ -72,10 +71,9 @@ let query = InfiniteQuery::<Vec<Msg>, i64>::new(
 )
 .get_next_page_param(|last, _| last.last().map(|m| m.id))
 .get_previous_page_param(|first, _| first.first().map(|m| m.id))
-.max_pages(10);
-```
+.max_pages(10);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Infinite queries" href="/rs-query/guides/infinite-queries/" description="The pagination walkthrough." />
-<LinkCard title="Reference: Observers" href="/rs-query/reference/observers/" description="The flag surface shared with plain queries." />
+<LinkCard title="Guide: Infinite queries" href="/guides/infinite-queries/" description="The pagination walkthrough." />
+<LinkCard title="Reference: Observers" href="/reference/observers/" description="The flag surface shared with plain queries." />

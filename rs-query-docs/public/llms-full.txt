@@ -13,11 +13,11 @@ Type: overview
 
 The page you requested does not exist. It may have moved during a reorganization, or the link pointing here is outdated.
 
-The documentation is organized by task type, and every page lives in exactly one of four places: [tutorials](/rs-query/tutorials/first-query/) teach the golden path step by step, [guides](/rs-query/guides/install/) solve specific tasks, the [reference](/rs-query/reference/client/) documents every public API signature, and [explanations](/rs-query/explanation/architecture/) cover the architecture and the caching model.
+The documentation is organized by task type, and every page lives in exactly one of four places: [tutorials](/tutorials/first-query/) teach the golden path step by step, [guides](/guides/install/) solve specific tasks, the [reference](/reference/client/) documents every public API signature, and [explanations](/explanation/architecture/) cover the architecture and the caching model.
 
 If you reached this page from a bookmark, the sidebar above has the full table of contents. If you reached it from the crate's README, please [open an issue](https://github.com/elcoosp/rs-query/issues) so the link can be fixed.
 
-<LinkCard title="Start from the home page" href="/rs-query/" description="Overview, golden path, and entry points into all four sections." />
+<LinkCard title="Start from the home page" href="/" description="Overview, golden path, and entry points into all four sections." />
 
 
 ---
@@ -96,8 +96,8 @@ The architecture is enforced by CI: `cargo clippy --all-features -- -D warnings`
 
 ## Next steps
 
-<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="What the cache computes on every write." />
-<LinkCard title="Reference: Runtime, network, and managers" href="/rs-query/reference/runtime-and-network/" description="The seam's exact signatures." />
+<LinkCard title="Explanation: The caching model" href="/explanation/caching-model/" description="What the cache computes on every write." />
+<LinkCard title="Reference: Runtime, network, and managers" href="/reference/runtime-and-network/" description="The seam's exact signatures." />
 
 
 ---
@@ -154,8 +154,8 @@ Persistence layers serialize this model, they do not change it. The query persis
 
 ## Next steps
 
-<LinkCard title="Explanation: TanStack v5 parity" href="/rs-query/explanation/tanstack-parity/" description="How the semantics were audited and ported." />
-<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The state machine's exact API." />
+<LinkCard title="Explanation: TanStack v5 parity" href="/explanation/tanstack-parity/" description="How the semantics were audited and ported." />
+<LinkCard title="Reference: Query and QueryState" href="/reference/query/" description="The state machine's exact API." />
 
 
 ---
@@ -219,8 +219,8 @@ CI gates the contract: `cargo test --all-features` (713 tests, framework-free), 
 
 ## Next steps
 
-<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="The semantics that were audited, explained." />
-<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="How the port stays framework-free." />
+<LinkCard title="Explanation: The caching model" href="/explanation/caching-model/" description="The semantics that were audited, explained." />
+<LinkCard title="Explanation: Architecture" href="/explanation/architecture/" description="How the port stays framework-free." />
 
 
 ---
@@ -240,12 +240,10 @@ Enable the feature first: `rs-query = { path = "../rs-query", features = ["devto
 
 `DevtoolsState` wraps a client clone and records transitions from it:
 
-```rust
-use rs_query::devtools::DevtoolsState;
+<Code lang="rust" code={`use rs_query::devtools::DevtoolsState;
 
 let devtools = DevtoolsState::with_capacity(client.clone(), 512);
-devtools.record_from_client(); // subscribe + start collecting
-```
+devtools.record_from_client(); // subscribe + start collecting`} />
 
 `record_from_client` subscribes to the client's update stream and appends every state transition to the timeline until you call `stop_recording()`. `is_recording()` reports the current state.
 
@@ -253,12 +251,10 @@ devtools.record_from_client(); // subscribe + start collecting
 
 `cache_rows` returns one `CacheRow` per cached query — key, status, fetch status, data timestamp, staleness:
 
-```rust
-for row in devtools.cache_rows() {
+<Code lang="rust" code={`for row in devtools.cache_rows() {
     println!("{:?} {:?} {:?} in_flight={}",
-        row.key, row.status, row.fetch_status, row.in_flight);
-}
-```
+                    row.key, row.status, row.fetch_status, row.in_flight);
+}`} />
 
 `row_fetch_status(in_flight)` is the helper the rows use to derive a `FetchStatus` from the in-flight flag.
 
@@ -266,8 +262,7 @@ for row in devtools.cache_rows() {
 
 The timeline stores timestamped `TimelineEvent`s. `TimelineFilter` narrows by kind, cache key, and text search:
 
-```rust
-use rs_query::devtools::{TimelineFilter, TimelineKind};
+<Code lang="rust" code={`use rs_query::devtools::{TimelineFilter, TimelineKind};
 
 devtools.set_filter(TimelineFilter::new()
     .kind(TimelineKind::Status)
@@ -276,8 +271,7 @@ devtools.set_filter(TimelineFilter::new()
 
 for event in devtools.timeline() {
     println!("{} {:?} {}", event.at_ms, event.kind, event.key);
-}
-```
+}`} />
 
 `timeline_len()` counts stored events; `clear_timeline()` empties it without touching the cache.
 
@@ -285,11 +279,9 @@ for event in devtools.timeline() {
 
 The panel doubles as a control surface — the actions go through the client's normal pipeline, so filters and deduplication apply:
 
-```rust
-devtools.refetch("users/id=42");
+<Code lang="rust" code={`devtools.refetch("users/id=42");
 devtools.invalidate("users");
-devtools.remove("users/id=42");
-```
+devtools.remove("users/id=42");`} />
 
 ## Render it in your framework
 
@@ -297,8 +289,8 @@ The state is plain data with signal-friendly accessors. In a quoin app, read `ca
 
 ## Next steps
 
-<LinkCard title="Reference: Utilities" href="/rs-query/reference/utilities/" description="The devtools type signatures." />
-<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="What the timeline transitions actually mean." />
+<LinkCard title="Reference: Utilities" href="/reference/utilities/" description="The devtools type signatures." />
+<LinkCard title="Explanation: The caching model" href="/explanation/caching-model/" description="What the timeline transitions actually mean." />
 
 
 ---
@@ -329,12 +321,10 @@ The `hooks` module is generic over `quoin_core::ReactiveContext`. You write the 
 
 `use_query` returns a binding with three capabilities: the `state` signal, `refetch()`, and `abort_fetch()`:
 
-```rust
-let todo = use_query(&cx, &client, &query);
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
 todo.state.get();    // QueryState<Todo>
 todo.refetch();
-todo.abort_fetch();
-```
+todo.abort_fetch();`} />
 
 Dropping the binding cancels its pump and aborts the in-flight fetch. Mount one binding per component that needs the data — the cache deduplicates the fetches.
 
@@ -342,32 +332,26 @@ Dropping the binding cancels its pump and aborts the in-flight fetch. Mount one 
 
 `use_mutation` exposes `mutate` and `reset`. Per-call callbacks go in `MutateOptions` and fire after the mutation's own hooks:
 
-```rust
-let save = use_mutation(&cx, &client, &save_mutation);
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
 save.mutate(patch, MutateOptions::new()
     .on_success(|_client, _data| toast("saved"))
     .on_error(|_client, error| toast(&error.to_string())));
-save.reset();
-```
+save.reset();`} />
 
 ## Composing with `use_queries` and `combine`
 
 `use_queries` observes several queries at once. `QueriesObserver::combine` folds their states into one derived value — the `useQueries` `combine` option:
 
-```rust
-let combined = observer.combine(|states| {
+<Code lang="rust" code={`let combined = observer.combine(|states| {
     states.iter().filter(|s| s.is_success()).count()
-});
-```
+});`} />
 
 ## Feeds and counters for dashboards
 
 Status bars and devtool-ish UIs ride the activity hooks instead of polling:
 
-```rust
-let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
-let feed = use_activity_feed(&cx, client.subscribe_activity());
-```
+<Code lang="rust" code={`let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
+let feed = use_activity_feed(&cx, client.subscribe_activity());`} />
 
 `use_activity_feed` takes a `bus::Receiver<E>` — `client.subscribe_activity()` yields `ActivityEvent`s as fetch and mutation activity changes — and caps the buffer so a chatty cache cannot grow the signal unboundedly.
 
@@ -385,8 +369,8 @@ Under the hood the pumps are lag-tolerant: a slow view thread misses intermediat
 
 ## Next steps
 
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="Exact signatures for all ten bindings." />
-<LinkCard title="Tutorial: Queries in a quoin app" href="/rs-query/tutorials/quoin-app/" description="The end-to-end reactive loop." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="Exact signatures for all ten bindings." />
+<LinkCard title="Tutorial: Queries in a quoin app" href="/tutorials/quoin-app/" description="The end-to-end reactive loop." />
 
 
 ---
@@ -402,12 +386,10 @@ Hydration moves cache state from one process to another — a server into a brow
 
 `dehydrate_state` snapshots every qualifying query and mutation into a `DehydratedState`:
 
-```rust
-use rs_query::{DehydrateOptions, dehydrate_state};
+<Code lang="rust" code={`use rs_query::{DehydrateOptions, dehydrate_state};
 
 let dehydrated = dehydrate_state(&client, DehydrateOptions::default());
-// dehydrated.dehydrated_at_ms, dehydrated.queries, dehydrated.mutations
-```
+// dehydrated.dehydrated_at_ms, dehydrated.queries, dehydrated.mutations`} />
 
 Each `DehydratedQuery` carries `query_key` (segments), `query_hash`, `data_json`, `error_json`, `fetched_at_ms`, freshness bookkeeping (`is_stale`, `stale_time_ms`, `gc_time_ms`), `meta`, and a `query_type` tag — `QUERY_TYPE_QUERY` or `QUERY_TYPE_INFINITE` — so infinite queries round-trip with their pages.
 
@@ -415,15 +397,13 @@ Each `DehydratedQuery` carries `query_key` (segments), `query_hash`, `data_json`
 
 Two predicates decide inclusion; `should_redact_errors` defaults to `true`:
 
-```rust
-use rs_query::DehydrateOptions;
+<Code lang="rust" code={`use rs_query::DehydrateOptions;
 
 let opts = DehydrateOptions::new()
     .should_dehydrate_query(Arc::new(|q| !q.is_stale))
     .should_dehydrate_mutation(Arc::new(|_m| false))
     .should_redact_errors(true)
-    .serialize_data(Arc::new(|data| my_json(data)));
-```
+    .serialize_data(Arc::new(|data| my_json(data)));`} />
 
 <Aside type="caution">
 With `should_redact_errors(true)` — the default — dehydrated errors become `QueryError::Redacted`, whose text is `redacted`, mirroring TanStack's `Error('redacted')`. Leaking server-side error details to the client is a security decision you make explicitly, not an accident.
@@ -433,12 +413,10 @@ With `should_redact_errors(true)` — the default — dehydrated errors become `
 
 `hydrate_with_options` writes the snapshot into a fresh client. The newer-data guard keeps cache entries whose local data is newer than the incoming record — late hydration never clobbers fresh data:
 
-```rust
-use rs_query::{HydrateOptions, hydrate_with_options};
+<Code lang="rust" code={`use rs_query::{HydrateOptions, hydrate_with_options};
 
 let opts = HydrateOptions::new().should_overwrite(false);
-hydrate_with_options(&client, &dehydrated, opts);
-```
+hydrate_with_options(&client, &dehydrated, opts);`} />
 
 During hydration, each restored query's `fetchStatus` resets to idle — restored data never looks mid-fetch. Default options from the receiving client apply to restored entries.
 
@@ -446,18 +424,15 @@ During hydration, each restored query's `fetchStatus` resets to idle — restore
 
 While you restore (or load a persister), set the restore gate. Observers and bindings hold fetches and report `is_restoring` instead of racing the restore:
 
-```rust
-client.set_is_restoring(true);
+<Code lang="rust" code={`client.set_is_restoring(true);
 hydrate_with_options(&client, &dehydrated, opts);
-client.set_is_restoring(false);
-```
+client.set_is_restoring(false);`} />
 
-The [client persister](/rs-query/guides/persistence/) uses exactly this gate in its restore step.
+The [client persister](/guides/persistence/) uses exactly this gate in its restore step.
 
 ## A full round trip
 
-```rust
-// Producer (server):
+<Code lang="rust" code={`// Producer (server):
 let dehydrated = dehydrate_state(&server_client, DehydrateOptions::default());
 send_to_client(serialize(&dehydrated));
 
@@ -465,13 +440,12 @@ send_to_client(serialize(&dehydrated));
 client.set_is_restoring(true);
 hydrate_with_options(&client, &deserialized, HydrateOptions::new());
 client.set_is_restoring(false);
-// First observers mount against restored data; stale ones refetch on mount.
-```
+// First observers mount against restored data; stale ones refetch on mount.`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Automate the round trip with persisters." />
-<LinkCard title="Reference: Persistence and hydration API" href="/rs-query/reference/persistence-and-hydration/" description="Every hydration type and option." />
+<LinkCard title="Guide: Persisting the cache" href="/guides/persistence/" description="Automate the round trip with persisters." />
+<LinkCard title="Reference: Persistence and hydration API" href="/reference/persistence-and-hydration/" description="Every hydration type and option." />
 
 
 ---
@@ -487,8 +461,7 @@ An `InfiniteQuery<T, P>` paginates: it accumulates an `InfiniteData<T, P>` — p
 
 `InfiniteQuery::new` takes a key, a fetch closure, and the initial page param. The closure receives the current page param, and the param callbacks derive the next and previous params from the last and first pages:
 
-```rust
-use rs_query::{InfiniteQuery, QueryKey};
+<Code lang="rust" code={`use rs_query::{InfiniteQuery, QueryKey};
 
 let query = InfiniteQuery::<Vec<Todo>, u64>::new(
     QueryKey::new("todos").segment("page"),
@@ -498,8 +471,7 @@ let query = InfiniteQuery::<Vec<Todo>, u64>::new(
 .get_next_page_param(|last_page, _pages| {
     if last_page.is_empty() { None } else { Some(last_page.len() as u64 + 1) }
 })
-.max_pages(5);
-```
+.max_pages(5);`} />
 
 Returning `None` from a param callback marks the end of the list — `has_next_page` flips to `false`.
 
@@ -507,12 +479,10 @@ Returning `None` from a param callback marks the end of the list — `has_next_p
 
 `spawn_infinite_query` runs the page loop on the client's runtime. Like `spawn_query`, it returns an awaitable, abortable task:
 
-```rust
-use rs_query::spawn_infinite_query;
+<Code lang="rust" code={`use rs_query::spawn_infinite_query;
 
 let task = spawn_infinite_query(&client, &query);
-let state = task.await; // QueryState<InfiniteData<Vec<Todo>, u64>>
-```
+let state = task.await; // QueryState<InfiniteData<Vec<Todo>, u64>>`} />
 
 The state's data is an `InfiniteData<Vec<Todo>, u64>`: `pages` in fetch order, `page_params` alongside, plus `first_page()`, `last_page()`, and `page_count()`.
 
@@ -520,8 +490,7 @@ The state's data is an `InfiniteData<Vec<Todo>, u64>`: `pages` in fetch order, `
 
 The observer exposes direction-aware controls. `fetch_next_page` appends; `fetch_previous_page` prepends — `FetchDirection::Forward` and `Backward` track which is in flight:
 
-```rust
-// From an infinite binding or InfiniteQueryObserver:
+<Code lang="rust" code={`// From an infinite binding or InfiniteQueryObserver:
 handle.fetch_next_page();
 handle.fetch_previous_page();
 
@@ -531,8 +500,7 @@ handle.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ fals
 handle.has_next_page();          // a next param exists
 handle.has_previous_page();      // a previous param exists
 handle.is_fetching_next_page();  // forward fetch in flight
-handle.is_fetching_previous_page();
-```
+handle.is_fetching_previous_page();`} />
 
 <Aside type="tip">
 Check `is_fetching_next_page` in your view to show a spinner at the bottom of the list and `is_fetching_previous_page` for the top — both flags can be true at once on bidirectional lists.
@@ -546,30 +514,26 @@ Check `is_fetching_next_page` in your view to show a spinner at the bottom of th
 
 When you manage data manually — for example after a websocket update — `QueryClient` exposes the page mutators:
 
-```rust
-use rs_query::QueryOptions;
+<Code lang="rust" code={`use rs_query::QueryOptions;
 
 client.append_infinite_page(&key, page, param, QueryOptions::default())?;
 client.prepend_infinite_page(&key, page, param, QueryOptions::default())?;
-client.set_infinite_data(&key, data, QueryOptions::default());
-```
+client.set_infinite_data(&key, data, QueryOptions::default());`} />
 
 ## Observe from a view
 
 In a quoin app, `use_infinite_query` returns the binding with all the controls above and the state signal:
 
-```rust
-let todos = use_infinite_query(&cx, &client, &query);
+<Code lang="rust" code={`let todos = use_infinite_query(&cx, &client, &query);
 todos.state.get();          // QueryState<InfiniteData<Vec<Todo>, u64>>
-todos.fetch_next_page();    // wire to a scroll listener
-```
+todos.fetch_next_page();    // wire to a scroll listener`} />
 
-`use_queries` composes several queries (infinite included) into one signal with a `combine` step — see [Framework bindings](/rs-query/guides/framework-bindings/).
+`use_queries` composes several queries (infinite included) into one signal with a `combine` step — see [Framework bindings](/guides/framework-bindings/).
 
 ## Next steps
 
-<LinkCard title="Guide: Streamed queries" href="/rs-query/guides/streamed-queries/" description="Accumulate a live stream into one cache entry." />
-<LinkCard title="Reference: InfiniteQuery API" href="/rs-query/reference/infinite-queries/" description="Signatures for InfiniteQuery, InfiniteData, and the observer." />
+<LinkCard title="Guide: Streamed queries" href="/guides/streamed-queries/" description="Accumulate a live stream into one cache entry." />
+<LinkCard title="Reference: InfiniteQuery API" href="/reference/infinite-queries/" description="Signatures for InfiniteQuery, InfiniteData, and the observer." />
 
 
 ---
@@ -585,10 +549,8 @@ rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. U
 
 Clone the two repositories into the same parent directory:
 
-```bash
-git clone https://github.com/elcoosp/quoin
-git clone https://github.com/elcoosp/rs-query
-```
+<Code lang="bash" code={`git clone https://github.com/elcoosp/quoin
+git clone https://github.com/elcoosp/rs-query`} />
 
 The resulting layout must look like this, because rs-query resolves its quoin dependency as `../quoin/quoin-core`:
 
@@ -605,10 +567,8 @@ The resulting layout must look like this, because rs-query resolves its quoin de
   <TabItem label="Sibling checkout (recommended)">
     From your application crate, point at the local rs-query checkout:
 
-    ```toml
-    [dependencies]
-    rs-query = { path = "../rs-query" }
-    ```
+<Code lang="toml" code={`  [dependencies]
+  rs-query = { path = "../rs-query" }`} />
   </TabItem>
   <TabItem label="Pinned git revision">
     For CI or teammates without the full checkout layout, vendor both repositories with a workspace or a script, then depend on the vendored path. A bare `git` dependency on rs-query alone fails to resolve, because `quoin-core` is a path dependency that Cargo cannot fetch from the rs-query repository.
@@ -617,9 +577,7 @@ The resulting layout must look like this, because rs-query resolves its quoin de
 
 Verify the toolchain resolves:
 
-```bash
-cargo check
-```
+<Code lang="bash" code={`cargo check`} />
 
 ## Choose feature gates
 
@@ -633,10 +591,8 @@ rs-query ships with two optional features. Both are opt-in and add nothing to th
 
 Enable them as needed:
 
-```toml
-[dependencies]
-rs-query = { path = "../rs-query", features = ["serde", "devtools"] }
-```
+<Code lang="toml" code={`[dependencies]
+rs-query = { path = "../rs-query", features = ["serde", "devtools"] }`} />
 
 ## Runtime requirements
 
@@ -649,8 +605,8 @@ Inside a quoin application, build the client from the framework context so fetch
 
 ## Next steps
 
-<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Run and invalidate your first query." />
-<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="How the runtime seam keeps rs-query framework-free." />
+<LinkCard title="Tutorial: Your first query" href="/tutorials/first-query/" description="Run and invalidate your first query." />
+<LinkCard title="Explanation: Architecture" href="/explanation/architecture/" description="How the runtime seam keeps rs-query framework-free." />
 
 
 ---
@@ -666,13 +622,11 @@ Every cache operation in rs-query — invalidation, refetching, cancellation, re
 
 `QueryKey::new` starts a root segment; `.with(label, value)` appends labelled segments; `.segment(name)` appends a plain one. Keys match by prefix, so a root key addresses every query beneath it:
 
-```rust
-use rs_query::QueryKey;
+<Code lang="rust" code={`use rs_query::QueryKey;
 
 let users      = QueryKey::new("users");               // matches everything below
 let one_user   = users.clone().with("id", 42);          // users/id=42
-let friends    = one_user.clone().segment("friends");   // users/id=42/friends
-```
+let friends    = one_user.clone().segment("friends");   // users/id=42/friends`} />
 
 Each key hashes to a stable `cache_key()` string — the identity the cache, the devtools, and the deduplication table all use.
 
@@ -684,15 +638,13 @@ Put variable data in labels (`with("id", 42)`), not in segment names. Filters ma
 
 `QueryFilters` combines six selection dimensions. Start from `all()` or `with_key()`, then narrow:
 
-```rust
-use rs_query::{FetchStatus, QueryFilters, QueryStatus};
+<Code lang="rust" code={`use rs_query::{FetchStatus, QueryFilters, QueryStatus};
 
 let filters = QueryFilters::with_key(QueryKey::new("users"))
     .active()                                  // only observed queries
     .stale()                                   // and stale ones
     .status(QueryStatus::Success)              // with data
-    .fetch_status(FetchStatus::Idle);          // not currently fetching
-```
+    .fetch_status(FetchStatus::Idle);          // not currently fetching`} />
 
 | Builder          | Selects                                                  |
 | ---------------- | -------------------------------------------------------- |
@@ -708,35 +660,31 @@ let filters = QueryFilters::with_key(QueryKey::new("users"))
 
 Predicates receive a `QuerySnapshot` with `key`, `is_active`, `is_stale`, `fetch_status`, `status`, and `has_data`:
 
-```rust
-use rs_query::QueryFilters;
+<Code lang="rust" code={`use rs_query::QueryFilters;
 
 let big = QueryFilters::all().predicate(Arc::new(|snap| {
     snap.has_data // select only queries that hold data
-}));
-```
+}));`} />
 
 ## Invalidate with a refetch matrix
 
 `invalidate_queries_filtered` pairs a filter with a `RefetchType`, reproducing TanStack's `refetchType` matrix exactly:
 
-```rust
-use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
+<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
 
 // Mark stale only — refetch happens on next mount/focus:
 client.invalidate_queries_filtered(
     InvalidateQueryFilters::new()
-        .filters(QueryFilters::with_key(QueryKey::new("users")))
-        .refetch_type(RefetchType::None),
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::None),
 );
 
 // TanStack default: refetch active, mark inactive stale:
 client.invalidate_queries_filtered(
     InvalidateQueryFilters::new()
-        .filters(QueryFilters::with_key(QueryKey::new("users")))
-        .refetch_type(RefetchType::Active),
-);
-```
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::Active),
+);`} />
 
 | `RefetchType` | Effect                                    |
 | ------------- | ----------------------------------------- |
@@ -749,8 +697,7 @@ client.invalidate_queries_filtered(
 
 The remaining bulk operations share the same filter input and return the number of affected queries:
 
-```rust
-use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
+<Code lang="rust" code={`use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
 
 let users = QueryFilters::with_key(QueryKey::new("users"));
 
@@ -760,8 +707,7 @@ let n = client.refetch_queries(
 );
 let cancelled = client.cancel_queries(&users);
 let reset     = client.reset_queries(&users);      // back to Idle, drops data
-let removed   = client.remove_queries(&users);     // evict from the cache
-```
+let removed   = client.remove_queries(&users);     // evict from the cache`} />
 
 `refetch_all_stale()` is the zero-filter shortcut for "refresh everything stale right now".
 
@@ -769,18 +715,16 @@ let removed   = client.remove_queries(&users);     // evict from the cache
 
 `query_snapshots(&filters)` returns the matching `QuerySnapshot`s, so you can preview an operation before running it:
 
-```rust
-for snap in client.query_snapshots(&users) {
+<Code lang="rust" code={`for snap in client.query_snapshots(&users) {
     println!("{} {:?} {:?}", snap.key.cache_key(), snap.status, snap.fetch_status);
-}
-```
+}`} />
 
-Mutations select with `MutationFilters` the same way — key, exact, status, paused, predicate — over `MutationSnapshot`s. See the [mutation guide](/rs-query/guides/mutations/) for the patterns.
+Mutations select with `MutationFilters` the same way — key, exact, status, paused, predicate — over `MutationSnapshot`s. See the [mutation guide](/guides/mutations/) for the patterns.
 
 ## Next steps
 
-<LinkCard title="Guide: Mutations and optimistic updates" href="/rs-query/guides/mutations/" description="Invalidate from mutations with rollback safety." />
-<LinkCard title="Reference: QueryKey and filters" href="/rs-query/reference/keys-and-filters/" description="Full API tables for keys, filters, and snapshots." />
+<LinkCard title="Guide: Mutations and optimistic updates" href="/guides/mutations/" description="Invalidate from mutations with rollback safety." />
+<LinkCard title="Reference: QueryKey and filters" href="/reference/keys-and-filters/" description="Full API tables for keys, filters, and snapshots." />
 
 
 ---
@@ -796,8 +740,7 @@ A mutation in rs-query is a `Mutation<T, P>`: an async function from parameters 
 
 Every hook is optional and chainable on the builder. `retry` defaults to `0` for mutations, unlike queries:
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{Mutation, MutationScope, QueryKey};
 
 let mutation = Mutation::<User, UserPatch>::new(|patch| async move {
@@ -806,8 +749,7 @@ let mutation = Mutation::<User, UserPatch>::new(|patch| async move {
 .mutation_key(QueryKey::new("save-user"))
 .retry(1)
 .retry_delay(Duration::from_millis(500))
-.network_mode(rs_query::NetworkMode::OfflineFirst);
-```
+.network_mode(rs_query::NetworkMode::OfflineFirst);`} />
 
 <Aside type="note">
 `Mutation<T, P>` is generic over the result type `T` and the parameter type `P`. The closure receives the parameters by value and returns a future — capture what you need with `move`.
@@ -817,45 +759,38 @@ let mutation = Mutation::<User, UserPatch>::new(|patch| async move {
 
 `on_mutate` runs before the mutation function. Write the optimistic value into the cache, then return a rollback closure. On failure, rs-query runs the rollback with the client so the pre-mutation data comes back:
 
-```rust
-use rs_query::{QueryOptions, QueryKey};
+<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey};
 
 .mutation.on_mutate(|client, patch| {
     let key = user_key(patch.id);
     let previous = client.get_query_data::<User>(&key);
     client.set_query_data(&key, patch.preview(), QueryOptions::default());
     Ok(Box::new(move |client| {
-        if let Some(previous) = previous {
-            client.set_query_data(&key, previous, QueryOptions::default());
-        }
+                    if let Some(previous) = previous {
+                                    client.set_query_data(&key, previous, QueryOptions::default());
+                    }
     }))
-})
-```
+})`} />
 
 ## Wire invalidation
 
 `.invalidates_key` (or `.invalidates(Vec<QueryKey>)`) refetches the listed keys when the mutation settles successfully — the active observers see new data without manual glue:
 
-```rust
-.mutation.invalidates_key(user_key(42))
-```
+<Code lang="rust" code={`.mutation.invalidates_key(user_key(42))`} />
 
 ## Serialize concurrent saves with a scope
 
 Scoped mutations run one at a time. Give several mutations the same `MutationScope { id }` and the cache holds the queue until each finishes:
 
-```rust
-use rs_query::MutationScope;
+<Code lang="rust" code={`use rs_query::MutationScope;
 
-let mutation = mutation.scope(MutationScope { id: "save-user".into() });
-```
+let mutation = mutation.scope(MutationScope { id: "save-user".into() });`} />
 
 ## Run it
 
 Three entry points mirror the query side:
 
-```rust
-use rs_query::{execute_mutation, execute_mutation_full, spawn_mutation, MutateOptions};
+<Code lang="rust" code={`use rs_query::{execute_mutation, execute_mutation_full, spawn_mutation, MutateOptions};
 
 // Await the final state directly:
 let state = execute_mutation(&client, &mutation, patch).await;
@@ -867,8 +802,7 @@ let state = execute_mutation_full(&client, &mutation, patch,
 
 // Or spawn on the client's runtime — awaitable and abortable:
 let task = spawn_mutation(&client, &mutation, patch);
-let state = task.await;
-```
+let state = task.await;`} />
 
 Side effects run in TanStack order: cache `on_mutate` → options `on_mutate` → pending dispatch → the mutation function → cache/options `on_success`/`on_error` → the per-call `MutateOptions` callbacks last → the settle chain (`on_settled`).
 
@@ -876,8 +810,7 @@ Side effects run in TanStack order: cache `on_mutate` → options `on_mutate` �
 
 The cache tracks entries, broadcasts events, and filters like the query side:
 
-```rust
-use rs_query::{MutationCache, MutationCacheConfig, MutationFilters, MutationStatus};
+<Code lang="rust" code={`use rs_query::{MutationCache, MutationCacheConfig, MutationFilters, MutationStatus};
 
 let cache = MutationCache::with_config(MutationCacheConfig {
     on_success: Some(Arc::new(|_client, _data| notify_toast())),
@@ -885,8 +818,7 @@ let cache = MutationCache::with_config(MutationCacheConfig {
 });
 
 let saves = cache.find_all(&MutationFilters::with_key(QueryKey::new("save-user")));
-let pending: Vec<_> = saves.iter().filter(|e| e.status == MutationStatus::Pending).collect();
-```
+let pending: Vec<_> = saves.iter().filter(|e| e.status == MutationStatus::Pending).collect();`} />
 
 Events arrive on `cache.subscribe()`: `Added(u64)`, `Removed(u64)`, `Updated(u64)`, `ScopeResumed(String)`, and `Cleared`. Cache-level callbacks — `on_mutate`, `on_success`, `on_error`, `on_settled` — run for every mutation in the cache; the mutation's own hooks run too, in the order above.
 
@@ -894,14 +826,12 @@ Events arrive on `cache.subscribe()`: `Added(u64)`, `Removed(u64)`, `Updated(u64
 
 Offline `OfflineFirst` mutations pause instead of failing. Resume them when connectivity returns — `QueryClient::handle_reconnect` does this for you, or drive it manually:
 
-```rust
-let resumed = client.resume_paused_mutations();
-```
+<Code lang="rust" code={`let resumed = client.resume_paused_mutations();`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Offline support and network modes" href="/rs-query/guides/offline-and-network-modes/" description="How pausing and resuming interact with connectivity." />
-<LinkCard title="Reference: Mutation API" href="/rs-query/reference/mutations/" description="Full signature tables for Mutation, MutateOptions, and the cache." />
+<LinkCard title="Guide: Offline support and network modes" href="/guides/offline-and-network-modes/" description="How pausing and resuming interact with connectivity." />
+<LinkCard title="Reference: Mutation API" href="/reference/mutations/" description="Full signature tables for Mutation, MutateOptions, and the cache." />
 
 
 ---
@@ -923,11 +853,9 @@ rs-query reproduces TanStack v5's offline story: a per-query `NetworkMode` decid
 | `Always`       | Yes                   | Yes                       | Local-first work, IPC, storage  |
 | `OfflineFirst` | Yes — the first attempt runs | No — retries pause   | Write-then-retry mutations      |
 
-```rust
-use rs_query::{NetworkMode, QueryOptions};
+<Code lang="rust" code={`use rs_query::{NetworkMode, QueryOptions};
 
-let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);
-```
+let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);`} />
 
 The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the matrix if you need the decision in your own code.
 
@@ -935,15 +863,13 @@ The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the m
 
 `OnlineManager` starts online and takes truth from your platform's connectivity callbacks — there is no OS listener baked in, which keeps the crate runtime-free:
 
-```rust
-use rs_query::OnlineManager;
+<Code lang="rust" code={`use rs_query::OnlineManager;
 
 let online = OnlineManager::new(); // starts online
 
 // Wire these to your platform:
 online.set_online(false); // in-flight retries pause; new fetches pause per mode
-online.set_online(true);  // paused work resumes
-```
+online.set_online(true);  // paused work resumes`} />
 
 The client owns one: `client.online_manager()` returns it, and `client.handle_reconnect()` runs the full reconnect sequence — refetch triggers for queries and `resume_paused_mutations`.
 
@@ -961,14 +887,12 @@ When connectivity returns, paused fetches resume from where they stopped — att
 
 Control whether stale data refreshes when the connection comes back, and how eagerly:
 
-```rust
-use rs_query::{QueryOptions, RefetchTrigger};
+<Code lang="rust" code={`use rs_query::{QueryOptions, RefetchTrigger};
 
 let options = QueryOptions::default()
     .refetch_on_reconnect(RefetchTrigger::Always) // even fresh data refetches
     .refetch_on_mount(RefetchTrigger::Enabled)    // default: refetch if stale
-    .refetch_on_window_focus(RefetchTrigger::Disabled);
-```
+    .refetch_on_window_focus(RefetchTrigger::Disabled);`} />
 
 `RefetchTrigger` has three variants: `Enabled` (refetch when stale — the default), `Always`, and `Disabled`.
 
@@ -982,8 +906,8 @@ Focus and reconnect refetches run through the same `refetch_queries` pipeline as
 
 ## Next steps
 
-<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Make offline data survive restarts." />
-<LinkCard title="Reference: Runtime, network, and managers" href="/rs-query/reference/runtime-and-network/" description="OnlineManager, managers, and the runtime seam." />
+<LinkCard title="Guide: Persisting the cache" href="/guides/persistence/" description="Make offline data survive restarts." />
+<LinkCard title="Reference: Runtime, network, and managers" href="/reference/runtime-and-network/" description="OnlineManager, managers, and the runtime seam." />
 
 
 ---
@@ -1003,18 +927,16 @@ Enable the `serde` feature for the JSON (de)serialization helpers used by real s
 
 `QueryPersister` caches each query's result under its key in a `QueryStorage`. Configure expiry with `max_age` and version-stamp entries with `buster`:
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use std::time::Duration;
 use rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};
 
 let persister = QueryPersister::new(
     QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))
-        .with_buster("v1".into())
-        .with_max_age(Duration::from_secs(60 * 60 * 24))
-        .with_prefix("app".into()),
-);
-```
+                    .with_buster("v1".into())
+                    .with_max_age(Duration::from_secs(60 * 60 * 24))
+                    .with_prefix("app".into()),
+);`} />
 
 The persister restores selectively — only queries touched by observers — and expired entries (past `max_age`) or mismatched busters are treated as absent. A GC pass evicts stale records.
 
@@ -1024,15 +946,13 @@ Implement `QueryStorage` to plug in a backend: it is an async key/value surface 
 
 `persist_query_client` restores the dehydrated client state, then runs a throttled save loop on every cache change:
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};
 
 let handle = persist_query_client(
     &client,
     &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),
-).await;
-```
+).await;`} />
 
 `PersistQueryClientOptions` also takes `.with_max_age(...)` and `.with_buster(...)` — defaults are 24 hours and an empty buster, matching TanStack. The returned `PersistQueryClientHandle` carries the save task and an `unsubscribe()` to stop the loop.
 
@@ -1040,43 +960,37 @@ let handle = persist_query_client(
 
 For full control — server-rendered HTML hydration, custom storage lifecycles — run the pieces yourself:
 
-```rust
-use rs_query::{persist_query_client_restore, persist_query_client_save};
+<Code lang="rust" code={`use rs_query::{persist_query_client_restore, persist_query_client_save};
 
 // Restore before creating observers:
 let restored = persist_query_client_restore(&client, &persister, &opts).await;
 
 // Save on demand:
-persist_query_client_save(&client, &persister, &opts).await;
-```
+persist_query_client_save(&client, &persister, &opts).await;`} />
 
 ## Retry a failing restore
 
 Corrupt or oversized records can make restores fail. `persist_with_retry` retries the restore, evicting the oldest query each round — the `remove_oldest_query` strategy — up to `MAX_RESTORE_RETRIES`:
 
-```rust
-use rs_query::{persist_with_retry, remove_oldest_query};
+<Code lang="rust" code={`use rs_query::{persist_with_retry, remove_oldest_query};
 
-persist_with_retry(&client, &persister, &opts, remove_oldest_query).await;
-```
+persist_with_retry(&client, &persister, &opts, remove_oldest_query).await;`} />
 
 ## Sync clients across tabs with broadcast
 
 `broadcast_query_client` keeps multiple `QueryClient` instances in sync through a channel. Remote updates apply with a re-entrancy guard, so an applied remote update is never re-broadcast:
 
-```rust
-use rs_query::broadcast_query_client;
+<Code lang="rust" code={`use rs_query::broadcast_query_client;
 
 let handle = broadcast_query_client(&client, "app-cache");
-// handle.unsubscribe() stops syncing; handle.into_task() hands it to the runtime.
-```
+// handle.unsubscribe() stops syncing; handle.into_task() hands it to the runtime.`} />
 
 Pass `BroadcastQueryClientOptions::new().with_channel("app-cache")` to `broadcast_query_client_with_options` when you need the channel option object form. `publish_state(&client, "app-cache")` pushes a one-shot snapshot.
 
 ## Next steps
 
-<LinkCard title="Guide: Hydration and dehydration" href="/rs-query/guides/hydration/" description="The dehydrate/hydrate layer the client persister builds on." />
-<LinkCard title="Reference: Persistence and hydration API" href="/rs-query/reference/persistence-and-hydration/" description="Every trait, option, and function signature." />
+<LinkCard title="Guide: Hydration and dehydration" href="/guides/hydration/" description="The dehydrate/hydrate layer the client persister builds on." />
+<LinkCard title="Reference: Persistence and hydration API" href="/reference/persistence-and-hydration/" description="Every trait, option, and function signature." />
 
 
 ---
@@ -1101,8 +1015,7 @@ rs-query gives you four ways to move a query from definition to data. This guide
 
 `spawn_query` is the primary entry point. It submits the fetch to the client's runtime — the default `PoolRuntime`, or the framework executor when you built the client with `with_context`:
 
-```rust
-use rs_query::{spawn_query, Query, QueryClient, QueryKey};
+<Code lang="rust" code={`use rs_query::{spawn_query, Query, QueryClient, QueryKey};
 
 let client = QueryClient::new();
 let query = Query::new(QueryKey::new("users"), || async {
@@ -1110,8 +1023,7 @@ let query = Query::new(QueryKey::new("users"), || async {
 });
 
 let handle = spawn_query(&client, &query);
-let state = handle.await;
-```
+let state = handle.await;`} />
 
 The handle is abortable: dropping it before `await` cancels the fetch cooperatively through a `CancellationToken`. Panics inside the fetch closure do not poison the runtime — they surface as a custom error state.
 
@@ -1119,19 +1031,15 @@ The handle is abortable: dropping it before `await` cancels the fetch cooperativ
 
 When you want the result without holding a handle, `execute_query` runs the same pipeline — retries, network-mode pausing, restore gate — and awaits it directly:
 
-```rust
-use rs_query::execute_query;
+<Code lang="rust" code={`use rs_query::execute_query;
 
-let state = execute_query(&client, &query).await;
-```
+let state = execute_query(&client, &query).await;`} />
 
 ## Warm the cache with `prefetch_query`
 
 `client.prefetch_query` runs `fetch_query` and logs-then-discards any error, so a warmup can never poison your error handling:
 
-```rust
-client.prefetch_query(&query).await;
-```
+<Code lang="rust" code={`client.prefetch_query(&query).await;`} />
 
 The result lands in the cache under the query's key, ready for the next observer or `ensure_query_data` call.
 
@@ -1139,46 +1047,40 @@ The result lands in the cache under the query's key, ready for the next observer
 
 `client.ensure_query_data` short-circuits when fresh data exists and fetches otherwise — the TanStack `ensureQueryData` semantics:
 
-```rust
-let state = client.ensure_query_data(&query).await;
+<Code lang="rust" code={`let state = client.ensure_query_data(&query).await;
 if let Some(data) = state.data() {
     // fresh or newly fetched data
-}
-```
+}`} />
 
 ## Configure retries per query
 
-Retry behavior lives on the query builder (or in [QueryOptions](/rs-query/reference/query-options/)). The default backoff is TanStack-exact: `min(1000 ms · 2ⁿ, 30 s)` with no jitter:
+Retry behavior lives on the query builder (or in [QueryOptions](/reference/query-options/)). The default backoff is TanStack-exact: `min(1000 ms · 2ⁿ, 30 s)` with no jitter:
 
-```rust
-use rs_query::{Query, RetryConfig};
+<Code lang="rust" code={`use rs_query::{Query, RetryConfig};
 use std::time::Duration;
 
 let query = Query::new(key, || async { fetch_things().await })
-    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)));
-```
+    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)));`} />
 
 <Aside type="note">
-`failure_count` and `failure_reason` for the current fetch are visible on every [observer result](/rs-query/reference/observers/), so UI can render attempt numbers without extra plumbing.
+`failure_count` and `failure_reason` for the current fetch are visible on every [observer result](/reference/observers/), so UI can render attempt numbers without extra plumbing.
 </Aside>
 
 ## Cancel a fetch
 
 Cancellation is cooperative and key-scoped:
 
-```rust
-client.cancel_query(&key);                       // one key
+<Code lang="rust" code={`client.cancel_query(&key);                       // one key
 client.cancel_queries(&QueryFilters::with_key(   // every "users" query
     QueryKey::new("users"),
-));
-```
+));`} />
 
 A cancelled fetch produces `QueryError::Cancelled { revert, silent }`. When `revert` is set, the query rolls back to its pre-fetch state; when `silent` is set — for example a cancel-on-unmount — the error does not surface as a query error state.
 
 ## Next steps
 
-<LinkCard title="Guide: Working with keys and filters" href="/rs-query/guides/keys-and-filters/" description="Prefix matching, predicates, and the bulk operations." />
-<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="Every method, including fetch_query and ensure_query_data." />
+<LinkCard title="Guide: Working with keys and filters" href="/guides/keys-and-filters/" description="Prefix matching, predicates, and the bulk operations." />
+<LinkCard title="Reference: QueryClient" href="/reference/client/" description="Every method, including fetch_query and ensure_query_data." />
 
 
 ---
@@ -1194,16 +1096,14 @@ Type: how-to
 
 Wrap a stream-returning closure with `streamed_query`, then use the resulting value where a `Query` fetch closure goes:
 
-```rust
-use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};
+<Code lang="rust" code={`use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};
 
 let fetch = streamed_query(|_signal| async_stream {
     for chunk in chunks {
-        yield chunk;
+                    yield chunk;
     }
 })
-.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));
-```
+.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));`} />
 
 <Aside type="note">
 The exact stream combinator depends on your producer — any `Stream<Item = Result<T, E>>` works. The config's type parameter is the accumulated value type.
@@ -1219,14 +1119,12 @@ When a refetch starts, existing cached data can confuse the accumulation. `Refet
 | `Append`  | Keep old data; append the new stream's items after it        |
 | `Reset`   | Reset to the configured `initial_value` when the refetch starts |
 
-```rust
-use rs_query::RefetchMode;
+<Code lang="rust" code={`use rs_query::RefetchMode;
 
 let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
     .refetch_mode(RefetchMode::Reset)
     .initial_value(Vec::new())
-    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));
-```
+    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));`} />
 
 `.reducer(f)` customizes how each streamed item folds into the accumulator; the default appends. `.initial_value(v)` seeds the accumulator for `Reset` mode.
 
@@ -1234,18 +1132,16 @@ let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
 
 The wrapped value runs through `spawn_query`, `execute_query`, `ensure_query_data`, and the observers unchanged — the state machine, retries, and offline pausing all apply:
 
-```rust
-let query = Query::new(QueryKey::new("logs"), move || cfg_stream());
+<Code lang="rust" code={`let query = Query::new(QueryKey::new("logs"), move || cfg_stream());
 let handle = rs_query::spawn_query(&client, &query);
-let state = handle.await;
-```
+let state = handle.await;`} />
 
 Observers see intermediate states as the accumulator grows, so views render progress without extra code.
 
 ## Next steps
 
-<LinkCard title="Reference: Utilities" href="/rs-query/reference/utilities/" description="StreamedQueryConfig, RefetchMode, Updater, and devtools types." />
-<LinkCard title="Guide: Infinite queries" href="/rs-query/guides/infinite-queries/" description="When pages are the right shape instead of a stream." />
+<LinkCard title="Reference: Utilities" href="/reference/utilities/" description="StreamedQueryConfig, RefetchMode, Updater, and devtools types." />
+<LinkCard title="Guide: Infinite queries" href="/guides/infinite-queries/" description="When pages are the right shape instead of a stream." />
 
 
 ---
@@ -1261,18 +1157,20 @@ No runtime is hardcoded: rs-query depends on `quoin-core` only and spawns work o
 
 <CardGrid stagger>
   <Card title="Learn">
-    Take the [first-query tutorial](/rs-query/tutorials/first-query/) to go from an empty crate to a running, cached, cancelable fetch in about ten minutes.
+    Take the [first-query tutorial](/tutorials/first-query/) to go from an empty crate to a running, cached, cancelable fetch in about ten minutes.
   </Card>
   <Card title="Do">
-    Jump into the [guides](/rs-query/guides/install/) when you have a task: invalidate with filters, add optimistic mutations, persist the cache, or survive offline.
+    Jump into the [guides](/guides/install/) when you have a task: invalidate with filters, add optimistic mutations, persist the cache, or survive offline.
   </Card>
   <Card title="Look up">
-    The [reference](/rs-query/reference/client/) documents every public type with signatures, defaults, and examples. Nothing here is invented — each entry maps to source.
+    The [reference](/reference/client/) documents every public type with signatures, defaults, and examples. Nothing here is invented — each entry maps to source.
   </Card>
   <Card title="Understand">
-    Read the [explanations](/rs-query/explanation/architecture/) for the runtime seam, the caching model, and what TanStack v5 parity means in practice.
+    Read the [explanations](/explanation/architecture/) for the runtime seam, the caching model, and what TanStack v5 parity means in practice.
   </Card>
 </CardGrid>
+
+<LinkButton href="/tutorials/first-query/" icon="right-arrow">Start the tutorial</LinkButton>
 
 ## What you get
 
@@ -1296,8 +1194,8 @@ Start with the tutorial below — everything else builds on it.
 
 ## Next steps
 
-<LinkCard title="Tutorial: Your first query" href="/rs-query/tutorials/first-query/" description="Create a client, run a query, and inspect the state machine." />
-<LinkCard title="Installation" href="/rs-query/guides/install/" description="Wire rs-query into your project with a sibling quoin checkout." />
+<LinkCard title="Tutorial: Your first query" href="/tutorials/first-query/" description="Create a client, run a query, and inspect the state machine." />
+<LinkCard title="Installation" href="/guides/install/" description="Wire rs-query into your project with a sibling quoin checkout." />
 <LinkCard title="GitHub repository" href="https://github.com/elcoosp/rs-query" description="Source, CI, and the 713-test quality gate." />
 
 
@@ -1388,24 +1286,22 @@ All filter-based operations return the count of affected queries:
 
 ## Example: a client with defaults
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{QueryClient, QueryOptions};
 
 let client = QueryClient::new();
 client.set_default_options(
     QueryOptions::default()
-        .stale_time(Duration::from_secs(30))
-        .gc_time(Duration::from_secs(300)),
-);
-```
+                    .stale_time(Duration::from_secs(30))
+                    .gc_time(Duration::from_secs(300)),
+);`} />
 
 Every query created afterwards inherits these defaults unless it overrides them.
 
 ## Next steps
 
-<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The builder and the state machine." />
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Every option, default, and trigger." />
+<LinkCard title="Reference: Query and QueryState" href="/reference/query/" description="The builder and the state machine." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="Every option, default, and trigger." />
 
 
 ---
@@ -1446,15 +1342,13 @@ Typical sources: `client.cancel_query(&key)`, `client.cancel_queries(&filters)`,
 
 Re-exported from quoin at the crate root:
 
-```rust
-use rs_query::CancellationToken;
+<Code lang="rust" code={`use rs_query::CancellationToken;
 
 let token = CancellationToken::new();
 let token2 = token.clone();
 
 // In the worker: poll or select on the token.
-// From the owner: token.cancel();
-```
+// From the owner: token.cancel();`} />
 
 Every spawned task and binding holds one; this is why aborting is cooperative — the fetch closure observes the token between awaits rather than being killed mid-write.
 
@@ -1462,14 +1356,12 @@ Every spawned task and binding holds one; this is why aborting is cooperative �
 
 `cancellable_fetch` wraps a plain future with a token so hand-rolled fetchers participate in the same protocol:
 
-```rust
-use rs_query::cancellable_fetch;
+<Code lang="rust" code={`use rs_query::cancellable_fetch;
 
 let result = cancellable_fetch(token.clone(), async {
     raw_http_get(url).await
 }).await;
-// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.
-```
+// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.`} />
 
 ## Mapping to error states
 
@@ -1477,8 +1369,8 @@ When a fetch exhausts retries, the last error lands in `QueryState::Error { erro
 
 ## Next steps
 
-<LinkCard title="Guide: Running queries" href="/rs-query/guides/queries/" description="Cancellation patterns in context." />
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="Retry budgets and throw_on_error." />
+<LinkCard title="Guide: Running queries" href="/guides/queries/" description="Cancellation patterns in context." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="Retry budgets and throw_on_error." />
 
 
 ---
@@ -1501,32 +1393,26 @@ The `hooks` module is generic over any `quoin_core::ReactiveContext`. Each bindi
 
 ### The query binding
 
-```rust
-let todo = use_query(&cx, &client, &query);
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
 todo.state.get();     // QueryState<Todo>
 todo.refetch();       // re-run now
-todo.abort_fetch();   // cancel in-flight
-```
+todo.abort_fetch();   // cancel in-flight`} />
 
 ### The infinite binding
 
-```rust
-let feed = use_infinite_query(&cx, &client, &query);
+<Code lang="rust" code={`let feed = use_infinite_query(&cx, &client, &query);
 feed.fetch_next_page();
 feed.fetch_previous_page();
 feed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
 feed.has_next_page();          feed.has_previous_page();
 feed.is_fetching_next_page();  feed.is_fetching_previous_page();
-feed.observer();               // Arc<InfiniteQueryObserver<T, P>>
-```
+feed.observer();               // Arc<InfiniteQueryObserver<T, P>>`} />
 
 ### The mutation binding
 
-```rust
-let save = use_mutation(&cx, &client, &save_mutation);
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
 save.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));
-save.reset();
-```
+save.reset();`} />
 
 ## Activity bindings
 
@@ -1559,8 +1445,8 @@ The pumps are lag-tolerant by design: a slow view thread misses intermediate wri
 
 ## Next steps
 
-<LinkCard title="Guide: Framework bindings" href="/rs-query/guides/framework-bindings/" description="Task-oriented patterns for all ten bindings." />
-<LinkCard title="Reference: Observers" href="/rs-query/reference/observers/" description="The flags behind every binding's signal." />
+<LinkCard title="Guide: Framework bindings" href="/guides/framework-bindings/" description="Task-oriented patterns for all ten bindings." />
+<LinkCard title="Reference: Observers" href="/reference/observers/" description="The flags behind every binding's signal." />
 
 
 ---
@@ -1570,7 +1456,7 @@ The pumps are lag-tolerant by design: a slow view thread misses intermediate wri
 URL: /reference/infinite-queries/
 Type: reference
 
-`InfiniteQuery<T, P>` paginates with caller-provided param callbacks, accumulating an `InfiniteData<T, P>`. This page lists every signature; the [pagination guide](/rs-query/guides/infinite-queries/) shows the flow.
+`InfiniteQuery<T, P>` paginates with caller-provided param callbacks, accumulating an `InfiniteData<T, P>`. This page lists every signature; the [pagination guide](/guides/infinite-queries/) shows the flow.
 
 ## `InfiniteQuery<T, P>` builder
 
@@ -1622,12 +1508,11 @@ The page loop runs on the client's runtime with a capacity-1 request slot: a req
 
 ## Dehydration
 
-Infinite queries dehydrate with `query_type = QUERY_TYPE_INFINITE` and rehydrate into the same pages/params shape — see [persistence and hydration](/rs-query/reference/persistence-and-hydration/).
+Infinite queries dehydrate with `query_type = QUERY_TYPE_INFINITE` and rehydrate into the same pages/params shape — see [persistence and hydration](/reference/persistence-and-hydration/).
 
 ## Example: windowed two-way pager
 
-```rust
-use rs_query::{InfiniteQuery, QueryKey};
+<Code lang="rust" code={`use rs_query::{InfiniteQuery, QueryKey};
 
 let query = InfiniteQuery::<Vec<Msg>, i64>::new(
     QueryKey::new("messages"),
@@ -1636,13 +1521,12 @@ let query = InfiniteQuery::<Vec<Msg>, i64>::new(
 )
 .get_next_page_param(|last, _| last.last().map(|m| m.id))
 .get_previous_page_param(|first, _| first.first().map(|m| m.id))
-.max_pages(10);
-```
+.max_pages(10);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Infinite queries" href="/rs-query/guides/infinite-queries/" description="The pagination walkthrough." />
-<LinkCard title="Reference: Observers" href="/rs-query/reference/observers/" description="The flag surface shared with plain queries." />
+<LinkCard title="Guide: Infinite queries" href="/guides/infinite-queries/" description="The pagination walkthrough." />
+<LinkCard title="Reference: Observers" href="/reference/observers/" description="The flag surface shared with plain queries." />
 
 
 ---
@@ -1682,11 +1566,9 @@ Keys identify; filters select. `QueryKey` builds the hierarchical identity of a 
 
 ## `InvalidateQueryFilters` and `RefetchQueryFilters`
 
-```rust
-InvalidateQueryFilters::new()
+<Code lang="rust" code={`InvalidateQueryFilters::new()
     .filters(QueryFilters::with_key(QueryKey::new("users")))
-    .refetch_type(RefetchType::Active)
-```
+    .refetch_type(RefetchType::Active)`} />
 
 | Struct                  | Builders                                       | Used by                    |
 | ----------------------- | ---------------------------------------------- | -------------------------- |
@@ -1721,8 +1603,7 @@ Filters and predicates see immutable snapshots, not live queries:
 
 ## Example: preview then act
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{QueryFilters, QueryKey};
 
 let stale_users = QueryFilters::with_key(QueryKey::new("users"))
@@ -1731,13 +1612,12 @@ let stale_users = QueryFilters::with_key(QueryKey::new("users"))
 
 let matched = client.query_snapshots(&stale_users);
 println!("would reset {} queries", matched.len());
-let _ = client.reset_queries(&stale_users);
-```
+let _ = client.reset_queries(&stale_users);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Working with keys and filters" href="/rs-query/guides/keys-and-filters/" description="Task-oriented patterns for the same API." />
-<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="The bulk operations these filters drive." />
+<LinkCard title="Guide: Working with keys and filters" href="/guides/keys-and-filters/" description="Task-oriented patterns for the same API." />
+<LinkCard title="Reference: QueryClient" href="/reference/client/" description="The bulk operations these filters drive." />
 
 
 ---
@@ -1747,7 +1627,7 @@ let _ = client.reset_queries(&stale_users);
 URL: /reference/mutations/
 Type: reference
 
-`Mutation<T, P>` runs an async write with lifecycle hooks, retry control, and scope serialization. The `MutationCache` tracks entries and broadcasts events. This page is the signature reference; the [mutation guide](/rs-query/guides/mutations/) shows the patterns.
+`Mutation<T, P>` runs an async write with lifecycle hooks, retry control, and scope serialization. The `MutationCache` tracks entries and broadcasts events. This page is the signature reference; the [mutation guide](/guides/mutations/) shows the patterns.
 
 ## `Mutation<T, P>` builder
 
@@ -1825,20 +1705,18 @@ Side-effect order, TanStack-exact: cache `on_mutate` → options `on_mutate` →
 
 ## Example: scoped saves with cache callbacks
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{MutationCache, MutationCacheConfig, MutationScope};
 
 let cache = MutationCache::with_config(MutationCacheConfig {
     on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),
     ..MutationCacheConfig::default()
-});
-```
+});`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Mutations and optimistic updates" href="/rs-query/guides/mutations/" description="The optimistic-update walkthrough." />
-<LinkCard title="Reference: Errors and cancellation" href="/rs-query/reference/errors-and-cancellation/" description="QueryError, the type behind every failure." />
+<LinkCard title="Guide: Mutations and optimistic updates" href="/guides/mutations/" description="The optimistic-update walkthrough." />
+<LinkCard title="Reference: Errors and cancellation" href="/reference/errors-and-cancellation/" description="QueryError, the type behind every failure." />
 
 
 ---
@@ -1854,12 +1732,10 @@ Observers turn cache state into render-ready results. `QueryObserver<T>` watches
 
 Constructed over a client, a key, and options; it subscribes to the cache and re-derives its result on every relevant update.
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{QueryObserver, QueryOptions};
 
-let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());
-```
+let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());`} />
 
 The observer exposes the current `QueryState<T>`, the `QueryResultFlags` block, and `QueryStateUpdate` notifications on its bus receiver.
 
@@ -1909,19 +1785,17 @@ The mutation-side observer: subscribes one mutation's `MutationState<T>` transit
 
 ## Example: combine for a composite view
 
-```rust
-use rs_query::QueriesObserver;
+<Code lang="rust" code={`use rs_query::QueriesObserver;
 
 let combined = observer.combine(|states| {
     let loaded = states.iter().filter(|s| s.is_success()).count();
     (loaded, states.len())
-});
-```
+});`} />
 
 ## Next steps
 
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="The bindings that consume these observers." />
-<LinkCard title="Reference: Query and QueryState" href="/rs-query/reference/query/" description="The states the flags are derived from." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="The bindings that consume these observers." />
+<LinkCard title="Reference: Query and QueryState" href="/reference/query/" description="The states the flags are derived from." />
 
 
 ---
@@ -2007,8 +1881,8 @@ A re-entrancy guard guarantees remote updates are applied but never re-broadcast
 
 ## Next steps
 
-<LinkCard title="Guide: Persisting the cache" href="/rs-query/guides/persistence/" description="Task-oriented walkthrough of these layers." />
-<LinkCard title="Guide: Hydration and dehydration" href="/rs-query/guides/hydration/" description="Server-to-client round trips." />
+<LinkCard title="Guide: Persisting the cache" href="/guides/persistence/" description="Task-oriented walkthrough of these layers." />
+<LinkCard title="Guide: Hydration and dehydration" href="/guides/hydration/" description="Server-to-client round trips." />
 
 
 ---
@@ -2086,8 +1960,7 @@ The retryer module adds the decision layer: `RetryDecision::Never`, `RetryDecisi
 
 ## Example
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};
 
 let options = QueryOptions::default()
@@ -2096,13 +1969,12 @@ let options = QueryOptions::default()
     .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))
     .refetch_on_reconnect(RefetchTrigger::Always)
     .network_mode(NetworkMode::OfflineFirst)
-    .meta("source", "api");
-```
+    .meta("source", "api");`} />
 
 ## Next steps
 
-<LinkCard title="Reference: QueryClient" href="/rs-query/reference/client/" description="Where defaults and options meet the cache." />
-<LinkCard title="Reference: Errors and cancellation" href="/rs-query/reference/errors-and-cancellation/" description="What happens when every retry fails." />
+<LinkCard title="Reference: QueryClient" href="/reference/client/" description="Where defaults and options meet the cache." />
+<LinkCard title="Reference: Errors and cancellation" href="/reference/errors-and-cancellation/" description="What happens when every retry fails." />
 
 
 ---
@@ -2166,7 +2038,7 @@ Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `u
 
 ### `MutationStatus`
 
-`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documented fully on the [mutation reference](/rs-query/reference/mutations/).
+`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documented fully on the [mutation reference](/reference/mutations/).
 
 ### `FetchDirection`
 
@@ -2174,23 +2046,21 @@ Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `u
 
 ## Example: exhaustive rendering
 
-```rust
-use rs_query::{QueryState, QueryStatus, FetchStatus};
+<Code lang="rust" code={`use rs_query::{QueryState, QueryStatus, FetchStatus};
 
 fn label(state: &QueryState<Vec<String>>) -> String {
     match (state.status(), state.fetch_status()) {
-        (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
-        (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
-        (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
-        (status, fetch) => format!("{:?}/{:?}", status, fetch),
+                    (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
+                    (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
+                    (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
+                    (status, fetch) => format!("{:?}/{:?}", status, fetch),
     }
-}
-```
+}`} />
 
 ## Next steps
 
-<LinkCard title="Reference: QueryOptions" href="/rs-query/reference/query-options/" description="The full option surface with defaults." />
-<LinkCard title="Explanation: The caching model" href="/rs-query/explanation/caching-model/" description="Why the state machine looks like this." />
+<LinkCard title="Reference: QueryOptions" href="/reference/query-options/" description="The full option surface with defaults." />
+<LinkCard title="Explanation: The caching model" href="/explanation/caching-model/" description="Why the state machine looks like this." />
 
 
 ---
@@ -2264,21 +2134,19 @@ Tracks application focus events that drive `refetch_on_window_focus`. Like `Onli
 
 ## Example: a deterministic test client
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{ExecutorRuntime, QueryClient};
 
 let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
     quoin_testkit::TokioExecutor::global(),
-)));
-```
+)));`} />
 
 Inside a `#[tokio::test]` with `start_paused = true`, every internal sleep is virtual-time controlled.
 
 ## Next steps
 
-<LinkCard title="Guide: Offline support and network modes" href="/rs-query/guides/offline-and-network-modes/" description="The behavioral story on top of these types." />
-<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="Why the seam exists and what quoin provides." />
+<LinkCard title="Guide: Offline support and network modes" href="/guides/offline-and-network-modes/" description="The behavioral story on top of these types." />
+<LinkCard title="Explanation: Architecture" href="/explanation/architecture/" description="Why the seam exists and what quoin provides." />
 
 
 ---
@@ -2310,8 +2178,7 @@ The utilities round out the API surface: `streamed_query` for stream-producing f
 
 `Updater<T>` accepts either a value or a function of the previous value — the port of TanStack's value-or-function update style:
 
-```rust
-use rs_query::{Updater, functional_update};
+<Code lang="rust" code={`use rs_query::{Updater, functional_update};
 
 // Value form:
 let next = Updater::Value(42);
@@ -2319,8 +2186,7 @@ let next = Updater::Value(42);
 let next = Updater::Function(|prev: i64| prev + 1);
 
 // Apply it against a current value:
-let applied = functional_update(next, 40); // 41
-```
+let applied = functional_update(next, 40); // 41`} />
 
 `set_query_data` accepts an `Updater`, so optimistic patches can derive from the current cached data without reading it first.
 
@@ -2344,20 +2210,18 @@ let applied = functional_update(next, 40); // 41
 
 ## Example: value-or-function write
 
-```rust
-use rs_query::{QueryOptions, QueryKey, Updater};
+<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey, Updater};
 
 client.set_query_data::<i64>(
     &QueryKey::new("counter"),
     Updater::Function(|current| current + 1),
     QueryOptions::default(),
-);
-```
+);`} />
 
 ## Next steps
 
-<LinkCard title="Guide: Streamed queries" href="/rs-query/guides/streamed-queries/" description="Streaming patterns." />
-<LinkCard title="Guide: Headless devtools" href="/rs-query/guides/devtools/" description="Wire the recorder into your app." />
+<LinkCard title="Guide: Streamed queries" href="/guides/streamed-queries/" description="Streaming patterns." />
+<LinkCard title="Guide: Headless devtools" href="/guides/devtools/" description="Wire the recorder into your app." />
 
 
 ---
@@ -2370,25 +2234,21 @@ Type: tutorial
 In this tutorial you build the smallest useful rs-query program: a `QueryClient`, one `Query` with a `QueryKey`, and a single awaited fetch. You then invalidate the key and watch the cache respond. This is the golden path that every rs-query application — headless or framework-bound — builds on.
 
 <Aside type="note">
-You need a working Rust toolchain (stable, edition 2024) and the [quoin](https://github.com/elcoosp/quoin) repository checked out as a sibling directory, because rs-query depends on it by path. See [Installation](/rs-query/guides/install/) if you have not set this up yet.
+You need a working Rust toolchain (stable, edition 2024) and the [quoin](https://github.com/elcoosp/quoin) repository checked out as a sibling directory, because rs-query depends on it by path. See [Installation](/guides/install/) if you have not set this up yet.
 </Aside>
 
 ## 1. Create the project
 
 Create a binary crate next to your `rs-query` and `quoin` checkouts:
 
-```bash
-cargo new query-demo
-cd query-demo
-```
+<Code lang="bash" code={`cargo new query-demo
+cd query-demo`} />
 
 Point `Cargo.toml` at the local checkouts. The path layout matters: `quoin` resolves as `../quoin/quoin-core` from a sibling directory.
 
-```toml
-[dependencies]
+<Code lang="toml" code={`[dependencies]
 rs-query = { path = "../rs-query" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-```
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
 
 `rs-query` itself does not need tokio — it runs on quoin's shared worker pool by default. The demo uses tokio only for its own `main`.
 
@@ -2396,14 +2256,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 The client owns the cache, the deduplication table, and the runtime. It is cheap to clone, and every clone shares the same cache.
 
-```rust
-use rs_query::QueryClient;
+<Code lang="rust" code={`use rs_query::QueryClient;
 
 fn main() {
     let client = QueryClient::new();
     println!("client ready");
-}
-```
+}`} />
 
 Hold the client in your application state for the lifetime of the program.
 
@@ -2411,8 +2269,7 @@ Hold the client in your application state for the lifetime of the program.
 
 A `Query` pairs a `QueryKey` with an async fetch closure that returns `Result<T, E>`. Keys are hierarchical: `QueryKey::new("users")` creates the `"users"` segment, and `.with("id", 42)` appends a labelled segment.
 
-```rust
-use std::time::Duration;
+<Code lang="rust" code={`use std::time::Duration;
 use rs_query::{Query, QueryClient, QueryKey};
 
 let client = QueryClient::new();
@@ -2421,8 +2278,7 @@ let key = QueryKey::new("users").with("id", 42);
 let query = Query::new(key.clone(), || async {
     Ok(vec!["Ada", "Alan"])
 })
-.stale_time(Duration::from_secs(30));
-```
+.stale_time(Duration::from_secs(30));`} />
 
 The `stale_time(30 s)` line tells the cache that the data stays fresh for thirty seconds after a successful fetch.
 
@@ -2430,21 +2286,17 @@ The `stale_time(30 s)` line tells the cache that the data stays fresh for thirty
 
 `spawn_query` submits the fetch to the client's runtime and returns a `SpawnedTask` — an awaitable handle you can also abort by dropping it.
 
-```rust
-use rs_query::spawn_query;
+<Code lang="rust" code={`use rs_query::spawn_query;
 
 let handle = spawn_query(&client, &query);
 let state = handle.await;
 
 assert!(state.is_success());
-println!("data: {:?}", state.data());
-```
+println!("data: {:?}", state.data());`} />
 
 Run the demo:
 
-```bash
-cargo run
-```
+<Code lang="bash" code={`cargo run`} />
 
 You should see the fetched names printed from cache.
 
@@ -2456,11 +2308,9 @@ Dropping a `SpawnedTask` aborts the fetch cooperatively through a `CancellationT
 
 `state` is a `QueryState<Vec<&str>>` — an enum with one variant per cache situation:
 
-```text
-Idle → Loading → Success(T)
-              → Error { error, stale_data }
-Success(T) → Stale(T) → Refetching(T) → Success(T)
-```
+<Code lang="text" code={`Idle → Loading → Success(T)
+           → Error { error, stale_data }
+Success(T) → Stale(T) → Refetching(T) → Success(T)`} />
 
 After the awaited call in step 4 you hold `Success`. Call `state.is_stale()` after `stale_time` has elapsed to see the transition to `Stale`.
 
@@ -2468,15 +2318,13 @@ After the awaited call in step 4 you hold `Success`. Call `state.is_stale()` aft
 
 Mark the `"users"` prefix stale, refetching only the queries that currently have an active observer — the TanStack default:
 
-```rust
-use rs_query::{InvalidateQueryFilters, QueryFilters, RefetchType};
+<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, RefetchType};
 
 client.invalidate_queries_filtered(
     InvalidateQueryFilters::new()
-        .filters(QueryFilters::with_key(QueryKey::new("users")))
-        .refetch_type(RefetchType::Active),
-);
-```
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::Active),
+);`} />
 
 Every query whose key starts with the `"users"` segment is now stale, and active ones refetch immediately.
 
@@ -2486,8 +2334,8 @@ A client, a keyed query, a spawned fetch, and filtered invalidation — the four
 
 ## Next steps
 
-<LinkCard title="Tutorial: Queries in a quoin app" href="/rs-query/tutorials/quoin-app/" description="Observe the same query from a framework view with use_query." />
-<LinkCard title="Guide: Running queries" href="/rs-query/guides/queries/" description="Imperative fetching, prefetching, and cancellation patterns." />
+<LinkCard title="Tutorial: Queries in a quoin app" href="/tutorials/quoin-app/" description="Observe the same query from a framework view with use_query." />
+<LinkCard title="Guide: Running queries" href="/guides/queries/" description="Imperative fetching, prefetching, and cancellation patterns." />
 
 
 ---
@@ -2497,22 +2345,20 @@ A client, a keyed query, a spawned fetch, and filtered invalidation — the four
 URL: /tutorials/quoin-app/
 Type: tutorial
 
-In this tutorial you take the headless query from the [first tutorial](/rs-query/tutorials/first-query/) and observe it from inside a quoin application. The bindings are generic over any `quoin_core::ReactiveContext`, so the code below is identical on gpui, leptos, dioxus, xilem, and floem — only the surrounding view syntax differs. Every binding returns your framework's **own** signal type.
+In this tutorial you take the headless query from the [first tutorial](/tutorials/first-query/) and observe it from inside a quoin application. The bindings are generic over any `quoin_core::ReactiveContext`, so the code below is identical on gpui, leptos, dioxus, xilem, and floem — only the surrounding view syntax differs. Every binding returns your framework's **own** signal type.
 
 <Aside type="note">
-Prerequisites: a quoin application skeleton with a `ReactiveContext` available (usually `cx`), and the [installation](/rs-query/guides/install/) from the first tutorial.
+Prerequisites: a quoin application skeleton with a `ReactiveContext` available (usually `cx`), and the [installation](/guides/install/) from the first tutorial.
 </Aside>
 
 ## 1. Build the client from the framework context
 
 Construct the client with `QueryClient::with_context(&cx)` so fetches and timers ride the framework's own executor instead of the default worker pool:
 
-```rust
-use rs_query::QueryClient;
+<Code lang="rust" code={`use rs_query::QueryClient;
 
 // Inside your app setup:
-let client = QueryClient::with_context(&cx);
-```
+let client = QueryClient::with_context(&cx);`} />
 
 Store the client in your application state. Like `QueryClient::new()`, it is cheap to clone and shares one cache across clones.
 
@@ -2520,15 +2366,13 @@ Store the client in your application state. Like `QueryClient::new()`, it is che
 
 Inside a component, call `use_query` with the context, the client, and the query. The binding pumps cache updates into a framework signal and stays in sync through lag-tolerant cache pumps:
 
-```rust
-use rs_query::use_query;
+<Code lang="rust" code={`use rs_query::use_query;
 
 // Inside a component, where cx is the framework's ReactiveContext:
 let todo = use_query(&cx, &client, &query);
 
 // todo.state is the framework's own signal: read it from your view.
-let state = todo.state.get(); // QueryState<Todo>
-```
+let state = todo.state.get(); // QueryState<Todo>`} />
 
 Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-on-unmount is the default behavior, not an opt-in.
 
@@ -2536,47 +2380,41 @@ Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-
 
 `QueryState<T>` has a variant for every cache situation, so `match` covers rendering exhaustively:
 
-```rust
-match state {
+<Code lang="rust" code={`match state {
     rs_query::QueryState::Idle | rs_query::QueryState::Loading => render_spinner(),
     rs_query::QueryState::LoadingWithPlaceholder(data)
     | rs_query::QueryState::Success(data)
     | rs_query::QueryState::Stale(data)
     | rs_query::QueryState::Refetching(data) => render_todo(data),
     rs_query::QueryState::Error { error, stale_data } => match stale_data {
-        Some(data) => render_todo_with_banner(data, error),
-        None => render_error(error),
+                    Some(data) => render_todo_with_banner(data, error),
+                    None => render_error(error),
     },
-}
-```
+}`} />
 
 <Aside type="tip">
-You rarely write this match by hand. The [QueryObserver](/rs-query/reference/observers/) result flags — `is_placeholder_data`, `is_refetch_error`, `is_paused` — exist to turn these branches into compact boolean logic.
+You rarely write this match by hand. The [QueryObserver](/reference/observers/) result flags — `is_placeholder_data`, `is_refetch_error`, `is_paused` — exist to turn these branches into compact boolean logic.
 </Aside>
 
 ## 4. Trigger a refetch from the view
 
 The binding exposes `refetch` and `abort_fetch` for user-driven actions:
 
-```rust
-todo.refetch();     // re-run the query now
-todo.abort_fetch(); // cancel the in-flight fetch
-```
+<Code lang="rust" code={`todo.refetch();     // re-run the query now
+todo.abort_fetch(); // cancel the in-flight fetch`} />
 
 ## 5. Mutate and invalidate
 
-Wire a save button to a mutation with `use_mutation`, and invalidate the list key on success. The mutation lifecycle runs cache-level and options-level hooks in TanStack order (see [Mutations and optimistic updates](/rs-query/guides/mutations/)):
+Wire a save button to a mutation with `use_mutation`, and invalidate the list key on success. The mutation lifecycle runs cache-level and options-level hooks in TanStack order (see [Mutations and optimistic updates](/guides/mutations/)):
 
-```rust
-use rs_query::{Mutation, MutateOptions};
+<Code lang="rust" code={`use rs_query::{Mutation, MutateOptions};
 
 let save = use_mutation(&cx, &client, &save_mutation);
 
 // On button click:
 save.mutate(patch, MutateOptions::new().on_success(|_client, _data| {
     // the mutation's own invalidates_key already refetched active queries
-}));
-```
+}));`} />
 
 The signal updates again when the invalidated query refetches — no manual wiring between mutation and view.
 
@@ -2584,11 +2422,9 @@ The signal updates again when the invalidated query refetches — no manual wiri
 
 If the client restores persisted state at startup, hold the `is_restoring` flag until the restore finishes. Bindings respect the gate and hold `fetchStatus` at `idle` while it is set:
 
-```rust
-client.set_is_restoring(true);
+<Code lang="rust" code={`client.set_is_restoring(true);
 // ... restore ...
-client.set_is_restoring(false);
-```
+client.set_is_restoring(false);`} />
 
 ## What you built
 
@@ -2596,5 +2432,5 @@ A framework-bound query with cancel-on-unmount, exhaustive state rendering, user
 
 ## Next steps
 
-<LinkCard title="Guide: Framework bindings" href="/rs-query/guides/framework-bindings/" description="All ten hooks, including use_queries with combine and the activity feed." />
-<LinkCard title="Reference: Framework hooks" href="/rs-query/reference/hooks/" description="Signatures and returns for every binding." />
+<LinkCard title="Guide: Framework bindings" href="/guides/framework-bindings/" description="All ten hooks, including use_queries with combine and the activity feed." />
+<LinkCard title="Reference: Framework hooks" href="/reference/hooks/" description="Signatures and returns for every binding." />

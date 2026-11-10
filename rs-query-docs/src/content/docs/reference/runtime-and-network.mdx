@@ -4,7 +4,7 @@ description: The QueryRuntime seam, PoolRuntime and ExecutorRuntime, NetworkMode
 type: reference
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Code, LinkCard } from '@astrojs/starlight/components';
 
 rs-query runs nowhere in particular by design: spawning, timers, and signals cross a runtime seam. This page documents the seam, the network layer, and the three managers (notify, timeout, focus).
 
@@ -70,18 +70,16 @@ Tracks application focus events that drive `refetch_on_window_focus`. Like `Onli
 
 ## Example: a deterministic test client
 
-```rust
-use std::sync::Arc;
+<Code lang="rust" code={`use std::sync::Arc;
 use rs_query::{ExecutorRuntime, QueryClient};
 
 let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
     quoin_testkit::TokioExecutor::global(),
-)));
-```
+)));`} />
 
 Inside a `#[tokio::test]` with `start_paused = true`, every internal sleep is virtual-time controlled.
 
 ## Next steps
 
-<LinkCard title="Guide: Offline support and network modes" href="/rs-query/guides/offline-and-network-modes/" description="The behavioral story on top of these types." />
-<LinkCard title="Explanation: Architecture" href="/rs-query/explanation/architecture/" description="Why the seam exists and what quoin provides." />
+<LinkCard title="Guide: Offline support and network modes" href="/guides/offline-and-network-modes/" description="The behavioral story on top of these types." />
+<LinkCard title="Explanation: Architecture" href="/explanation/architecture/" description="Why the seam exists and what quoin provides." />

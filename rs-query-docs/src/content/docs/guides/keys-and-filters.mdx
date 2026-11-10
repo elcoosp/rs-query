@@ -4,7 +4,7 @@ description: Build hierarchical query keys and drive bulk cache operations with 
 type: how-to
 ---
 
-import { Aside, LinkCard } from '@astrojs/starlight/components';
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 Every cache operation in rs-query — invalidation, refetching, cancellation, removal — selects its targets with the same two primitives: hierarchical `QueryKey`s and filter structs. This guide shows how to structure keys so filters do what you mean, and how the filter types compose.
 
@@ -12,13 +12,11 @@ Every cache operation in rs-query — invalidation, refetching, cancellation, re
 
 `QueryKey::new` starts a root segment; `.with(label, value)` appends labelled segments; `.segment(name)` appends a plain one. Keys match by prefix, so a root key addresses every query beneath it:
 
-```rust
-use rs_query::QueryKey;
+<Code lang="rust" code={`use rs_query::QueryKey;
 
 let users      = QueryKey::new("users");               // matches everything below
 let one_user   = users.clone().with("id", 42);          // users/id=42
-let friends    = one_user.clone().segment("friends");   // users/id=42/friends
-```
+let friends    = one_user.clone().segment("friends");   // users/id=42/friends`} />
 
 Each key hashes to a stable `cache_key()` string — the identity the cache, the devtools, and the deduplication table all use.
 
@@ -30,15 +28,13 @@ Put variable data in labels (`with("id", 42)`), not in segment names. Filters ma
 
 `QueryFilters` combines six selection dimensions. Start from `all()` or `with_key()`, then narrow:
 
-```rust
-use rs_query::{FetchStatus, QueryFilters, QueryStatus};
+<Code lang="rust" code={`use rs_query::{FetchStatus, QueryFilters, QueryStatus};
 
 let filters = QueryFilters::with_key(QueryKey::new("users"))
     .active()                                  // only observed queries
     .stale()                                   // and stale ones
     .status(QueryStatus::Success)              // with data
-    .fetch_status(FetchStatus::Idle);          // not currently fetching
-```
+    .fetch_status(FetchStatus::Idle);          // not currently fetching`} />
 
 | Builder          | Selects                                                  |
 | ---------------- | -------------------------------------------------------- |
@@ -54,35 +50,31 @@ let filters = QueryFilters::with_key(QueryKey::new("users"))
 
 Predicates receive a `QuerySnapshot` with `key`, `is_active`, `is_stale`, `fetch_status`, `status`, and `has_data`:
 
-```rust
-use rs_query::QueryFilters;
+<Code lang="rust" code={`use rs_query::QueryFilters;
 
 let big = QueryFilters::all().predicate(Arc::new(|snap| {
     snap.has_data // select only queries that hold data
-}));
-```
+}));`} />
 
 ## Invalidate with a refetch matrix
 
 `invalidate_queries_filtered` pairs a filter with a `RefetchType`, reproducing TanStack's `refetchType` matrix exactly:
 
-```rust
-use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
+<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
 
 // Mark stale only — refetch happens on next mount/focus:
 client.invalidate_queries_filtered(
     InvalidateQueryFilters::new()
-        .filters(QueryFilters::with_key(QueryKey::new("users")))
-        .refetch_type(RefetchType::None),
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::None),
 );
 
 // TanStack default: refetch active, mark inactive stale:
 client.invalidate_queries_filtered(
     InvalidateQueryFilters::new()
-        .filters(QueryFilters::with_key(QueryKey::new("users")))
-        .refetch_type(RefetchType::Active),
-);
-```
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::Active),
+);`} />
 
 | `RefetchType` | Effect                                    |
 | ------------- | ----------------------------------------- |
@@ -95,8 +87,7 @@ client.invalidate_queries_filtered(
 
 The remaining bulk operations share the same filter input and return the number of affected queries:
 
-```rust
-use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
+<Code lang="rust" code={`use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
 
 let users = QueryFilters::with_key(QueryKey::new("users"));
 
@@ -106,8 +97,7 @@ let n = client.refetch_queries(
 );
 let cancelled = client.cancel_queries(&users);
 let reset     = client.reset_queries(&users);      // back to Idle, drops data
-let removed   = client.remove_queries(&users);     // evict from the cache
-```
+let removed   = client.remove_queries(&users);     // evict from the cache`} />
 
 `refetch_all_stale()` is the zero-filter shortcut for "refresh everything stale right now".
 
@@ -115,15 +105,13 @@ let removed   = client.remove_queries(&users);     // evict from the cache
 
 `query_snapshots(&filters)` returns the matching `QuerySnapshot`s, so you can preview an operation before running it:
 
-```rust
-for snap in client.query_snapshots(&users) {
+<Code lang="rust" code={`for snap in client.query_snapshots(&users) {
     println!("{} {:?} {:?}", snap.key.cache_key(), snap.status, snap.fetch_status);
-}
-```
+}`} />
 
-Mutations select with `MutationFilters` the same way — key, exact, status, paused, predicate — over `MutationSnapshot`s. See the [mutation guide](/rs-query/guides/mutations/) for the patterns.
+Mutations select with `MutationFilters` the same way — key, exact, status, paused, predicate — over `MutationSnapshot`s. See the [mutation guide](/guides/mutations/) for the patterns.
 
 ## Next steps
 
-<LinkCard title="Guide: Mutations and optimistic updates" href="/rs-query/guides/mutations/" description="Invalidate from mutations with rollback safety." />
-<LinkCard title="Reference: QueryKey and filters" href="/rs-query/reference/keys-and-filters/" description="Full API tables for keys, filters, and snapshots." />
+<LinkCard title="Guide: Mutations and optimistic updates" href="/guides/mutations/" description="Invalidate from mutations with rollback safety." />
+<LinkCard title="Reference: QueryKey and filters" href="/reference/keys-and-filters/" description="Full API tables for keys, filters, and snapshots." />
