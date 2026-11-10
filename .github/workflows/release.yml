@@ -2,51 +2,26 @@ name: Release
 
 on:
   push:
-    tags: ["v*.*.*"]
-
-env:
-  CARGO_TERM_COLOR: always
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Validation only (no publish, no release)'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
-    name: Release (git-cliff changelog)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # full history: git-cliff walks every tag
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install system deps for gpui on Linux
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libasound2-dev
-      - name: Verify tests are green before releasing
-        run: cargo test --all-features --lib
-      - name: Install git-cliff
-        uses: taiki-e/install-action@v2
-        with:
-          tool: git-cliff
-      - name: Generate/update CHANGELOG.md
-        run: |
-          git-cliff --config cliff.toml --tag "$GITHUB_REF_NAME" -o CHANGELOG.md
-          cat CHANGELOG.md
-      - name: Extract release notes for the current tag
-        run: |
-          git-cliff --config cliff.toml --latest --strip header > release-notes.md
-      - name: Commit the regenerated changelog
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git diff --cached --quiet || git commit -m "chore(release): update CHANGELOG.md for $GITHUB_REF_NAME"
-          git push origin "HEAD:main" || true
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: release-notes.md
-          generate_release_notes: false
-          make_latest: true
+    uses: elcoosp/docs-toolkit/.github/workflows/rust-release.yml@main
+    with:
+      publish: true
+      binary_targets: '[]'
+      extra_checks: '["verify-tag","fmt","clippy","test"]'
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
