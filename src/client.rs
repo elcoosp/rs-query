@@ -36,9 +36,11 @@ const GC_INTERVAL: Duration = Duration::from_secs(60);
 /// no threads, and `std::thread::spawn` would panic instantly there.
 fn spawn_gc_loop(cache: Arc<DashMap<String, CacheEntry>>) {
     #[cfg(not(target_arch = "wasm32"))]
-    std::thread::spawn(move || loop {
-        std::thread::sleep(GC_INTERVAL);
-        QueryClient::gc_internal(&cache);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(GC_INTERVAL);
+            QueryClient::gc_internal(&cache);
+        }
     });
 
     #[cfg(target_arch = "wasm32")]
