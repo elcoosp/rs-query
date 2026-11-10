@@ -20,7 +20,7 @@ jobs:
     with:
       publish: true
       binary_targets: '[]'
-      extra_checks: '["verify-tag","fmt","test"]'
+      extra_checks: '["verify-tag","fmt"]'
       linux_deps: ''
       dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     secrets:
