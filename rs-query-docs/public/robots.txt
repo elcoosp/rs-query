@@ -1,2 +1,4 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://rs-query.vercel.app/sitemap-index.xml
