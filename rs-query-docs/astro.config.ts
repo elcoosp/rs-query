@@ -5,6 +5,7 @@ import headingBadges from 'starlight-heading-badges';
 
 
 export default await defineDocsConfig({
+  accentOverride: '#3e3e74',
   site: 'https://rs-query.vercel.app',
   domain: 'rs-query.vercel.app',
   title: "rs-query",
