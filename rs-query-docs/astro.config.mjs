@@ -1,26 +1,42 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import astroTakumi from 'astro-takumi';
+import fs from 'node:fs';
+import { makeRender } from './src/og-render.mjs';
 import linksValidator from 'starlight-links-validator';
 import imageZoom from 'starlight-image-zoom';
 import headingBadges from 'starlight-heading-badges';
 
+const __logoB64 = fs.readFileSync("./src/assets/logo.png").toString("base64");
+const __render = makeRender({
+  logoDataUrl: "data:image/png;base64," + __logoB64,
+  accentHex: "#3e3e74",
+  accentHexA12: "#3e3e741a",
+  domain: "rs-query.vercel.app",
+  projectName: "rs-query",
+});
+
 export default defineConfig({
+	vite: {
+		ssr: { external: ["jsdom", "astro-takumi"] },
+	},
         // GitHub Pages project-site deployment for the rs-query repository (see
         // docs/decisions/0006-site-and-deployment.md). `site` is also required by
         // Starlight's built-in sitemap integration, which warns without it — the
         // zero-warning release gate leaves no opt-out.
-        site: 'https://elcoosp.github.io',
-        base: '/rs-query',
+        site: 'https://rs-query.vercel.app',
         integrations: [
                 starlight({
+			routeMiddleware: "./src/routeData.ts",
+                        expressiveCode: {
+                        	themes: ['github-light', 'github-dark'],
+                        },
                         title: 'rs-query',
                         description:
                                 'TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.',
                         favicon: '/favicon.png',
-                        logo: {
-                                light: './src/assets/logo-light.png',
-                                dark: './src/assets/logo-dark.png',
-                        },
+
+                        logo: { src: './src/assets/logo.png' },
                         customCss: ['./src/styles/custom.css'],
                         social: [
                                 {
@@ -102,5 +118,16 @@ export default defineConfig({
                                 },
                         ],
                 }),
-        ],
+        
+		astroTakumi({
+			options: {
+				domBackend: "linkedom",
+				fonts: [fs.readFileSync("./node_modules/@fontsource/roboto/files/roboto-latin-400-normal.woff2")],
+				width: 1200,
+				height: 630,
+				format: "png",
+			},
+			render: __render,
+		}),
+	],
 });
