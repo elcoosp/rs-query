@@ -1,52 +1,32 @@
-import { defineConfig } from 'astro/config';
-import starlight from '@astrojs/starlight';
-import astroTakumi from 'astro-takumi';
-import fs from 'node:fs';
-import { makeRender } from './src/og-render.mjs';
+import { defineDocsConfig } from '@elcoosp/docs-toolkit/config';
 import linksValidator from 'starlight-links-validator';
 import imageZoom from 'starlight-image-zoom';
 import headingBadges from 'starlight-heading-badges';
 
-const __logoB64 = fs.readFileSync("./src/assets/logo.png").toString("base64");
-const __render = makeRender({
-  logoDataUrl: "data:image/png;base64," + __logoB64,
-  accentHex: "#3e3e74",
-  accentHexA12: "#3e3e741a",
-  domain: "rs-query.vercel.app",
-  projectName: "rs-query",
-});
 
-export default defineConfig({
-	vite: {
-		ssr: { external: ["jsdom", "astro-takumi"] },
-	},
-        // GitHub Pages project-site deployment for the rs-query repository (see
-        // docs/decisions/0006-site-and-deployment.md). `site` is also required by
-        // Starlight's built-in sitemap integration, which warns without it — the
-        // zero-warning release gate leaves no opt-out.
-        site: 'https://rs-query.vercel.app',
-        integrations: [
-                starlight({
-			routeMiddleware: "./src/routeData.ts",
+export default await defineDocsConfig({
+  site: 'https://rs-query.vercel.app',
+  domain: 'rs-query.vercel.app',
+  title: "rs-query",
+  description: "TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.",
+  sidebar: [],
+  extraStarlight: {
                         expressiveCode: {
-                        	themes: ['github-light', 'github-dark'],
+                        	themes: ['github-light', 'github-dark']
                         },
                         title: 'rs-query',
                         description:
                                 'TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.',
                         favicon: '/favicon.png',
-
-                        logo: { src: './src/assets/logo.png' },
-                        customCss: ['./src/styles/custom.css'],
                         social: [
                                 {
                                         icon: 'github',
                                         label: 'GitHub',
-                                        href: 'https://github.com/elcoosp/rs-query',
+                                        href: 'https://github.com/elcoosp/rs-query'
                                 },
                         ],
                         editLink: {
-                                baseUrl: 'https://github.com/elcoosp/rs-query/edit/main/docs-site/src/content/docs/',
+                                baseUrl: 'https://github.com/elcoosp/rs-query/edit/main/docs-site/src/content/docs/'
                         },
                         defaultLocale: 'root',
                         // The 404 page is a normal docs entry (src/content/docs/404.mdx) rendered
@@ -56,14 +36,14 @@ export default defineConfig({
                         locales: {
                                 root: {
                                         label: 'English',
-                                        lang: 'en',
-                                },
+                                        lang: 'en'
+                                }
                         },
                         plugins: [linksValidator(), imageZoom(), headingBadges()],
                         sidebar: [
                                 {
                                         label: 'Tutorials',
-                                        items: ['tutorials/first-query', 'tutorials/quoin-app'],
+                                        items: ['tutorials/first-query', 'tutorials/quoin-app']
                                 },
                                 {
                                         label: 'Guides',
@@ -79,7 +59,7 @@ export default defineConfig({
                                                 'guides/hydration',
                                                 'guides/framework-bindings',
                                                 'guides/devtools',
-                                        ],
+                                        ]
                                 },
                                 {
                                         label: 'Reference',
@@ -95,7 +75,7 @@ export default defineConfig({
                                                                 'reference/infinite-queries',
                                                                 'reference/observers',
                                                                 'reference/hooks',
-                                                        ],
+                                                        ]
                                                 },
                                                 {
                                                         label: 'Runtime & Ecosystem',
@@ -104,9 +84,9 @@ export default defineConfig({
                                                                 'reference/persistence-and-hydration',
                                                                 'reference/errors-and-cancellation',
                                                                 'reference/utilities',
-                                                        ],
+                                                        ]
                                                 },
-                                        ],
+                                        ]
                                 },
                                 {
                                         label: 'Explanation',
@@ -114,20 +94,8 @@ export default defineConfig({
                                                 'explanation/architecture',
                                                 'explanation/caching-model',
                                                 'explanation/tanstack-parity',
-                                        ],
+                                        ]
                                 },
-                        ],
-                }),
-        
-		astroTakumi({
-			options: {
-				domBackend: "linkedom",
-				fonts: [fs.readFileSync("./node_modules/@fontsource/roboto/files/roboto-latin-400-normal.woff2")],
-				width: 1200,
-				height: 630,
-				format: "png",
-			},
-			render: __render,
-		}),
-	],
+                        ]
+                },
 });

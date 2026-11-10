@@ -6,13 +6,12 @@
   "description": "Documentation site for rs-query — TanStack Query v5 parity for Rust, built with Astro Starlight.",
   "scripts": {
     "dev": "astro dev",
-    "build": "pnpm og:compile && node scripts/generate-llms.mjs && astro build",
+    "build": "node scripts/generate-llms.mjs && astro build",
     "preview": "astro preview",
     "check": "astro check",
     "lint": "markdownlint-cli2 \"src/content/docs/**/*.mdx\"",
     "qa": "node scripts/qa-screenshots.mjs",
-    "qa:search": "node scripts/qa-search-check.mjs",
-    "og:compile": "./node_modules/.bin/esbuild src/og-render.jsx --loader:.jsx=jsx --jsx=automatic --format=esm --outfile=src/og-render.mjs"
+    "qa:search": "node scripts/qa-search-check.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "0.42.10",
@@ -25,17 +24,16 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
-    "@fontsource/roboto": "^5.3.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "astro-takumi": "github:elcoosp/astro-takumi#c4b8331abb1dc2f157d62fba634eeb17f5e689cd",
-    "esbuild": "^0.28.2",
     "jsdom": "26.1.0",
     "markdownlint-cli2": "^0.24.0",
     "playwright": "^1.65.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "@elcoosp/docs-toolkit": "github:elcoosp/docs-toolkit#dd2fa6d7981534c0e3b230f4eed59e38bd51e4e5"
   },
   "pnpm": {
     "overrides": {
