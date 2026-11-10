@@ -55,4 +55,10 @@ keywords = ["query", "async", "cache", "tanstack", "quoin"]
 license = "MIT"
 name = "rs-query"
 readme = "README.md"
+include = [
+    "README.md",
+    "Cargo.toml",
+    "src/**/*.rs",
+    "src/**/*.md",
+]
 version = "0.2.1"
