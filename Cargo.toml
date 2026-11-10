@@ -1,5 +1,5 @@
 [dependencies]
-quoin-core = { path = "../quoin/quoin-core", version = "0.1" }
+quoin-core = { git = "https://github.com/elcoosp/quoin", branch = "main" }
 thiserror = "2"
 tracing = "0.1"
 dashmap = "6"
@@ -15,7 +15,7 @@ wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros", "test-util"] }
-quoin-testkit = { path = "../quoin/quoin-testkit", version = "0.1", features = ["tokio"] }
+quoin-testkit = { git = "https://github.com/elcoosp/quoin", branch = "main" }
 pretty_assertions = "1"
 
 [features]
