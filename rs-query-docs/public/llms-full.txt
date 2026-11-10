@@ -2138,7 +2138,7 @@ Tracks application focus events that drive `refetch_on_window_focus`. Like `Onli
 use rs_query::{ExecutorRuntime, QueryClient};
 
 let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
-    quoin_testkit::TokioExecutor::global(),
+    quoin_testkit::LocalExecutor::global(),
 )));`} />
 
 Inside a `#[tokio::test]` with `start_paused = true`, every internal sleep is virtual-time controlled.
