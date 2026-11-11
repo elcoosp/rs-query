@@ -152,7 +152,7 @@ pub(crate) mod test_support {
     #[must_use]
     pub fn tokio_client() -> QueryClient {
         QueryClient::with_runtime(std::sync::Arc::new(crate::runtime::ExecutorRuntime::new(
-            quoin_testkit::LocalExecutor::global(),
+            quoin_testkit::TokioExecutor::global(),
         )))
     }
 }
