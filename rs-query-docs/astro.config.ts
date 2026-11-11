@@ -5,6 +5,7 @@ import headingBadges from 'starlight-heading-badges';
 
 
 export default await defineDocsConfig({
+  llmsTxt: {},
   changelog: { repo: 'elcoosp/rs-query' },
   accentOverride: '#3e3e74',
   site: 'https://rs-query.vercel.app',
