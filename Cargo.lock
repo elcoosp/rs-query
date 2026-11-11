@@ -243,7 +243,7 @@ dependencies = [
 [[package]]
 name = "quoin-core"
 version = "0.4.0"
-source = "git+https://github.com/elcoosp/quoin?branch=main#9126ea7c67ec671480ef59b2e57a9f12216b820c"
+source = "git+https://github.com/elcoosp/quoin?branch=main#8738061965a67a93df432172ec925dc4a29538c8"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "quoin-testkit"
 version = "0.4.0"
-source = "git+https://github.com/elcoosp/quoin?branch=main#9126ea7c67ec671480ef59b2e57a9f12216b820c"
+source = "git+https://github.com/elcoosp/quoin?branch=main#8738061965a67a93df432172ec925dc4a29538c8"
 dependencies = [
  "futures",
  "futures-timer",
