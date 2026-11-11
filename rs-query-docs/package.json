@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.2.0",
   "private": true,
-  "description": "Documentation site for rs-query — TanStack Query v5 parity for Rust, built with Astro Starlight.",
+  "description": "Documentation site for rs-query \u2014 TanStack Query v5 parity for Rust, built with Astro Starlight.",
   "scripts": {
     "dev": "astro dev",
     "build": "node scripts/generate-llms.mjs && astro build",
@@ -32,15 +32,6 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "6.0.3",
-    "@elcoosp/docs-toolkit": "github:elcoosp/docs-toolkit#8084231ffe3841ce1f199644aeb0c0af71b137bb"
-  },
-  "pnpm": {
-    "overrides": {
-      "@emnapi/runtime": "1.11.1"
-    },
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp"
-    ]
+    "@elcoosp/docs-toolkit": "github:elcoosp/docs-toolkit#a1328154b34662d452695bbcbe6ff5d185a0c652"
   }
 }
