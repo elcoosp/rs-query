@@ -15,7 +15,7 @@ wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1.54", features = ["rt-multi-thread", "time", "sync", "rt", "macros", "test-util"] }
-quoin-testkit = { git = "https://github.com/elcoosp/quoin", branch = "main" }
+quoin-testkit = { git = "https://github.com/elcoosp/quoin", branch = "main", features = ["tokio"] }
 pretty_assertions = "1"
 
 [features]
