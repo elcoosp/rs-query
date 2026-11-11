@@ -243,7 +243,7 @@ dependencies = [
 [[package]]
 name = "quoin-core"
 version = "0.4.0"
-source = "git+https://github.com/elcoosp/quoin?branch=main#8738061965a67a93df432172ec925dc4a29538c8"
+source = "git+https://github.com/elcoosp/quoin?branch=main#d2ee5a1b7413135ae5b1b429378444683bcaa7ce"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -260,12 +260,13 @@ dependencies = [
 [[package]]
 name = "quoin-testkit"
 version = "0.4.0"
-source = "git+https://github.com/elcoosp/quoin?branch=main#8738061965a67a93df432172ec925dc4a29538c8"
+source = "git+https://github.com/elcoosp/quoin?branch=main#d2ee5a1b7413135ae5b1b429378444683bcaa7ce"
 dependencies = [
  "futures",
  "futures-timer",
  "quoin-core",
  "send_wrapper",
+ "tokio",
 ]
 
 [[package]]
