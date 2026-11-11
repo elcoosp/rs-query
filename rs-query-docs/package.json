@@ -20,7 +20,8 @@
     "starlight-heading-badges": "^0.8.0",
     "starlight-image-zoom": "^0.16.2",
     "starlight-links-validator": "^0.27.0",
-    "linkedom": "^0.18.0"
+    "linkedom": "^0.18.0",
+    "mermaid": "^11.0.0"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
@@ -32,6 +33,6 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "6.0.3",
-    "@elcoosp/docs-toolkit": "github:elcoosp/docs-toolkit#aed4c39da3e461b4ce803e7f2845a5e36bb7ed21"
+    "@elcoosp/docs-toolkit": "^0.5.4"
   }
 }
