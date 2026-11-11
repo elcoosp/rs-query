@@ -6,7 +6,7 @@
   "description": "Documentation site for rs-query \u2014 TanStack Query v5 parity for Rust, built with Astro Starlight.",
   "scripts": {
     "dev": "astro dev",
-    "build": "node scripts/generate-llms.mjs && astro build",
+    "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
     "lint": "markdownlint-cli2 \"src/content/docs/**/*.mdx\"",
