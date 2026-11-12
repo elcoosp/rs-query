@@ -39,6 +39,7 @@ multiple_crate_versions = "allow"
 struct_excessive_bools = "allow"
 
 [package]
+repository = "https://github.com/elcoosp/rs-query"
 keywords = ["query", "cache", "async", "state", "tanstack"]
 authors = ["elcoosp"]
 autobenches = false
