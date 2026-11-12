@@ -11,7 +11,9 @@
     "check": "astro check",
     "lint": "markdownlint-cli2 \"src/content/docs/**/*.mdx\"",
     "qa": "node scripts/qa-screenshots.mjs",
-    "qa:search": "node scripts/qa-search-check.mjs"
+    "qa:search": "node scripts/qa-search-check.mjs",
+    "predev": "mkdir -p src/content/i18n && cp -r node_modules/@elcoosp/docs-toolkit/i18n/* src/content/i18n/ 2>/dev/null || true",
+    "prebuild": "mkdir -p src/content/i18n && cp -r node_modules/@elcoosp/docs-toolkit/i18n/* src/content/i18n/ 2>/dev/null || true"
   },
   "dependencies": {
     "@astrojs/starlight": "0.42.10",
