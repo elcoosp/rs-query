@@ -23,8 +23,9 @@
     "starlight-image-zoom": "^0.16.2",
     "linkedom": "^0.18.0",
     "mermaid": "^11.0.0",
-    "@elcoosp/docs-toolkit": "^0.5.17",
-    "starlight-changelogs": "^0.7.1"
+    "@elcoosp/docs-toolkit": "file:../../docs-toolkit",
+    "starlight-changelogs": "^0.7.1",
+    "starlight-blog": "^0.30.2"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
@@ -36,7 +37,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "6.0.3",
-    "@elcoosp/docs-toolkit": "^0.5.17",
+    "@elcoosp/docs-toolkit": "file:../../docs-toolkit",
     "tsx": "^4.19.2"
   }
 }
