@@ -1,4 +1,5 @@
 import { defineDocsConfig } from '@elcoosp/docs-toolkit/config';
+import starlightChangelogs from 'starlight-changelogs';
 import linksValidator from 'starlight-links-validator';
 import imageZoom from 'starlight-image-zoom';
 import headingBadges from 'starlight-heading-badges';
@@ -36,7 +37,7 @@ export default await defineDocsConfig({
                         // route-conflict warning between the two handlers.
                         disable404Route: true,
 
-                        plugins: [linksValidator(), imageZoom(), headingBadges()],
+                        plugins: [ starlightChangelogs(), linksValidator(), imageZoom(), headingBadges()],
                         sidebar: [
                                 {
                                         label: 'Tutorials', translations: { fr: 'Tutoriels' },
