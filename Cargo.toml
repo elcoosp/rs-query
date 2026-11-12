@@ -39,6 +39,7 @@ multiple_crate_versions = "allow"
 struct_excessive_bools = "allow"
 
 [package]
+keywords = ["query", "cache", "async", "state", "tanstack"]
 authors = ["elcoosp"]
 autobenches = false
 autobins = false
@@ -51,7 +52,6 @@ description = "TanStack Query-inspired async state management, portable to every
 documentation = "https://docs.rs/rs-query"
 edition = "2024"
 exclude = ["docs/*", ".github/*", ".DS_Store"]
-keywords = ["query", "async", "cache", "tanstack", "quoin"]
 license = "MIT"
 name = "rs-query"
 readme = "README.md"
