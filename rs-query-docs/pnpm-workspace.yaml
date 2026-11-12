@@ -10,5 +10,6 @@ minimumReleaseAgeExclude:
 onlyBuiltDependencies:
 - esbuild
 - sharp
+- astro-takumi@https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e
 overrides:
   '@emnapi/runtime': 1.11.1
