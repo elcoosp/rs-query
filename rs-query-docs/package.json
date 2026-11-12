@@ -5,10 +5,10 @@
   "private": true,
   "description": "Documentation site for rs-query \u2014 TanStack Query v5 parity for Rust, built with Astro Starlight.",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview",
-    "check": "astro check",
+    "dev": "tsx ./node_modules/astro/bin/astro.mjs dev",
+    "build": "tsx ./node_modules/astro/bin/astro.mjs build",
+    "preview": "tsx ./node_modules/astro/bin/astro.mjs preview",
+    "check": "tsx ./node_modules/astro/bin/astro.mjs check",
     "lint": "markdownlint-cli2 \"src/content/docs/**/*.mdx\"",
     "qa": "node scripts/qa-screenshots.mjs",
     "qa:search": "node scripts/qa-search-check.mjs",
@@ -21,10 +21,9 @@
     "sharp": "^0.35.5",
     "starlight-heading-badges": "^0.8.0",
     "starlight-image-zoom": "^0.16.2",
-    "starlight-links-validator": "^0.27.0",
     "linkedom": "^0.18.0",
     "mermaid": "^11.0.0",
-    "@elcoosp/docs-toolkit": "^0.5.11",
+    "@elcoosp/docs-toolkit": "file:../../docs-toolkit",
     "starlight-changelogs": "^0.7.1"
   },
   "devDependencies": {
@@ -37,6 +36,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "6.0.3",
-    "@elcoosp/docs-toolkit": "^0.5.11"
+    "@elcoosp/docs-toolkit": "file:../../docs-toolkit",
+    "tsx": "^4.19.2"
   }
 }

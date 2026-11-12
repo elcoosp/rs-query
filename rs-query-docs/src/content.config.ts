@@ -1,7 +1,7 @@
 import { defineCollection } from 'astro:content';
 import { docsLoader, i18nLoader } from '@astrojs/starlight/loaders';
-import { changelogsLoader } from 'starlight-changelogs/loader';
 import { docsSchema, i18nSchema } from '@astrojs/starlight/schema';
+import { changelogsLoader } from 'starlight-changelogs/loader';
 
 export const collections = {
   changelogs: defineCollection({
