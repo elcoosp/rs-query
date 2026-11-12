@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/logo.png" alt="rs-query" width="300"/>
+  <img src="https://cdn.jsdelivr.net/gh/elcoosp/rs-query@main/docs/logo.png" alt="rs-query" width="300"/>
   <h1>rs-query</h1>
   <p><strong>TanStack Query v5 parity for Rust — portable to every quoin-supported UI framework.</strong></p>
   <p>
@@ -30,9 +30,9 @@ The same crate runs headless (shared worker pool + portable timers, no runtime n
 inside a quoin application on **gpui, leptos, dioxus, xilem or floem**.
 
 This crate targets **TanStack Query v5 parity** — the porting contract lives in
-[`docs/port-plan.md`](docs/port-plan.md), the quoin migration contract in
-[`docs/quoin-migration-plan.md`](docs/quoin-migration-plan.md), and the audited upstream
-semantics behind every module in [`docs/research/`](docs/research/).
+[`docs/port-plan.md`](https://github.com/elcoosp/rs-query/blob/main/docs/port-plan.md), the quoin migration contract in
+[`docs/quoin-migration-plan.md`](https://github.com/elcoosp/rs-query/blob/main/docs/quoin-migration-plan.md), and the audited upstream
+semantics behind every module in [`docs/research/`](https://github.com/elcoosp/rs-query/tree/main/docs/research).
 
 | | |
 |---|---|
@@ -307,6 +307,3 @@ GitHub release notes on `v*` tags.
 Releases follow SemVer; `CHANGELOG.md` is generated from Conventional Commits by
 git-cliff on each `v*` tag (see `cliff.toml`).
 
-## License
-
-MIT — see the repository metadata.
