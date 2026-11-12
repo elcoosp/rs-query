@@ -3,7 +3,6 @@ import linksValidator from 'starlight-links-validator';
 import imageZoom from 'starlight-image-zoom';
 import headingBadges from 'starlight-heading-badges';
 
-
 export default await defineDocsConfig({
   llmsTxt: {},
   changelog: { repo: 'elcoosp/rs-query' },
@@ -31,17 +30,12 @@ export default await defineDocsConfig({
                         editLink: {
                                 baseUrl: 'https://github.com/elcoosp/rs-query/edit/main/docs-site/src/content/docs/'
                         },
-                        defaultLocale: 'root',
+
                         // The 404 page is a normal docs entry (src/content/docs/404.mdx) rendered
                         // through [...slug]; disabling Starlight's injected /404 route avoids the
                         // route-conflict warning between the two handlers.
                         disable404Route: true,
-                        locales: {
-                                root: {
-                                        label: 'English',
-                                        lang: 'en'
-                                }
-                        },
+
                         plugins: [linksValidator(), imageZoom(), headingBadges()],
                         sidebar: [
                                 {
