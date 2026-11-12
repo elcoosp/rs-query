@@ -12,8 +12,8 @@ importers:
         specifier: 0.42.10
         version: 0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3)
       '@elcoosp/docs-toolkit':
-        specifier: ^0.5.23
-        version: 0.5.23(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(@types/node@24.19.2)(astro-takumi@https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e(csstype@3.2.3)(linkedom@0.18.15))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(mermaid@11.17.2)(playwright@1.65.0)(react@19.3.1)
+        specifier: ^0.5.28
+        version: 0.5.28(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(@types/node@24.19.2)(astro-takumi@https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e(csstype@3.2.3)(linkedom@0.18.15))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(mermaid@11.17.2)(playwright@1.65.0)(react@19.3.1)
       astro:
         specifier: ^7.4.7
         version: 7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
@@ -26,6 +26,9 @@ importers:
       sharp:
         specifier: ^0.35.5
         version: 0.35.5(@types/node@24.19.2)
+      starlight-announcement:
+        specifier: ^2.0.0
+        version: 2.0.0(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))
       starlight-blog:
         specifier: ^0.30.2
         version: 0.30.2(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
@@ -237,21 +240,21 @@ packages:
   '@astrojs/yaml2ts@0.2.4':
     resolution: {integrity: sha512-8oddpOae35pJsXPQXhTkM0ypfKPskVsh2bCxRtbf7e+/Epw2nReakFYpLKjZMEr75CsoF203PMnCocpfz0s69A==}
 
-  '@babel/helper-string-parser@7.29.13':
-    resolution: {integrity: sha512-fWegr+WsEsiMVW4KUNdIIzzMTZSzNiqhy0//6+2MRi2d5NFNsL/AYwBQW8eBnRbTBVRnDVzjaJEUqKaCWjMMdQ==}
+  '@babel/helper-string-parser@7.29.14':
+    resolution: {integrity: sha512-CXvKMFvM80ihI7Vox9jb+kQjnyjESQNPM+vB7U0Zz6TWuZA+Z/FL0QPMH300h33qJtIx+REeBhXqWOPW48TcAQ==}
     engines: {node: '>=6.9.0'}
 
   '@babel/helper-validator-identifier@7.29.7':
     resolution: {integrity: sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==}
     engines: {node: '>=6.9.0'}
 
-  '@babel/parser@7.29.13':
-    resolution: {integrity: sha512-fJM50YYjlTiBhgdkGmC1tBpv+FMAyo4annf2X6Aks+0yRlaiVkYW/3f07xAfVVkYIoZ9fFZp+mEThUFnuybhkQ==}
+  '@babel/parser@7.29.14':
+    resolution: {integrity: sha512-VL220vXuyO2z3rNIQwY7ftj9UwpqOt+33sH+sBWkOekbsSR2g7EEMnOx24ZlCH0xOA3DM/33SifVFGbnJD8r/w==}
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  '@babel/types@7.29.11':
-    resolution: {integrity: sha512-WCsemW40Cpc6gouC1SrY6PBaZ+oLRlEVY9XBvZBI7il/HyUrb2nJ505wE1MHEFyDZNnrWDEuy4jL50WVHfTTSQ==}
+  '@babel/types@7.29.14':
+    resolution: {integrity: sha512-UjI/dKmwJwT9pOszJitq2G6EObZPnsZUfdCr92z2TlF3EZK9J3EdfOKUrCzHl6wFthbzwhzl1Soc/UIwxRiq6w==}
     engines: {node: '>=6.9.0'}
 
   '@braintree/sanitize-url@7.1.2':
@@ -433,9 +436,9 @@ packages:
     resolution: {integrity: sha512-6V0+8vw/GmH92URQ/Ki12FPhoB3nqaQUJE+5xgbFbB5ok0OXYK5jCQsQQoyR3BzCddHsCpyCFRnIcI1PSOVYkQ==}
     engines: {node: '>=14'}
 
-  '@elcoosp/docs-toolkit@0.5.23':
-    resolution: {integrity: sha512-8wP2HA50fHyUzHRawWl5PFmG9yD7ot22mxOhiSzkIeBob6VM2NK6I2nqyzTOuLwpzSP/Eb6/8LriQmC18/yf/Q==}
-    version: 0.5.23
+  '@elcoosp/docs-toolkit@0.5.28':
+    resolution: {integrity: sha512-QHoYrqCei0TrKPwHQtqTQ+aDIRO/9f4shbN/BYsoiytNh7JZP5Iolu4ZWeXMlUkyH/ifn5TIPn44SbeztNmNhQ==}
+    version: 0.5.28
     engines: {node: '>=22.18.0'}
     hasBin: true
     peerDependencies:
@@ -2884,6 +2887,12 @@ packages:
   space-separated-tokens@2.0.2:
     resolution: {integrity: sha512-PEGlAwrG8yXGXRjW32fGbg66JAlOAwbObuqVoJpv/mRgoWDQfgH1wDPvtzWyUSNAXBGSk8h755YDbbcEy3SH2Q==}
 
+  starlight-announcement@2.0.0:
+    resolution: {integrity: sha512-GhyCrXGn83vpnXZsFjQiBfo32iID8AjGq/1M7lSo+ilz78eYxrK/JZNvGCTPT534iXGUvZ1TNmXiAL8L9QWepA==}
+    engines: {node: '>=22.12.0'}
+    peerDependencies:
+      '@astrojs/starlight': '>=0.41.0'
+
   starlight-blog@0.30.2:
     resolution: {integrity: sha512-nQHOhWF8mP3UsdPbJEf1WWm2efVWTISKUIffjUKSak4xmcF24sa71NQpXiLSH490qC8tKgHd4i0ZQIRHvmy80g==}
     peerDependencies:
@@ -3665,17 +3674,17 @@ snapshots:
     dependencies:
       yaml: 2.9.1
 
-  '@babel/helper-string-parser@7.29.13': {}
+  '@babel/helper-string-parser@7.29.14': {}
 
   '@babel/helper-validator-identifier@7.29.7': {}
 
-  '@babel/parser@7.29.13':
+  '@babel/parser@7.29.14':
     dependencies:
-      '@babel/types': 7.29.11
+      '@babel/types': 7.29.14
 
-  '@babel/types@7.29.11':
+  '@babel/types@7.29.14':
     dependencies:
-      '@babel/helper-string-parser': 7.29.13
+      '@babel/helper-string-parser': 7.29.14
       '@babel/helper-validator-identifier': 7.29.7
 
   '@braintree/sanitize-url@7.1.2': {}
@@ -3800,17 +3809,19 @@ snapshots:
 
   '@ctrl/tinycolor@4.3.0': {}
 
-  '@elcoosp/docs-toolkit@0.5.23(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(@types/node@24.19.2)(astro-takumi@https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e(csstype@3.2.3)(linkedom@0.18.15))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(mermaid@11.17.2)(playwright@1.65.0)(react@19.3.1)':
+  '@elcoosp/docs-toolkit@0.5.28(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(@types/node@24.19.2)(astro-takumi@https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e(csstype@3.2.3)(linkedom@0.18.15))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(mermaid@11.17.2)(playwright@1.65.0)(react@19.3.1)':
     dependencies:
       '@astrojs/rss': 4.0.19
       '@astrojs/starlight': 0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3)
       astro: 7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
       astro-mermaid: 2.2.0(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(mermaid@11.17.2)
       astro-takumi: https://codeload.github.com/elcoosp/astro-takumi/tar.gz/4bb9e47833c48388b17da9612d77bc9f600d525e(csstype@3.2.3)(linkedom@0.18.15)
+      github-slugger: 2.0.0
       marked: 15.0.12
       mermaid: 11.17.2
       react: 19.3.1
       sharp: 0.35.5(@types/node@24.19.2)
+      starlight-announcement: 2.0.0(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))
       starlight-blog: 0.30.2(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
       starlight-changelogs: 0.7.1(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
       starlight-giscus: 1.2.0(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))
@@ -5744,8 +5755,8 @@ snapshots:
 
   magicast@0.5.5:
     dependencies:
-      '@babel/parser': 7.29.13
-      '@babel/types': 7.29.11
+      '@babel/parser': 7.29.14
+      '@babel/types': 7.29.14
       source-map-js: 1.2.2
 
   markdown-extensions@2.0.0: {}
@@ -6803,6 +6814,11 @@ snapshots:
   source-map@0.8.0: {}
 
   space-separated-tokens@2.0.2: {}
+
+  starlight-announcement@2.0.0(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3)):
+    dependencies:
+      '@astrojs/starlight': 0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3)
+      picomatch: 4.0.7
 
   starlight-blog@0.30.2(@astrojs/markdown-satteri@0.4.9)(@astrojs/starlight@0.42.10(@astrojs/markdown-remark@7.3.8)(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))(typescript@6.0.3))(astro@7.4.11(@astrojs/markdown-remark@7.3.8)(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)):
     dependencies:
