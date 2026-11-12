@@ -23,7 +23,7 @@ export default await defineDocsConfig({
                         social: [
                                 {
                                         icon: 'github',
-                                        label: 'GitHub',
+                                        label: 'GitHub', translations: { fr: "GitHub" },
                                         href: 'https://github.com/elcoosp/rs-query'
                                 },
                         ],
@@ -62,7 +62,7 @@ export default await defineDocsConfig({
                                         label: 'Reference', translations: { fr: 'Référence' },
                                         items: [
                                                 {
-                                                        label: 'Core API',
+                                                        label: 'Core API', translations: { fr: "API de base" },
                                                         items: [
                                                                 'reference/client',
                                                                 'reference/query',
@@ -75,7 +75,7 @@ export default await defineDocsConfig({
                                                         ]
                                                 },
                                                 {
-                                                        label: 'Runtime & Ecosystem',
+                                                        label: 'Runtime & Ecosystem', translations: { fr: "Exécution et écosystème" },
                                                         items: [
                                                                 'reference/runtime-and-network',
                                                                 'reference/persistence-and-hydration',
