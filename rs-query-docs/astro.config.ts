@@ -39,11 +39,11 @@ export default await defineDocsConfig({
                         plugins: [linksValidator(), imageZoom(), headingBadges()],
                         sidebar: [
                                 {
-                                        label: 'Tutorials',
+                                        label: 'Tutorials', translations: { fr: 'Tutoriels' },
                                         items: ['tutorials/first-query', 'tutorials/quoin-app']
                                 },
                                 {
-                                        label: 'Guides',
+                                        label: 'Guides', translations: { fr: 'Guides' },
                                         items: [
                                                 'guides/install',
                                                 'guides/queries',
@@ -59,7 +59,7 @@ export default await defineDocsConfig({
                                         ]
                                 },
                                 {
-                                        label: 'Reference',
+                                        label: 'Reference', translations: { fr: 'Référence' },
                                         items: [
                                                 {
                                                         label: 'Core API',
@@ -86,7 +86,7 @@ export default await defineDocsConfig({
                                         ]
                                 },
                                 {
-                                        label: 'Explanation',
+                                        label: 'Explanation', translations: { fr: 'Explication' },
                                         items: [
                                                 'explanation/architecture',
                                                 'explanation/caching-model',
