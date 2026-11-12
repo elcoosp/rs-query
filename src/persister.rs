@@ -667,6 +667,7 @@ mod tests {
     use crate::options::QueryOptions;
     use std::sync::Arc;
 
+    #[allow(dead_code)]
     const HOUR_MS: u64 = 60 * 60 * 1000;
 
     fn test_persister() -> QueryPersister {
@@ -679,6 +680,7 @@ mod tests {
         QueryKey::new("users").with("id", id)
     }
 
+    #[allow(dead_code)]
     async fn stored_entry_count(persister: &QueryPersister) -> usize {
         let prefix = format!("{}-", persister.options().prefix());
         persister
