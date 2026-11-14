@@ -1,5 +1,4 @@
 {
   "name": "rs-query",
-  "private": true,
-  "packageManager": "pnpm@12.18.0"
+  "private": true
 }
