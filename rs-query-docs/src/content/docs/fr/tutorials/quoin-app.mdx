@@ -1,0 +1,97 @@
+---
+title: Requêtes dans une application Quoin
+description: "Câblez rs-query dans une application gpui, leptos, dioxus, xilem ou floem via la couche réactive quoin."
+type: tutorial
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Dans ce tutoriel vous prenez la requête sans tête du [premier tutoriel](/tutorials/first-query/) et l'observez depuis l'intérieur d'une application quoin. Les bindings sont génériques sur tout `quoin_core::ReactiveContext`, donc le code ci-dessous est identique sur gpui, leptos, dioxus, xilem et floem — seule la syntaxe de vue environnante diffère. Chaque binding renvoie le type **natif** de signal de votre framework.
+
+<Aside type="note">
+Prérequis : un squelette d'application quoin avec un `ReactiveContext` disponible (généralement `cx`), et l'[installation](/guides/install/) du premier tutoriel.
+</Aside>
+
+## 1. Construire le client depuis le contexte du framework
+
+Construisez le client avec `QueryClient::with_context(&cx)` pour que fetches et minuteurs roulent sur l'exécuteur du framework au lieu du pool de workers par défaut :
+
+<Code lang="rust" code={`use rs_query::QueryClient;
+
+// Dans la configuration de votre app :
+let client = QueryClient::with_context(&cx);`} />
+
+Stockez le client dans l'état de votre application. Comme `QueryClient::new()`, il est bon marché à cloner et partage un cache entre clones.
+
+## 2. Observer une requête depuis une vue
+
+Dans un composant, appelez `use_query` avec le contexte, le client et la requête. Le binding pompe les mises à jour de cache dans un signal du framework et reste en phase via des pompes tolérantes au retard :
+
+<Code lang="rust" code={`use rs_query::use_query;
+
+// Dans un composant, où cx est le ReactiveContext du framework :
+let todo = use_query(&cx, &client, &query);
+
+// todo.state est le signal natif du framework : lisez-le depuis votre vue.
+let state = todo.state.get(); // QueryState<Todo>`} />
+
+Abandonner le binding annule sa pompe et abandonne le fetch en vol — cancel-on-unmount est le comportement par défaut, pas un opt-in.
+
+## 3. Rendre l'état
+
+`QueryState<T>` a une variante pour chaque situation de cache, donc `match` couvre le rendu exhaustivement :
+
+<Code lang="rust" code={`match state {
+    rs_query::QueryState::Idle | rs_query::QueryState::Loading => render_spinner(),
+    rs_query::QueryState::LoadingWithPlaceholder(data)
+    | rs_query::QueryState::Success(data)
+    | rs_query::QueryState::Stale(data)
+    | rs_query::QueryState::Refetching(data) => render_todo(data),
+    rs_query::QueryState::Error { error, stale_data } => match stale_data {
+                    Some(data) => render_todo_with_banner(data, error),
+                    None => render_error(error),
+    },
+}`} />
+
+<Aside type="tip">
+Vous écrivez rarement ce match à la main. Les drapeaux de résultat de [QueryObserver](/reference/observers/) — `is_placeholder_data`, `is_refetch_error`, `is_paused` — existent pour transformer ces branches en logique booléenne compacte.
+</Aside>
+
+## 4. Déclencher un refetch depuis la vue
+
+Le binding expose `refetch` et `abort_fetch` pour les actions pilotées par l'utilisateur :
+
+<Code lang="rust" code={`todo.refetch();     // réexécute la requête maintenant
+todo.abort_fetch(); // annule le fetch en vol`} />
+
+## 5. Muter et invalider
+
+Câblez un bouton de sauvegarde sur une mutation avec `use_mutation`, et invalidez la clé de liste au succès. Le cycle de vie de la mutation exécute les hooks de niveau cache et de niveau options dans l'ordre TanStack (voir [Mutations et mises à jour optimistes](/guides/mutations/)) :
+
+<Code lang="rust" code={`use rs_query::{Mutation, MutateOptions};
+
+let save = use_mutation(&cx, &client, &save_mutation);
+
+// Au clic sur le bouton :
+save.mutate(patch, MutateOptions::new().on_success(|_client, _data| {
+    // l'invalidates_key propre à la mutation a déjà refetch les requêtes actives
+}));`} />
+
+Le signal se met à jour à nouveau quand la requête invalidée refetch — aucun câblage manuel entre mutation et vue.
+
+## 6. Verrouiller le rendu pendant l'hydratation
+
+Si le client restaure un état persisté au démarrage, tenez le drapeau `is_restoring` jusqu'à ce que la restauration se termine. Les bindings respectent le verrou et retiennent `fetchStatus` à `idle` tant qu'il est posé :
+
+<Code lang="rust" code={`client.set_is_restoring(true);
+// ... restauration ...
+client.set_is_restoring(false);`} />
+
+## Ce que vous avez construit
+
+Une requête liée au framework avec cancel-on-unmount, rendu exhaustif d'état, refetch piloté par l'utilisateur, invalidation pilotée par mutation, et un verrou d'hydratation — la boucle réactive complète, sans un seul import spécifique au framework dans la couche requête.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : bindings de framework" href="/guides/framework-bindings/" description="Les dix hooks, y compris use_queries avec combine et le flux d'activité." />
+<LinkCard title="Référence : hooks de framework" href="/reference/hooks/" description="Signatures et retours pour chaque binding." />

@@ -1,0 +1,104 @@
+---
+title: QueryClient
+description: "Le cache, la table de déduplication, les défauts et les points d'entrée runtime — chaque méthode de QueryClient."
+type: reference
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+`QueryClient` est le cœur de rs-query. Il possède le cache de requêtes, la table de déduplication, les options par défaut, l'online manager et la jointure d'exécution. Il est bon marché à cloner ; chaque clone partage le même cache. Créez-en un avec `QueryClient::new()` (`PoolRuntime` par défaut), `QueryClient::with_runtime(...)`, ou `QueryClient::with_context(&cx)` dans une application quoin.
+
+## Construction
+
+| Méthode                                   | Description                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `QueryClient::new()`                      | Client par défaut sur le pool de workers partagé (`PoolRuntime`)           |
+| `QueryClient::with_runtime(Arc<dyn QueryRuntime>)` | Jointure d'exécution personnalisée — tests déterministes, exécuteurs de framework |
+| `QueryClient::with_context(&cx)`          | Construit depuis un `ReactiveContext` quoin ; les fetches roulent sur l'exécuteur du framework |
+| `.runtime() -> &Arc<dyn QueryRuntime>`    | La jointure d'exécution en usage                                            |
+
+## Lire des données
+
+| Méthode                                                | Description                                              |
+| ----------------------------------------------------- | -------------------------------------------------------- |
+| `get_query_data::<T>(&key) -> Option<T>`               | Données en cache pour la clé, clonées                          |
+| `get_infinite_data::<T, P>(&key) -> Option<InfiniteData<T, P>>` | Pages et paramètres d'une requête infinie           |
+| `get_query_options(&key) -> Option<QueryOptions>`      | Les options que le cache tient pour cette requête               |
+| `get_query_state(&key) -> Option<QueryStateSnapshot>`  | Instantané de statut/fetch-status/péremption                   |
+| `is_stale(&key) -> bool`                               | Périmé par drapeau ou par `stale_time` écoulé                 |
+| `query_snapshots(&filters) -> Vec<QuerySnapshot>`      | Instantanés matchés par filtre — prévisualiser les opérations en masse       |
+
+## Écrire des données
+
+| Méthode                                                          | Description                                   |
+| --------------------------------------------------------------- | --------------------------------------------- |
+| `set_query_data::<T>(&key, data, QueryOptions)`                   | Écrit des données dans le cache ; notifie les observateurs |
+| `set_infinite_data::<T, P>(&key, data, QueryOptions)`             | Remplace les pages d'une requête infinie             |
+| `append_infinite_page::<T, P>(&key, page, param, QueryOptions)`   | Ajoute une page avec le fenêtrage appliqué        |
+| `prepend_infinite_page::<T, P>(&key, page, param, QueryOptions)`  | Préfixe une page avec le fenêtrage appliqué       |
+| `set_default_options(options)` / `get_default_options()`          | Défauts d'options à l'échelle du client                   |
+
+## Fetch impératif
+
+| Méthode                                        | Description                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| `fetch_query::<T>(&query) -> QueryState<T>`    | Exécute le fetch maintenant avec réessais forcés à off (sémantique `query()` de TanStack) |
+| `prefetch_query::<T>(&query)`                  | `fetch_query` qui journalise et abandonne les erreurs — préchauffage                      |
+| `ensure_query_data::<T>(&query) -> QueryState<T>` | Renvoie les données fraîches en cache, fetch sinon (TanStack `ensureQueryData`) |
+
+<Aside type="note">
+Ces trois sont des *méthodes* du client — le README de la crate les liste sous « API impérative », et elles vivent sur `QueryClient`, pas en fonctions libres.
+</Aside>
+
+## Opérations en masse
+
+Toutes les opérations basées sur filtre renvoient le compte de requêtes affectées :
+
+| Méthode                                                | Description                                        |
+| ----------------------------------------------------- | -------------------------------------------------- |
+| `invalidate_queries(&pattern)`                         | Marque tout ce qui est sous `pattern` comme périmé              |
+| `invalidate_queries_filtered(InvalidateQueryFilters)`  | Filtres + matrice `RefetchType`                     |
+| `refetch_queries(&filters, RefetchQueryFilters)`       | Refetch avec `cancel_refetch`/`throw_on_error`     |
+| `cancel_queries(&filters)` / `cancel_query(&key)`      | Annulation coopérative                           |
+| `reset_queries(&filters)`                              | Retour à `Idle` ; abandonne les données                         |
+| `remove_queries(&filters)`                             | Évince du cache                               |
+| `refetch_all_stale()`                                  | Refetch chaque requête périmée                          |
+| `clear()`                                              | Abandonne tout le cache                               |
+| `gc()`                                                 | Balaye les requêtes au-delà de `gc_time`                       |
+| `is_fetching_filtered(&filters) -> usize`              | Compte les requêtes en vol correspondantes                   |
+
+## Cycle de vie et introspection
+
+| Méthode                                   | Description                                                   |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| `mount()` / `unmount()`                   | Enregistre/démonte les gestionnaires globaux focus, online et GC       |
+| `handle_reconnect()`                      | Exécute la séquence de reconnexion : déclencheurs de refetch + reprise des pausées   |
+| `resume_paused_mutations() -> usize`      | Reprend les mutations `OfflineFirst` mises en pause hors ligne           |
+| `is_fetching()` / `fetching_count()`      | Activité de fetch globale                                          |
+| `is_mutating()` / `mutating_count()`      | Activité de mutation globale                                       |
+| `is_in_flight(&key) -> bool`              | Vérification de déduplication pour une clé                                          |
+| `is_restoring()` / `set_is_restoring(bool)` | Verrou d'hydratation ; retient les fetches pendant la restauration                |
+| `online_manager() -> &OnlineManager`      | Le gestionnaire de connectivité                                       |
+| `subscribe(&cache_key)`                   | `bus::Receiver<QueryStateUpdate>` pour une requête                |
+| `subscribe_all()`                         | Flux de mises à jour à l'échelle du client                                      |
+| `subscribe_activity()`                    | `bus::Receiver<ActivityEvent>` — alimente `use_activity_feed`     |
+| `notify_subscribers(&cache_key, variant)` | Force la notification des souscripteurs d'une clé                               |
+
+## Exemple : un client avec des défauts
+
+<Code lang="rust" code={`use std::time::Duration;
+use rs_query::{QueryClient, QueryOptions};
+
+let client = QueryClient::new();
+client.set_default_options(
+    QueryOptions::default()
+                    .stale_time(Duration::from_secs(30))
+                    .gc_time(Duration::from_secs(300)),
+);`} />
+
+Chaque requête créée ensuite hérite de ces défauts sauf si elle les surcharge.
+
+## Étapes suivantes
+
+<LinkCard title="Référence : Query et QueryState" href="/reference/query/" description="Le builder et la machine à états." />
+<LinkCard title="Référence : QueryOptions" href="/reference/query-options/" description="Chaque option, défaut et déclencheur." />

@@ -1,0 +1,79 @@
+---
+title: Architecture — la jointure d'exécution et Quoin
+description: "Comment rs-query reste sans framework avec quoin-core, une jointure d'exécution, et des gestionnaires sans tête."
+type: explanation
+---
+
+import { FileTree, LinkCard } from '@astrojs/starlight/components';
+
+rs-query est un port de TanStack Query dont la contrainte déterminante est la portabilité : une crate doit tourner sans tête, sur cinq frameworks UI, et sur wasm. Cette page explique l'architecture qui rend cela possible — où sont les jointures, ce que quoin fournit, et pourquoi la carte des modules ressemble à ce qu'elle est.
+
+## Deux couplages à retirer
+
+Un moteur de requête a besoin d'exactement deux services de plateforme : *un endroit où exécuter des futures* (un spawn et des minuteurs) et *quelque chose à observer* (des signaux). Les premières versions de rs-query codaient en dur les deux — tokio pour le runtime, gpui pour la réactivité — ce qui ancrait la crate à une pile par service. La version 0.2 a retiré les deux couplages :
+
+- **Runtime** traverse la jointure object-safe `QueryRuntime`. Le `PoolRuntime` par défaut exécute les tâches sur le pool de workers partagé de quoin avec des minuteurs portables ; `ExecutorRuntime` délègue à n'importe quel exécuteur qu'on lui donne ; les tests injectent l'exécuteur à temps suspendu de quoin-testkit. Sur wasm, le pool exécute les futures sur le thread principal via `spawn_local`.
+- **Réactivité** est générique sur `quoin_core::ReactiveContext`. Le module `hooks` émet le type `Signal` natif du framework via des pompes tolérantes au retard, donc gpui, leptos, dioxus, xilem et floem obtiennent chacun des bindings au feeling natif à partir d'une seule implémentation.
+
+Tout le reste — cache, réessais, déduplication, invalidation, persistance — est du Rust pur sans dépendance de plateforme.
+
+## La carte des modules
+
+<FileTree>
+        - src/
+                - lib.rs — ré-exports publics
+                - key.rs — hiérarchie QueryKey + correspondance par préfixe
+                - state.rs — QueryState/MutationState + énumérations de statut
+                - options.rs — QueryOptions (surface d'options TanStack)
+                - filters.rs — QueryFilters / MutationFilters + match_query/match_mutation
+                - retryer.rs — décisions de réessai + backoff min(1000·2ⁿ, 30 s)
+                - network.rs — NetworkMode + OnlineManager
+                - notify_manager.rs — notifications groupées
+                - timeout_manager.rs — source de minuteur injectable
+                - focus_manager.rs — événements de focus
+                - query.rs — le builder Query
+                - client.rs — QueryClient : cache, déduplication, annulation, opérations en masse
+                - executor.rs — exécution fetch/mutation (réessai, pause, verrou de restauration)
+                - observer.rs — QueryObserver + drapeaux de résultat
+                - infinite.rs / infinite_executor.rs — pagination
+                - mutation.rs / mutation_cache.rs / mutation_observer.rs — mutations
+                - queries_observer.rs — QueriesObserver (cœur de useQueries)
+                - runtime.rs — la jointure QueryRuntime
+                - bus.rs — canal de diffusion borné (sans runtime)
+                - watch.rs — cellule watch (signaux online/stop)
+                - hooks.rs — bindings de signaux quoin
+                - sharing.rs — partage structurel (PartialEqAny)
+                - cancellation.rs — cancellable_fetch
+                - hydration.rs — dehydrate/hydrate
+                - persister.rs / persist_client.rs — couches de persistance
+                - broadcast.rs — synchro de cache entre instances
+                - streamed_query.rs — port de streamedQuery
+                - updater.rs — Updater / functional_update
+                - devtools.rs — devtools sans tête (fonctionnalité "devtools")
+</FileTree>
+
+## Le chemin des données
+
+Une requête traverse six stations :
+
+1. **Builder** — `Query::new(key, fetch_fn)` assemble les options.
+2. **Executor** — `executor.rs` exécute le pipeline : vérification de déduplication → verrou de restauration → barrière de mode réseau → fetch → réessais (`retryer.rs`) → écriture de cache.
+3. **Cache** — `client.rs` stocke `QueryState` par `cache_key`, balaye `gc_time` et diffuse les mises à jour.
+4. **Notify** — `notify_manager.rs` replie la rafale en un seul batch.
+5. **Observer** — `observer.rs` dérive les drapeaux (`is_stale`, `failure_count`, `is_paused`…) de l'état brut.
+6. **Binding** — `hooks.rs` pousse le résultat dérivé dans un signal de framework.
+
+L'annulation chevauche le tout : chaque station tient un `CancellationToken`, donc une annulation est coopérative et atteint la fermeture de fetch entre les awaits.
+
+## Pourquoi des canaux bornés et des cellules watch
+
+`bus.rs` et `watch.rs` existent parce que la crate ne peut pas dépendre des canaux de tokio. Le bus est un canal de diffusion borné avec une sémantique `Lagged` explicite — un consommateur lent se rattrape sur le dernier état au lieu de rejouer l'historique — et la cellule watch publie des signaux mono-valeur (online/offline, drapeaux stop) sans runtime. Les deux sont la raison pour laquelle toute la pile reste sans tête.
+
+## Verrous de qualité
+
+L'architecture est imposée par la CI : `cargo clippy --all-features -- -D warnings` au niveau pedantic sans aucun allow, 713 tests sans framework, `cargo doc --no-deps` avec `missing_docs = "warn"` pour que chaque élément public soit documenté, et la couverture sur Codecov. Le contrat de portage dans `docs/port-plan.md` et le contrat de migration quoin dans `docs/quoin-migration-plan.md` gardent la sémantique amont auditable module par module.
+
+## Étapes suivantes
+
+<LinkCard title="Explication : le modèle de cache" href="/explanation/caching-model/" description="Ce que le cache calcule à chaque écriture." />
+<LinkCard title="Référence : runtime, réseau et gestionnaires" href="/reference/runtime-and-network/" description="Les signatures exactes de la jointure." />

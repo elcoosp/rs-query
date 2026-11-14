@@ -1,0 +1,85 @@
+---
+title: Runtime, réseau et gestionnaires
+description: "La jointure QueryRuntime, PoolRuntime et ExecutorRuntime, NetworkMode, OnlineManager et les trois gestionnaires."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+rs-query ne tourne nulle part en particulier par conception : spawn, minuteurs et signaux traversent une jointure d'exécution. Cette page documente la jointure, la couche réseau, et les trois gestionnaires (notify, timeout, focus).
+
+## `QueryRuntime` — la jointure
+
+| Élément                             | Description                                                    |
+| -------------------------------- | -------------------------------------------------------------- |
+| `QueryRuntime`                   | Trait object-safe : spawn de tâches, minuteurs, handles d'annulation |
+| `PoolRuntime`                    | Défaut : pool de workers partagé de quoin + minuteurs portables          |
+| `ExecutorRuntime::new(executor)` | Tourne sur n'importe quel exécuteur de framework que vous fournissez                       |
+| `SpawnedTask<T>`                 | Handle de tâche awaitable — l'abandonner annule coopérativement       |
+| `SpawnHandle`                    | Handle de spawn de plus bas niveau (abort + join)                        |
+| `BoxFuture`                      | Type de future boxé utilisé à travers la jointure                         |
+
+Choisissez un runtime une fois, à la construction du client : `QueryClient::new()` utilise `PoolRuntime`, `QueryClient::with_context(&cx)` utilise l'exécuteur du framework, `QueryClient::with_runtime(arc)` injecte le vôtre — la jointure que les tests déterministes utilisent avec l'exécuteur à temps suspendu de quoin-testkit.
+
+Sur `wasm32`, le pool et la boucle GC exécutent leurs futures sur le thread principal du navigateur via `spawn_local` ; le pool de threads OS paniquerait là.
+
+## `NetworkMode` et aides
+
+| Variante            | Fetch peut démarrer hors ligne | Les réessais continuent hors ligne |
+| ------------------ | ----------------------- | ------------------------ |
+| `Online` (défaut) | Non                      | Non                       |
+| `Always`           | Oui                     | Oui                      |
+| `OfflineFirst`     | Oui (première tentative)     | Non — les réessais se mettent en pause       |
+
+| Aide                            | Description                                         |
+| ------------------------------- | --------------------------------------------------- |
+| `can_fetch(mode, online) -> bool` | Si un fetch peut _démarrer_ sous cette connectivité |
+| `can_retry(mode, online) -> bool` | Si un réessai peut _continuer_                      |
+
+## `OnlineManager`
+
+| Membre                 | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `OnlineManager::new()` | Démarre en ligne                                         |
+| `.set_online(bool)`    | Alimenté par la vérité de connectivité de la plateforme ; pilote pause/reprise |
+| signaux basés sur watch    | Cellule `watch` sans runtime qui publie l'état         |
+
+La copie du client vit à `client.online_manager()` ; `client.handle_reconnect()` exécute la séquence de reconnexion par-dessus.
+
+## Les trois gestionnaires
+
+### `NotifyManager`
+
+Replie les rafales de notifications : les batches imbriqués fusionnent pour qu'une tempête d'écritures de cache produise un seul flush de signal. Chaque notification de cache passe par lui.
+
+### `TimeoutManager` et `SleepProvider`
+
+Tout sommeil passe par une source de minuteur injectable :
+
+| Élément                 | Description                                         |
+| -------------------- | --------------------------------------------------- |
+| `TimeoutManager`     | Planifie les réessais, balayages GC et intervalles de refetch |
+| `SleepProvider`      | Trait pour les sources de minuteur                             |
+| `QuoinSleepProvider` | Défaut sans runtime — minuteurs portables, pas de tokio    |
+
+Échangez le fournisseur pour des tests déterministes : l'exécuteur à temps suspendu de quoin-testkit avance les horloges virtuelles, donc les backoffs de réessai tournent instantanément en CI.
+
+### `FocusManager`
+
+Suit les événements de focus de l'application qui pilotent `refetch_on_window_focus`. Comme `OnlineManager`, votre adaptateur de plateforme l'alimente ; la crate ne touche jamais les API OS.
+
+## Exemple : un client de test déterministe
+
+<Code lang="rust" code={`use std::sync::Arc;
+use rs_query::{ExecutorRuntime, QueryClient};
+
+let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
+quoin_testkit::LocalExecutor::global(),
+)));`} />
+
+Dans un `#[tokio::test]` avec `start_paused = true`, chaque sommeil interne est contrôlé par le temps virtuel.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : support hors ligne et modes réseau" href="/guides/offline-and-network-modes/" description="L'histoire comportementale au-dessus de ces types." />
+<LinkCard title="Explication : architecture" href="/explanation/architecture/" description="Pourquoi la jointure existe et ce que quoin fournit." />

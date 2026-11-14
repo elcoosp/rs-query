@@ -1,0 +1,87 @@
+---
+title: Requêtes infinies et pagination
+description: "Récupérez des listes de pages bidirectionnelles et fenêtrées avec InfiniteQuery, les paramètres de page et max_pages."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Un `InfiniteQuery<T, P>` pagine : il accumule un `InfiniteData<T, P>` — pages plus les paramètres qui les ont produites — et fetch dans l'une ou l'autre direction via des callbacks de paramètres que vous fournissez. Ce guide couvre la définition, le fetch bidirectionnel, et le fenêtrage avec `max_pages`.
+
+## Définir la requête
+
+`InfiniteQuery::new` prend une clé, une fermeture de fetch, et le paramètre de page initial. La fermeture reçoit le paramètre de page courant, et les callbacks de paramètres dérivent les paramètres suivant et précédent depuis les dernières et premières pages :
+
+<Code lang="rust" code={`use rs_query::{InfiniteQuery, QueryKey};
+
+let query = InfiniteQuery::<Vec<Todo>, u64>::new(
+    QueryKey::new("todos").segment("page"),
+    |page: u64| async move { fetch_todo_page(page).await },
+    1, // initial_page_param
+)
+.get_next_page_param(|last_page, _pages| {
+    if last_page.is_empty() { None } else { Some(last_page.len() as u64 + 1) }
+})
+.max_pages(5);`} />
+
+Renvoyer `None` depuis un callback de paramètre marque la fin de la liste — `has_next_page` bascule à `false`.
+
+## L'exécuter
+
+`spawn_infinite_query` exécute la boucle de pages sur le runtime du client. Comme `spawn_query`, il renvoie une tâche awaitable et annulable :
+
+<Code lang="rust" code={`use rs_query::spawn_infinite_query;
+
+let task = spawn_infinite_query(&client, &query);
+let state = task.await; // QueryState<InfiniteData<Vec<Todo>, u64>>`} />
+
+Les données de l'état sont un `InfiniteData<Vec<Todo>, u64>` : `pages` dans l'ordre de fetch, `page_params` à côté, plus `first_page()`, `last_page()` et `page_count()`.
+
+## Fetch dans les deux directions
+
+L'observateur expose des contrôles conscients de la direction. `fetch_next_page` ajoute ; `fetch_previous_page` préfixe — `FetchDirection::Forward` et `Backward` suivent lequel est en vol :
+
+<Code lang="rust" code={`// Depuis un binding infini ou InfiniteQueryObserver :
+handle.fetch_next_page();
+handle.fetch_previous_page();
+
+// Avec les drapeaux TanStack par défaut rendus explicites :
+handle.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
+
+handle.has_next_page();          // un paramètre suivant existe
+handle.has_previous_page();      // un paramètre précédent existe
+handle.is_fetching_next_page();  // fetch vers l'avant en vol
+handle.is_fetching_previous_page();`} />
+
+<Aside type="tip">
+Vérifiez `is_fetching_next_page` dans votre vue pour afficher un spinner en bas de liste et `is_fetching_previous_page` pour le haut — les deux drapeaux peuvent être vrais en même temps sur les listes bidirectionnelles.
+</Aside>
+
+## Fenêtrer la liste avec `max_pages`
+
+`.max_pages(n)` garde au plus `n` pages : l'ajout évince par le devant, la préfixation évince par l'arrière. Cela borne la mémoire pour les longs flux. L'`InfiniteData` que vous lisez tient toujours la fenêtre courante.
+
+## Ajouter des pages depuis la couche cache
+
+Quand vous gérez les données manuellement — par exemple après une mise à jour websocket — `QueryClient` expose les mutateurs de page :
+
+<Code lang="rust" code={`use rs_query::QueryOptions;
+
+client.append_infinite_page(&key, page, param, QueryOptions::default())?;
+client.prepend_infinite_page(&key, page, param, QueryOptions::default())?;
+client.set_infinite_data(&key, data, QueryOptions::default());`} />
+
+## Observer depuis une vue
+
+Dans une application quoin, `use_infinite_query` renvoie le binding avec tous les contrôles ci-dessus et le signal d'état :
+
+<Code lang="rust" code={`let todos = use_infinite_query(&cx, &client, &query);
+todos.state.get();          // QueryState<InfiniteData<Vec<Todo>, u64>>
+todos.fetch_next_page();    // à câbler sur un écouteur de défilement`} />
+
+`use_queries` compose plusieurs requêtes (infinies comprises) en un seul signal avec une étape `combine` — voir [Bindings de framework](/guides/framework-bindings/).
+
+## Étapes suivantes
+
+<LinkCard title="Guide : requêtes streamées" href="/guides/streamed-queries/" description="Accumulez un flux en direct dans une seule entrée de cache." />
+<LinkCard title="Référence : API InfiniteQuery" href="/reference/infinite-queries/" description="Signatures pour InfiniteQuery, InfiniteData et l'observateur." />

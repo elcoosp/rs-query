@@ -1,0 +1,72 @@
+---
+title: Installation
+description: "Ajoutez rs-query à un projet Rust avec un checkout quoin voisin et des portails de fonctionnalité optionnels."
+type: how-to
+---
+
+import { Code, FileTree, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
+
+rs-query dépend de `quoin-core`, et quoin n'est pas encore publié sur crates.io. Tant que les crates quoin ne sont pas publiées, vous checkout les deux dépôts côte à côte et utilisez des dépendances de chemin. Ce guide met en place cette disposition et montre les portails de fonctionnalité optionnels.
+
+## Checkout les deux dépôts
+
+Clonez les deux dépôts dans le même répertoire parent :
+
+<Code lang="bash" code={`git clone https://github.com/elcoosp/quoin
+git clone https://github.com/elcoosp/rs-query`} />
+
+La disposition résultante doit ressembler à ceci, parce que rs-query résout sa dépendance quoin comme `../quoin/quoin-core` :
+
+<FileTree>
+  - your-projects/
+    - quoin/
+    - rs-query/
+    - your-app/
+</FileTree>
+
+## Dépendre de rs-query
+
+<Tabs>
+  <TabItem label="Checkout voisin (recommandé)">
+    Depuis votre crate d'application, pointez vers le checkout local rs-query :
+
+<Code lang="toml" code={`  [dependencies]
+  rs-query = { path = "../rs-query" }`} />
+  </TabItem>
+  <TabItem label="Révision git épinglée">
+    Pour la CI ou des coéquipiers sans la disposition de checkout complète, vendez les deux dépôts avec un workspace ou un script, puis dépendez du chemin vendu. Une dépendance `git` seule sur rs-query échoue à se résoudre, parce que `quoin-core` est une dépendance de chemin que Cargo ne peut pas aller chercher depuis le dépôt rs-query.
+  </TabItem>
+</Tabs>
+
+Vérifiez que la chaîne d'outils résout :
+
+<Code lang="bash" code={`cargo check`} />
+
+## Choisir les portails de fonctionnalité
+
+rs-query est livré avec deux fonctionnalités optionnelles. Les deux sont opt-in et n'ajoutent rien au build par défaut :
+
+| Fonctionnalité    | Ce qu'elle active                                                              | Tire               |
+| ---------- | ---------------------------------------------------------------------------- | ---------------------- |
+| *(aucune)*   | Le moteur de requête complet, observateurs, mutations, runtime, support hors ligne        | `quoin-core`, `futures` |
+| `serde`    | Helpers de persistance/hydratation JSON (`serialize_persisted_query`, charges utiles d'hydratation compatibles avec la rédaction) | `serde`, `serde_json`  |
+| `devtools` | État + collecteur devtools sans tête (lignes de cache, chronologie de transitions, actions) | *(rien de plus)*      |
+
+Activez-les selon les besoins :
+
+<Code lang="toml" code={`[dependencies]
+rs-query = { path = "../rs-query", features = ["serde", "devtools"] }`} />
+
+## Exigences de runtime
+
+Il n'y a aucune exigence de runtime. Par défaut rs-query lance les fetches sur le pool de workers partagé de quoin avec des minuteurs portables — pas de tokio, pas de gpui, pas d'exécuteur asynchrone dans votre arbre de dépendances. Deux cibles de déploiement sont supportées :
+
+- **Natif** — le `PoolRuntime` par défaut exécute les tâches sur le pool de workers partagé.
+- **wasm32** — le pool et la boucle de GC tournent sur le thread principal du navigateur via `spawn_local` ; les pools de threads OS paniqueraient sur wasm.
+
+Dans une application quoin, construisez le client depuis le contexte du framework pour que fetches et minuteurs utilisent l'exécuteur du framework : `QueryClient::with_context(&cx)`.
+
+## Étapes suivantes
+
+<LinkCard title="Tutoriel : votre première requête" href="/tutorials/first-query/" description="Exécutez et invalidez votre première requête." />
+<LinkCard title="Explication : architecture" href="/explanation/architecture/" description="Comment la jointure d'exécution garde rs-query sans framework." />

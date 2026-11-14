@@ -1,0 +1,89 @@
+---
+title: Exécuter des requêtes
+description: "Lancez, exécutez, préchargez et annulez des requêtes — les quatre points d'entrée impératifs."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+rs-query vous donne quatre façons de déplacer une requête de la définition aux données. Ce guide montre quand recourir à chacune : `spawn_query` pour les tâches fire-and-await, `execute_query` pour l'exécution attendue, `prefetch_query` pour les préchauffages, et `ensure_query_data` pour la sémantique read-through. Il se clôt sur l'annulation, qui fonctionne de la même façon dans les quatre.
+
+## Choisir le point d'entrée
+
+| Vous voulez…                                             | Utilisez                                | Renvoie                    |
+| ----------------------------------------------------- | ---------------------------------- | -------------------------- |
+| Une tâche awaitable et annulable sur le runtime du client   | `spawn_query(&client, &query)`     | `SpawnedTask<QueryState<T>>` |
+| Un résultat attendu avec le pipeline complet de réessai/pause   | `execute_query(&client, &query)`   | `QueryState<T>`            |
+| Un préchauffage qui ne fait jamais échouer votre chemin de code               | `client.prefetch_query(&query)`    | `()` — les erreurs sont journalisées   |
+| Read-through : données en cache si fraîches, fetch sinon    | `client.ensure_query_data(&query)` | `QueryState<T>`            |
+
+## Lancer et attendre
+
+`spawn_query` est le point d'entrée principal. Il soumet le fetch au runtime du client — le `PoolRuntime` par défaut, ou l'exécuteur du framework quand vous avez construit le client avec `with_context` :
+
+<Code lang="rust" code={`use rs_query::{spawn_query, Query, QueryClient, QueryKey};
+
+let client = QueryClient::new();
+let query = Query::new(QueryKey::new("users"), || async {
+    Ok(vec!["Ada", "Alan"])
+});
+
+let handle = spawn_query(&client, &query);
+let state = handle.await;`} />
+
+Le handle est annulable : l'abandonner avant `await` annule le fetch coopérativement via un `CancellationToken`. Les paniques dans la fermeture de fetch n'empoisonnent pas le runtime — elles apparaissent comme un état d'erreur personnalisé.
+
+## Attendre en ligne avec `execute_query`
+
+Quand vous voulez le résultat sans tenir de handle, `execute_query` exécute le même pipeline — réessais, mise en pause par mode réseau, verrou de restauration — et l'attend directement :
+
+<Code lang="rust" code={`use rs_query::execute_query;
+
+let state = execute_query(&client, &query).await;`} />
+
+## Préchauffer le cache avec `prefetch_query`
+
+`client.prefetch_query` exécute `fetch_query` et journalise-puis-abandonne toute erreur, donc un préchauffage ne peut jamais empoisonner votre gestion d'erreur :
+
+<Code lang="rust" code={`client.prefetch_query(&query).await;`} />
+
+Le résultat atterrit dans le cache sous la clé de la requête, prêt pour le prochain observateur ou appel à `ensure_query_data`.
+
+## Read-through avec `ensure_query_data`
+
+`client.ensure_query_data` court-circuite quand des données fraîches existent et fetch sinon — la sémantique `ensureQueryData` de TanStack :
+
+<Code lang="rust" code={`let state = client.ensure_query_data(&query).await;
+if let Some(data) = state.data() {
+    // données fraîches ou nouvellement fetchées
+}`} />
+
+## Configurer les réessais par requête
+
+Le comportement de réessai vit sur le builder de requête (ou dans [QueryOptions](/reference/query-options/)). Le backoff par défaut est exactement TanStack : `min(1000 ms · 2ⁿ, 30 s)` sans jitter :
+
+<Code lang="rust" code={`use rs_query::{Query, RetryConfig};
+use std::time::Duration;
+
+let query = Query::new(key, || async { fetch_things().await })
+    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)));`} />
+
+<Aside type="note">
+`failure_count` et `failure_reason` du fetch courant sont visibles sur chaque [résultat d'observateur](/reference/observers/), donc l'UI peut rendre les numéros de tentative sans plomberie supplémentaire.
+</Aside>
+
+## Annuler un fetch
+
+L'annulation est coopérative et indexée par clé :
+
+<Code lang="rust" code={`client.cancel_query(&key);                       // une clé
+client.cancel_queries(&QueryFilters::with_key(   // chaque requête "users"
+    QueryKey::new("users"),
+));`} />
+
+Un fetch annulé produit `QueryError::Cancelled { revert, silent }`. Quand `revert` est défini, la requête revient à son état d'avant-fetch ; quand `silent` est défini — par exemple un cancel-on-unmount — l'erreur ne fait pas surface comme état d'erreur de requête.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : travailler avec clés et filtres" href="/guides/keys-and-filters/" description="Correspondance par préfixe, prédicats et opérations en masse." />
+<LinkCard title="Référence : QueryClient" href="/reference/client/" description="Chaque méthode, y compris fetch_query et ensure_query_data." />

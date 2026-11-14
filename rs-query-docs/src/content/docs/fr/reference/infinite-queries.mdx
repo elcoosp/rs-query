@@ -1,0 +1,79 @@
+---
+title: API InfiniteQuery
+description: "Signatures de InfiniteQuery, InfiniteData, spawn_infinite_query et InfiniteQueryObserver."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+`InfiniteQuery<T, P>` pagine avec des callbacks de paramètres fournis par l'appelant, accumulant un `InfiniteData<T, P>`. Cette page liste chaque signature ; le [guide de pagination](/guides/infinite-queries/) montre le flux.
+
+## Builder `InfiniteQuery<T, P>`
+
+| Builder                                       | Défaut | Description                                                    |
+| --------------------------------------------- | ------- | -------------------------------------------------------------- |
+| `InfiniteQuery::new(key, fetch_fn, initial_page_param)` | — | Clé, fermeture `Fn(P) -> Future<Result<T, E>>`, paramètre de départ |
+| `.get_next_page_param(f)`                      | aucun    | `Fn(&T, &[T]) -> Option<P>` depuis la dernière page ; `None` termine la pagination avant |
+| `.get_previous_page_param(f)`                  | aucun    | `Fn(&T, &[T]) -> Option<P>` depuis la première page ; active la pagination arrière |
+| `.max_pages(usize)`                            | non borné | Taille de fenêtre ; append évince par le devant, prepend évince par l'arrière        |
+| `.stale_time(Duration)` et compagnie            | —       | Les options de requête standard s'appliquent                                    |
+
+## `InfiniteData<T, P>`
+
+| Membre                            | Description                                       |
+| --------------------------------- | ------------------------------------------------- |
+| `.pages` / `.page_params`          | Pages dans l'ordre de fetch, paramètres à côté            |
+| `.new()` / `::with_first_page(page, param)` | Vide, ou amorcé                        |
+| `.push_page(page, param)`          | Ajoute une page                                   |
+| `.page_count() -> usize`           | Taille de la fenêtre courante                               |
+| `.first_page() -> Option<&T>` / `.last_page() -> Option<&T>` | Extrémités de la fenêtre              |
+
+## Exécution
+
+| Appel                                            | Renvoie                              |
+| ----------------------------------------------- | ------------------------------------ |
+| `spawn_infinite_query(&client, &query)`          | `SpawnedTask<QueryState<InfiniteData<T, P>>>` |
+| `InfiniteQueryObserver`                          | Observateur réactif pour les bindings        |
+| `client.get_infinite_data::<T, P>(&key)`         | Pages en cache                          |
+| `client.set_infinite_data(&key, data, opts)`     | Remplace les pages                         |
+| `client.append_infinite_page(&key, page, param, opts)` | Ajoute avec fenêtrage           |
+| `client.prepend_infinite_page(&key, page, param, opts)` | Préfixe avec fenêtrage          |
+
+La boucle de pages tourne sur le runtime du client avec un emplacement de requête de capacité 1 : une requête émise pendant qu'une autre est en vol remplace celle en file (drop-newest), correspondant à la sémantique amont.
+
+## Contrôles d'observateur
+
+| Méthode                                      | Description                                       |
+| ------------------------------------------- | ------------------------------------------------- |
+| `fetch_next_page()`                          | Ajoute la page suivante                              |
+| `fetch_previous_page()`                      | Préfixe la page précédente                         |
+| `fetch_next_page_with(cancel_refetch, throw_on_error)` | Drapeaux TanStack explicites                 |
+| `fetch_previous_page_with(cancel_refetch, throw_on_error)` | Drapeaux TanStack explicites              |
+| `has_next_page() -> bool`                    | Un paramètre suivant existe                               |
+| `has_previous_page() -> bool`                | Un paramètre précédent existe                           |
+| `is_fetching() -> bool`                      | Un fetch de page en vol                          |
+| `is_fetching_next_page() -> bool`            | Fetch vers l'avant en vol (`FetchDirection::Forward`) |
+| `is_fetching_previous_page() -> bool`        | Fetch vers l'arrière en vol (`FetchDirection::Backward`) |
+| `observer() -> Arc<InfiniteQueryObserver<T, P>>` | L'observateur sous-jacent (handle de binding)      |
+
+## Déshydratation
+
+Les requêtes infinies se déshydratent avec `query_type = QUERY_TYPE_INFINITE` et se réhydratent dans la même forme pages/paramètres — voir [persistance et hydratation](/reference/persistence-and-hydration/).
+
+## Exemple : pagineur fenêtré bidirectionnel
+
+<Code lang="rust" code={`use rs_query::{InfiniteQuery, QueryKey};
+
+let query = InfiniteQuery::<Vec<Msg>, i64>::new(
+    QueryKey::new("messages"),
+    |cursor: i64| async move { fetch_messages_around(cursor).await },
+    0,
+)
+.get_next_page_param(|last, _| last.last().map(|m| m.id))
+.get_previous_page_param(|first, _| first.first().map(|m| m.id))
+.max_pages(10);`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : requêtes infinies" href="/guides/infinite-queries/" description="La visite guidée de la pagination." />
+<LinkCard title="Référence : observateurs" href="/reference/observers/" description="La surface de drapeaux partagée avec les requêtes simples." />

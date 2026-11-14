@@ -1,0 +1,113 @@
+---
+title: Votre première requête
+description: "Passez d'une crate Rust vide à une requête en cours d'exécution, mise en cache et annulable avec rs-query."
+type: tutorial
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Dans ce tutoriel vous construisez le plus petit programme rs-query utile : un `QueryClient`, un `Query` avec un `QueryKey`, et un seul fetch attendu. Vous invalidez ensuite la clé et observez le cache répondre. C'est le chemin doré sur lequel chaque application rs-query — sans tête ou liée au framework — se construit.
+
+<Aside type="note">
+Vous avez besoin d'une chaîne d'outils Rust fonctionnelle (stable, édition 2024) et du dépôt [quoin](https://github.com/elcoosp/quoin) checkout comme répertoire voisin, parce que rs-query en dépend par chemin. Voir [Installation](/guides/install/) si vous n'avez pas encore configuré cela.
+</Aside>
+
+## 1. Créer le projet
+
+Créez une crate binaire à côté de vos checkouts `rs-query` et `quoin` :
+
+<Code lang="bash" code={`cargo new query-demo
+cd query-demo`} />
+
+Pointez `Cargo.toml` vers les checkouts locaux. La disposition des chemins compte : `quoin` se résout comme `../quoin/quoin-core` depuis un répertoire voisin.
+
+<Code lang="toml" code={`[dependencies]
+rs-query = { path = "../rs-query" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
+
+`rs-query` lui-même n'a pas besoin de tokio — il tourne sur le pool de workers partagé de quoin par défaut. La démo n'utilise tokio que pour son propre `main`.
+
+## 2. Créer un `QueryClient`
+
+Le client possède le cache, la table de déduplication et le runtime. Il est bon marché à cloner, et chaque clone partage le même cache.
+
+<Code lang="rust" code={`use rs_query::QueryClient;
+
+fn main() {
+    let client = QueryClient::new();
+    println!("client ready");
+}`} />
+
+Tenez le client dans l'état de votre application pendant la durée de vie du programme.
+
+## 3. Définir une requête
+
+Un `Query` associe un `QueryKey` à une fermeture de fetch asynchrone qui renvoie `Result<T, E>`. Les clés sont hiérarchiques : `QueryKey::new("users")` crée le segment `"users"`, et `.with("id", 42)` ajoute un segment étiqueté.
+
+<Code lang="rust" code={`use std::time::Duration;
+use rs_query::{Query, QueryClient, QueryKey};
+
+let client = QueryClient::new();
+let key = QueryKey::new("users").with("id", 42);
+
+let query = Query::new(key.clone(), || async {
+    Ok(vec!["Ada", "Alan"])
+})
+.stale_time(Duration::from_secs(30));`} />
+
+La ligne `stale_time(30 s)` dit au cache que les données restent fraîches pendant trente secondes après un fetch réussi.
+
+## 4. L'exécuter avec `spawn_query`
+
+`spawn_query` soumet le fetch au runtime du client et renvoie un `SpawnedTask` — un handle awaitable que vous pouvez aussi annuler en l'abandonnant.
+
+<Code lang="rust" code={`use rs_query::spawn_query;
+
+let handle = spawn_query(&client, &query);
+let state = handle.await;
+
+assert!(state.is_success());
+println!("data: {:?}", state.data());`} />
+
+Exécutez la démo :
+
+<Code lang="bash" code={`cargo run`} />
+
+Vous devriez voir les noms fetchés imprimés depuis le cache.
+
+<Aside type="tip">
+Abandonner un `SpawnedTask` annule coopérativement le fetch via un `CancellationToken`. C'est le mécanisme derrière cancel-on-unmount dans les applications framework.
+</Aside>
+
+## 5. Lire la machine à états
+
+`state` est un `QueryState<Vec<&str>>` — une énumération avec une variante par situation de cache :
+
+<Code lang="text" code={`Idle → Loading → Success(T)
+           → Error { error, stale_data }
+Success(T) → Stale(T) → Refetching(T) → Success(T)`} />
+
+Après l'appel attendu de l'étape 4 vous tenez `Success`. Appelez `state.is_stale()` après l'écoulement de `stale_time` pour voir la transition vers `Stale`.
+
+## 6. Invalider la clé
+
+Marquez le préfixe `"users"` comme périmé, en refetchant seulement les requêtes qui ont actuellement un observateur actif — le défaut TanStack :
+
+<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, RefetchType};
+
+client.invalidate_queries_filtered(
+    InvalidateQueryFilters::new()
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::Active),
+);`} />
+
+Chaque requête dont la clé commence par le segment `"users"` est maintenant périmée, et les actives refetchent immédiatement.
+
+## Ce que vous avez construit
+
+Un client, une requête à clé, un fetch lancé, et l'invalidation filtrée — les quatre mouvements qui se répètent dans chaque application rs-query. À partir d'ici, câblez le même client dans un framework UI, ou continuez sans tête avec le fetch impératif.
+
+## Étapes suivantes
+
+<LinkCard title="Tutoriel : requêtes dans une app quoin" href="/tutorials/quoin-app/" description="Observez la même requête depuis une vue framework avec use_query." />
+<LinkCard title="Guide : exécuter des requêtes" href="/guides/queries/" description="Patterns de fetch impératif, préchauffage et annulation." />

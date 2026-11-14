@@ -1,0 +1,106 @@
+---
+title: Mutations et mises à jour optimistes
+description: "Exécutez des mutations avec rollbacks on_mutate, sérialisation à portée, callbacks de cache et câblage d'invalidation."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Une mutation dans rs-query est un `Mutation<T, P>` : une fonction asynchrone des paramètres `P` vers les données `T`, enveloppée dans des hooks de cycle de vie qui reflètent exactement TanStack v5. Ce guide construit la mutation optimiste standard — écrire localement, revenir en arrière en cas d'échec, invalider en cas de succès — puis montre les outils de niveau cache pour observer et sérialiser les mutations.
+
+## Définir la mutation
+
+Chaque hook est optionnel et chaînable sur le builder. `retry` vaut `0` par défaut pour les mutations, contrairement aux requêtes :
+
+<Code lang="rust" code={`use std::time::Duration;
+use rs_query::{Mutation, MutationScope, QueryKey};
+
+let mutation = Mutation::<User, UserPatch>::new(|patch| async move {
+    save_user(patch).await
+})
+.mutation_key(QueryKey::new("save-user"))
+.retry(1)
+.retry_delay(Duration::from_millis(500))
+.network_mode(rs_query::NetworkMode::OfflineFirst);`} />
+
+<Aside type="note">
+`Mutation<T, P>` est générique sur le type de résultat `T` et le type de paramètre `P`. La fermeture reçoit les paramètres par valeur et renvoie un future — capturez ce dont vous avez besoin avec `move`.
+</Aside>
+
+## Écriture optimiste avec rollback
+
+`on_mutate` s'exécute avant la fonction de mutation. Écrivez la valeur optimiste dans le cache, puis renvoyez une fermeture de rollback. En cas d'échec, rs-query exécute le rollback avec le client pour que les données d'avant-mutation reviennent :
+
+<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey};
+
+.mutation.on_mutate(|client, patch| {
+    let key = user_key(patch.id);
+    let previous = client.get_query_data::<User>(&key);
+    client.set_query_data(&key, patch.preview(), QueryOptions::default());
+    Ok(Box::new(move |client| {
+                    if let Some(previous) = previous {
+                                    client.set_query_data(&key, previous, QueryOptions::default());
+                    }
+    }))
+})`} />
+
+## Câbler l'invalidation
+
+`.invalidates_key` (ou `.invalidates(Vec<QueryKey>)`) refetch les clés listées quand la mutation se règle avec succès — les observateurs actifs voient de nouvelles données sans colle manuelle :
+
+<Code lang="rust" code={`.mutation.invalidates_key(user_key(42))`} />
+
+## Sérialiser les sauvegardes concurrentes avec une portée
+
+Les mutations à portée s'exécutent une à la fois. Donnez à plusieurs mutations le même `MutationScope { id }` et le cache retient la file jusqu'à ce que chacune termine :
+
+<Code lang="rust" code={`use rs_query::MutationScope;
+
+let mutation = mutation.scope(MutationScope { id: "save-user".into() });`} />
+
+## L'exécuter
+
+Trois points d'entrée reflètent le côté requête :
+
+<Code lang="rust" code={`use rs_query::{execute_mutation, execute_mutation_full, spawn_mutation, MutateOptions};
+
+// Attendre l'état final directement :
+let state = execute_mutation(&client, &mutation, patch).await;
+
+// Attendre avec callbacks par appel (déclenchés après les hooks cache/options) :
+let state = execute_mutation_full(&client, &mutation, patch,
+    MutateOptions::new().on_error(|_client, error| log(error)),
+).await;
+
+// Ou lancer sur le runtime du client — awaitable et annulable :
+let task = spawn_mutation(&client, &mutation, patch);
+let state = task.await;`} />
+
+Les effets de bord s'exécutent dans l'ordre TanStack : cache `on_mutate` → options `on_mutate` → dispatch pending → la fonction de mutation → `on_success`/`on_error` cache/options → les callbacks `MutateOptions` par appel en dernier → la chaîne settle (`on_settled`).
+
+## Observer avec `MutationCache`
+
+Le cache suit les entrées, diffuse des événements et filtre comme le côté requête :
+
+<Code lang="rust" code={`use rs_query::{MutationCache, MutationCacheConfig, MutationFilters, MutationStatus};
+
+let cache = MutationCache::with_config(MutationCacheConfig {
+    on_success: Some(Arc::new(|_client, _data| notify_toast())),
+    ..MutationCacheConfig::default()
+});
+
+let saves = cache.find_all(&MutationFilters::with_key(QueryKey::new("save-user")));
+let pending: Vec<_> = saves.iter().filter(|e| e.status == MutationStatus::Pending).collect();`} />
+
+Les événements arrivent sur `cache.subscribe()` : `Added(u64)`, `Removed(u64)`, `Updated(u64)`, `ScopeResumed(String)` et `Cleared`. Les callbacks de niveau cache — `on_mutate`, `on_success`, `on_error`, `on_settled` — s'exécutent pour chaque mutation dans le cache ; les hooks propres à la mutation s'exécutent aussi, dans l'ordre ci-dessus.
+
+## Reprendre les mutations en pause après reconnexion
+
+Les mutations `OfflineFirst` hors ligne se mettent en pause au lieu d'échouer. Reprenez-les au retour de la connectivité — `QueryClient::handle_reconnect` le fait pour vous, ou pilotez-le manuellement :
+
+<Code lang="rust" code={`let resumed = client.resume_paused_mutations();`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : support hors ligne et modes réseau" href="/guides/offline-and-network-modes/" description="Comment pause et reprise interagissent avec la connectivité." />
+<LinkCard title="Référence : API Mutation" href="/reference/mutations/" description="Tableaux de signatures complets pour Mutation, MutateOptions et le cache." />

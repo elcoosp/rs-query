@@ -1,0 +1,75 @@
+---
+title: Support hors ligne et modes réseau
+description: "Configurez la sémantique NetworkMode, pilotez l'OnlineManager, et reprenez le travail en pause à la reconnexion."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+rs-query reproduit l'histoire hors ligne de TanStack v5 : un `NetworkMode` par requête décide si les fetches *démarrent* et si les réessais *continuent*, un `OnlineManager` suit la connectivité, et le travail en pause reprend automatiquement à la reconnexion. Ce guide câble toute la boucle.
+
+## Choisir un mode réseau
+
+`NetworkMode` a trois variantes aux sémantiques exactes TanStack :
+
+| Mode           | Fetch démarre hors ligne ? | Les réessais continuent hors ligne ? | Usage typique                     |
+| -------------- | --------------------- | ------------------------- | ------------------------------- |
+| `Online`       | Non — le fetch est mis en pause | Non — les réessais en vol se mettent en pause | Le défaut pour les requêtes      |
+| `Always`       | Oui                   | Oui                       | Travail local-first, IPC, stockage  |
+| `OfflineFirst` | Oui — la première tentative s'exécute | Non — les réessais se mettent en pause   | Mutations write-then-retry      |
+
+<Code lang="rust" code={`use rs_query::{NetworkMode, QueryOptions};
+
+let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);`} />
+
+Les aides `can_fetch(mode, online)` et `can_retry(mode, online)` encodent la matrice si vous avez besoin de la décision dans votre propre code.
+
+## Piloter la connectivité
+
+`OnlineManager` démarre en ligne et prend la vérité depuis les callbacks de connectivité de votre plateforme — il n'y a pas d'écouteur OS câblé en dur, ce qui garde la crate sans runtime :
+
+<Code lang="rust" code={`use rs_query::OnlineManager;
+
+let online = OnlineManager::new(); // démarre en ligne
+
+// Câblez ceci à votre plateforme :
+online.set_online(false); // les réessais en vol se mettent en pause ; les nouveaux fetches se mettent en pause selon le mode
+online.set_online(true);  // le travail en pause reprend`} />
+
+Le client en possède un : `client.online_manager()` le renvoie, et `client.handle_reconnect()` exécute la séquence de reconnexion complète — déclencheurs de refetch pour les requêtes et `resume_paused_mutations`.
+
+## Comportement pause et reprise
+
+Hors ligne :
+
+- Les requêtes en mode `Online` ne démarrent pas ; leur statut de fetch rapporte `Paused`.
+- Une mutation `OfflineFirst` exécute sa première tentative, puis se met en pause avant les réessais.
+- Le travail `Always` continue sans être affecté.
+
+À la reprise de la connectivité, les fetches en pause reprennent là où ils se sont arrêtés — comptes de tentatives et état de backoff survivent à la pause.
+
+## Refetch à la reconnexion
+
+Contrôlez si les données périmées se rafraîchissent au retour de la connexion, et avec quelle avidité :
+
+<Code lang="rust" code={`use rs_query::{QueryOptions, RefetchTrigger};
+
+let options = QueryOptions::default()
+    .refetch_on_reconnect(RefetchTrigger::Always) // même les données fraîches refetchent
+    .refetch_on_mount(RefetchTrigger::Enabled)    // défaut : refetch si périmé
+    .refetch_on_window_focus(RefetchTrigger::Disabled);`} />
+
+`RefetchTrigger` a trois variantes : `Enabled` (refetch si périmé — le défaut), `Always` et `Disabled`.
+
+<Aside type="note">
+Les refetches de focus et de reconnexion passent par le même pipeline `refetch_queries` que les appels manuels, donc filtres, déduplication et annulation s'appliquent tous.
+</Aside>
+
+## Cycle de vie montage et démontage
+
+`client.mount()` et `client.unmount()` enregistrent les gestionnaires globaux du client — souscriptions focus/online et le balayage GC. Appelez `mount` au démarrage de l'application et `unmount` à l'arrêt ; le chemin de cancel au démontage utilise `QueryError::Cancelled { revert: false, silent: true }` pour que rien ne fasse surface comme erreur parasite.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : persister le cache" href="/guides/persistence/" description="Faites survivre les données hors ligne aux redémarrages." />
+<LinkCard title="Référence : runtime, réseau et gestionnaires" href="/reference/runtime-and-network/" description="OnlineManager, gestionnaires et jointure d'exécution." />

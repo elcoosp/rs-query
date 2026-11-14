@@ -1,0 +1,98 @@
+---
+title: API Mutation
+description: "Signatures de Mutation, MutateOptions, MutationState, MutationCache, MutationScope et MutationObserver."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+`Mutation<T, P>` exécute une écriture asynchrone avec hooks de cycle de vie, contrôle de réessai et sérialisation à portée. La `MutationCache` suit les entrées et diffuse des événements. Cette page est la référence des signatures ; le [guide des mutations](/guides/mutations/) montre les motifs.
+
+## Builder `Mutation<T, P>`
+
+| Builder                             | Défaut        | Description                                            |
+| ----------------------------------- | -------------- | ------------------------------------------------------ |
+| `Mutation::new(mutate_fn)`           | —              | `Fn(P) -> impl Future<Output = Result<T, E>>`          |
+| `.mutation_key(QueryKey)`            | aucun           | Identité pour les filtres et le cache                     |
+| `.scope(MutationScope { id })`       | aucun           | Les mutations partageant un id de portée tournent une à la fois          |
+| `.on_mutate(f)`                      | aucun           | S'exécute d'abord ; peut renvoyer une fermeture de rollback               |
+| `.on_success(f)` / `.on_error(f)`    | aucun           | Hooks de settle ; reçoivent `&QueryClient` et data/error     |
+| `.on_settled(f)`                     | aucun           | S'exécute après succès ou erreur                             |
+| `.retry(u32)`                        | `0`            | Budget de réessai de mutation                                   |
+| `.retry_delay(Duration)`             | `BASE_RETRY_DELAY` | Délai de réessai fixe                                   |
+| `.network_mode(NetworkMode)`         | `Online`       | `OfflineFirst` exécute la tentative un hors ligne, puis se met en pause    |
+| `.invalidates_key(key)` / `.invalidates(Vec<QueryKey>)` | aucun | Refetch ces clés au succès |
+
+## `MutateOptions<T, P>`
+
+Callbacks par appel passés au moment de la mutation. Ils se déclenchent **en dernier**, après les hooks de niveau cache et de niveau mutation :
+
+| Builder            | Se déclenche                                   |
+| ------------------ | --------------------------------------- |
+| `.on_success(f)`    | Après le succès de la mutation             |
+| `.on_error(f)`      | Après l'échec de la mutation                |
+| `.on_settled(f)`    | Après succès ou erreur                  |
+
+Ordre des effets de bord, exactement TanStack : cache `on_mutate` → options `on_mutate` → dispatch pending → fonction de mutation → `on_success`/`on_error` cache/options → `MutateOptions` par appel → chaîne `on_settled`.
+
+## Points d'entrée d'exécution
+
+| Appel                                                  | Renvoie                        | Notes                                |
+| ----------------------------------------------------- | ------------------------------ | ------------------------------------ |
+| `execute_mutation(&client, &mutation, params)`         | `MutationState<T>` (await)     | Aucun callback par appel                |
+| `execute_mutation_full(&client, &mutation, params, opts)` | `MutationState<T>` (await) | Avec `MutateOptions`                 |
+| `spawn_mutation(&client, &mutation, params)`           | `SpawnedTask<MutationState<T>>`| Awaitable, annulable, drop-cancels   |
+
+## `MutationState<T>` et `MutationStatus`
+
+| Variante de `MutationState` | Signification                       |
+| ----------------------- | ----------------------------- |
+| `Idle`                   | Non exécuté, ou réinitialisé        |
+| `Loading`                | En cours d'exécution                     |
+| `Success(T)`             | La dernière exécution a réussi      |
+| `Error(QueryError)`      | La dernière exécution a échoué         |
+
+`MutationStatus` — le miroir agrégé — correspond à `Idle`/`Pending`/`Success`/`Error` avec des noms `as_str()` compatibles TanStack. Prédicats : `is_idle()`, `is_loading()`, `is_success()`, `is_error()`, `data()`, `error()`, `status()`.
+
+## `MutationCache`
+
+| Membre                                     | Description                                       |
+| ------------------------------------------ | ------------------------------------------------- |
+| `MutationCache::new()` / `::with_config(cfg)` | Simple, ou avec callbacks de niveau cache            |
+| `.subscribe() -> bus::Receiver<MutationCacheEvent>` | Flux d'événements                              |
+| `.add(entry) -> u64` / `.build(entry) -> u64` | Insère une entrée ; `build` fait aussi un instantané          |
+| `.update(id, apply) -> bool`                | Mute une entrée en place                          |
+| `.remove(id) -> bool` / `.clear()`          | Évince une / toutes                                   |
+| `.get(id) -> Option<MutationCacheEntry>` / `.get_all()` | Lit les entrées                         |
+| `.find(&filters)` / `.find_all(&filters)`   | Recherche consciente des filtres                               |
+| `.len()` / `.is_empty()`                    | Taille                                              |
+| `.can_run(scope)` / `.mark_running(scope)` / `.mark_finished(scope)` | Primitives de sérialisation à portée |
+| `.subscribe_scope(scope)`                   | Watcher pour la file d'une portée                     |
+| `.resume_paused_mutations()`                | Reprend les entrées mises en pause hors ligne                     |
+
+`MutationCacheConfig` tient des callbacks optionnels de niveau cache : `on_mutate`, `on_success`, `on_error`, `on_settled` — chacun `Arc<dyn Fn(&QueryClient, ...)>`, invoqué pour chaque mutation dans le cache.
+
+`MutationCacheEvent` : `Added(u64)`, `Removed(u64)`, `Updated(u64)`, `ScopeResumed(String)`, `Cleared`.
+
+`MutationCacheEntry` expose `id`, `mutation_key`, `scope`, `status`, `is_paused`, `submitted_at_ms`, `has_result`, `error`, `has_context`, et `snapshot()` → `MutationSnapshot`.
+
+`MutationScope { id: String }` — des ids égaux sérialisent.
+
+## `MutationObserver`
+
+`MutationObserver<T, P>` souscrit aux changements d'état d'une mutation pour les bindings de framework ; `use_mutation` se construit dessus. Il s'associe à `use_is_mutating`/`use_mutating_count` pour les tableaux de bord agrégés.
+
+## Exemple : sauvegardes à portée avec callbacks de cache
+
+<Code lang="rust" code={`use std::sync::Arc;
+use rs_query::{MutationCache, MutationCacheConfig, MutationScope};
+
+let cache = MutationCache::with_config(MutationCacheConfig {
+    on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),
+    ..MutationCacheConfig::default()
+});`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : mutations et mises à jour optimistes" href="/guides/mutations/" description="La visite guidée de la mise à jour optimiste." />
+<LinkCard title="Référence : erreurs et annulation" href="/reference/errors-and-cancellation/" description="QueryError, le type derrière chaque échec." />

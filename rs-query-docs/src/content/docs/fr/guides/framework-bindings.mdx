@@ -1,0 +1,79 @@
+---
+title: Bindings de framework
+description: "Observez requêtes et mutations depuis n'importe quel framework supporté par quoin — gpui, leptos, dioxus, xilem ou floem."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Le module `hooks` est générique sur `quoin_core::ReactiveContext`. Vous écrivez les appels une fois ; ils compilent contre n'importe quel adaptateur quoin et renvoient le type `Signal` natif de ce framework. Ce guide couvre les dix bindings et les règles maison qui les gardent tolérants au retard.
+
+## Les dix bindings
+
+| Binding                                                     | Renvoie                                    | Remplace (TanStack)     |
+| ----------------------------------------------------------- | ------------------------------------------ | ----------------------- |
+| `use_query(&cx, &client, &query)`                            | binding avec signal `state`                 | `useQuery`              |
+| `use_mutation(&cx, &client, &mutation)`                      | binding avec `mutate`/`reset`               | `useMutation`           |
+| `use_infinite_query(&cx, &client, &query)`                   | binding de pagination                       | `useInfiniteQuery`      |
+| `use_queries(&cx, &client, &queries)`                        | signal de résultats combinés                | `useQueries`            |
+| `use_is_fetching(&cx, &client)`                              | `Signal<bool>`                              | `useIsFetching`         |
+| `use_is_mutating(&cx, &client)`                              | `Signal<bool>`                              | `useIsMutating`         |
+| `use_fetching_count(&cx, &client)`                           | `Signal<usize>`                             | variante filtrée        |
+| `use_mutating_count(&cx, &client)`                           | `Signal<usize>`                             | variante filtrée        |
+| `use_any_fetching(&cx, &[clients])`                          | `Signal<bool>` sur plusieurs clients         | —                       |
+| `use_activity_feed(&cx, rx)`                                 | `Signal<Vec<E>>` borné d'événements de cache | `useMutationState`-like |
+
+## Le binding de requête
+
+`use_query` renvoie un binding avec trois capacités : le signal `state`, `refetch()`, et `abort_fetch()` :
+
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
+todo.state.get();    // QueryState<Todo>
+todo.refetch();
+todo.abort_fetch();`} />
+
+Abandonner le binding annule sa pompe et abandonne le fetch en vol. Montez un binding par composant qui a besoin des données — le cache déduplique les fetches.
+
+## Le binding de mutation
+
+`use_mutation` expose `mutate` et `reset`. Les callbacks par appel vont dans `MutateOptions` et se déclenchent après les hooks propres à la mutation :
+
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
+save.mutate(patch, MutateOptions::new()
+    .on_success(|_client, _data| toast("saved"))
+    .on_error(|_client, error| toast(&error.to_string())));
+save.reset();`} />
+
+## Composer avec `use_queries` et `combine`
+
+`use_queries` observe plusieurs requêtes à la fois. `QueriesObserver::combine` replie leurs états en une valeur dérivée — l'option `combine` de `useQueries` :
+
+<Code lang="rust" code={`let combined = observer.combine(|states| {
+    states.iter().filter(|s| s.is_success()).count()
+});`} />
+
+## Flux et compteurs pour tableaux de bord
+
+Les barres de statut et les UI de type devtool s'appuient sur les hooks d'activité au lieu de sonder :
+
+<Code lang="rust" code={`let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
+let feed = use_activity_feed(&cx, client.subscribe_activity());`} />
+
+`use_activity_feed` prend un `bus::Receiver<E>` — `client.subscribe_activity()` produit des `ActivityEvent` quand l'activité de fetch et de mutation change — et borne le tampon pour qu'un cache bavard ne fasse pas grossir le signal indéfiniment.
+
+## Règles maison
+
+<Aside type="note">
+Trois règles gardent les bindings corrects sur chaque adaptateur :
+</Aside>
+
+1. **Construisez le client depuis le contexte** — `QueryClient::with_context(&cx)` — pour que minuteurs et fetches utilisent l'exécuteur du framework.
+2. **Un binding par composant** — les bindings possèdent une pompe ; partager un binding entre vues réintroduit la synchro manuelle.
+3. **Respectez le verrou de restauration** — pendant l'hydratation, les bindings retiennent les fetches ; gardez `set_is_restoring` étroitement délimité autour de la restauration.
+
+Sous le capot les pompes sont tolérantes au retard : un thread de vue lent rate les écritures de cache intermédiaires et se rattrape sur le dernier état au lieu de mettre chaque mise à jour en file.
+
+## Étapes suivantes
+
+<LinkCard title="Référence : hooks de framework" href="/reference/hooks/" description="Signatures exactes pour les dix bindings." />
+<LinkCard title="Tutoriel : requêtes dans une app quoin" href="/tutorials/quoin-app/" description="La boucle réactive de bout en bout." />

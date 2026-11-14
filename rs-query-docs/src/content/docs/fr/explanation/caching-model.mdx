@@ -1,0 +1,57 @@
+---
+title: Le modèle de cache expliqué
+description: "Stale-while-revalidate, deux horodatages, partage structurel et la machine à états — pourquoi le cache se comporte comme il le fait."
+type: explanation
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+Le cache de rs-query est un magasin stale-while-revalidate sur une machine à états, hérité de TanStack Query v5. Une fois le modèle compris, chaque option — `stale_time`, `gc_time`, `refetch_on_mount`, `structural_sharing` — devient prévisible. Cette page explique le *pourquoi* derrière le comportement documenté dans la référence.
+
+## Deux horloges, pas une
+
+Chaque requête en cache porte deux notions indépendantes du temps :
+
+- **Fraîcheur** (`stale_time`) — combien de temps les données peuvent être servies *sans* refetch. Des données fraîches satisfont les lectures instantanément. Quand `stale_time` s'écoule, les données sont *périmées* : toujours servies, mais marquées pour rafraîchissement.
+- **Rétention** (`gc_time`) — combien de temps une requête inutilisée reste en mémoire après le départ de son dernier observateur. Le ramasse-miettes ne supprime jamais de données que quelqu'un regarde ; il évince l'oublié.
+
+Les deux horloges répondent à des questions différentes — « ces données sont-elles assez bonnes ? » et « devrions-nous nous en souvenir ? » — ce qui explique pourquoi elles se configurent séparément et valent par défaut `0` (immédiatement périmé) et 5 minutes (éviction après 5 minutes d'inactivité).
+
+## La machine à états
+
+`QueryState<T>` a sept variantes, et chacune existe pour répondre à une question de rendu :
+
+- `Idle` — rien ne s'est passé ; ne rien rendre.
+- `Loading` — premier fetch, rien à montrer ; rendre un spinner.
+- `LoadingWithPlaceholder(T)` — premier fetch, mais des données de remplacement s'affichent au lieu d'un spinner.
+- `Refetching(T)` — rafraîchissement en arrière-plan sur des données visibles ; rendre les données *et* un indicateur discret.
+- `Success(T)` — données fraîches ; rendre et arrêter d'y penser.
+- `Stale(T)` — données servies mais marquées ; rendre et éventuellement refetch au prochain déclencheur.
+- `Error { error, stale_data }` — le fetch a échoué ; si `stale_data` existe, on le rend avec un bandeau, sinon l'erreur.
+
+L'appariement avec `QueryStatus` (y a-t-il des données ?) et `FetchStatus` (est-ce que quelque chose tourne ?) est délibéré : status×fetch-status est la vue compressée qu'utilisent les drapeaux et les tableaux de bord, tandis que l'énumération est la vue exhaustive sur laquelle matchent les composants.
+
+## Déduplication et identité
+
+L'identité est le hash `cache_key()` du `QueryKey`. Un fetch pour `users/id=42` et un observateur concurrent pour `users/id=42` fusionnent en un seul fetch en vol — le second appelant souscrit au résultat du premier. C'est ce qui rend sûr « un binding par composant » : trois composants demandant la même clé produisent un seul appel HTTP.
+
+## Partage structurel
+
+Un refetch renvoie généralement des données *principalement* égales aux anciennes. Le partage structurel (`sharing.rs`) compare nouveau et ancien avec `PartialEq` et réutilise l'ancien `Arc` quand ils sont égaux ; les observateurs détectent la réutilisation avec `Arc::ptr_eq` et sautent l'écriture du signal. En aval, les comparaisons d'égalité restent bon marché et les vues se re-rendent moins. Désactivez-le par requête avec `.structural_sharing(false)` quand les données sont volumineuses et rarement égales.
+
+## L'invalidation est paresseuse tant que personne ne regarde
+
+`invalidate_queries_filtered` avec `RefetchType::None` ne fait que basculer le drapeau périmé. Rien ne refetch tant qu'un déclencheur — un observateur actif, un montage, un événement de focus, une reconnexion — ne demande des données. Cette paresse est l'économie centrale du modèle : les écrans fermés ne coûtent rien, et rouvrir un écran refetch exactement ce qu'il rend. La matrice `RefetchType` (all/active/inactive/none) existe parce que la réponse à « qui refetch maintenant ? » diffère vraiment par site d'appel : les écritures optimistes veulent `Active`, les préchauffages nocturnes veulent `All`, et l'élagage de cache veut `None`.
+
+## Pourquoi les réessais ressemblent à `min(1000 · 2ⁿ, 30 s)`
+
+Le backoff de TanStack v5 double chaque tentative depuis une base de 1 seconde et plafonne à 30 secondes, sans jitter — une mathématique déterministe qu'un test peut asserter. `RetryConfig` la reproduit exactement (`delay_for_attempt`), et le `Retryer` ajoute la couche de décision : jamais, borné par compteur, toujours, ou une fermeture. Les échecs apparaissent comme `failure_count`/`failure_reason` sur les observateurs parce que la progression du réessai est pertinente pour l'UI (« tentative 3 sur 5… »).
+
+## Où la persistance s'insère
+
+Les couches de persistance sérialisent ce modèle, elles ne le changent pas. Le persister de requête stocke des enregistrements de résultat avec `max_age` et un `buster` ; le persister de client déshydrate tout le cache avec des horodatages ; l'hydratation restaure avec un garde de données plus récentes et remet `fetchStatus` à idle — parce qu'une requête restaurée est *des données périmées*, pas du *travail en cours*.
+
+## Étapes suivantes
+
+<LinkCard title="Explication : parité TanStack v5" href="/explanation/tanstack-parity/" description="Comment les sémantiques ont été auditées et portées." />
+<LinkCard title="Référence : Query et QueryState" href="/reference/query/" description="L'API exacte de la machine à états." />

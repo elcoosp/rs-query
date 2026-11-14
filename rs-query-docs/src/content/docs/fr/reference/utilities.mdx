@@ -1,0 +1,74 @@
+---
+title: Utilitaires
+description: "Config de requête streamée, Updater et mises à jour fonctionnelles, et les types devtools."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+Les utilitaires complètent la surface d'API : `streamed_query` pour les fetches produisant des flux, `Updater` pour les écritures valeur-ou-fonction, et le module `devtools` pour l'inspection sans tête.
+
+## `streamed_query` et config
+
+| Élément                                | Description                                                  |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `streamed_query(closure)`            | Enveloppe un producteur `Stream<Item = Result<T, E>>` pour usage comme fermeture de fetch |
+| `StreamedQueryConfig<T>`              | Configuration de l'accumulateur                                    |
+| `.refetch_mode(RefetchMode)`          | Ce qui arrive aux données en cache quand un refetch démarre            |
+| `.reducer(f)`                         | Replie chaque élément streamé dans l'accumulateur (défaut : push)  |
+| `.initial_value(value)`               | Amorce pour l'accumulateur                                     |
+
+| `RefetchMode` | Comportement au refetch                                        |
+| ------------- | ------------------------------------------------------- |
+| `Replace`      | Efface les données en cache au démarrage du refetch (défaut)      |
+| `Append`       | Garde les anciennes données ; ajoute les nouveaux éléments après                 |
+| `Reset`        | Réinitialise à `initial_value` au démarrage du refetch         |
+
+## `Updater<T>` et mises à jour fonctionnelles
+
+`Updater<T>` accepte soit une valeur, soit une fonction de la valeur précédente — le port du style valeur-ou-fonction de TanStack :
+
+<Code lang="rust" code={`use rs_query::{Updater, functional_update};
+
+// Forme valeur :
+let next = Updater::Value(42);
+// Forme fonctionnelle :
+let next = Updater::Function(|prev: i64| prev + 1);
+
+// L'appliquer contre une valeur courante :
+let applied = functional_update(next, 40); // 41`} />
+
+`set_query_data` accepte un `Updater`, donc les patches optimistes peuvent dériver des données en cache courantes sans les lire d'abord.
+
+## Types devtools (fonctionnalité `devtools`)
+
+| Élément                              | Description                                            |
+| --------------------------------- | ------------------------------------------------------ |
+| `DevtoolsState::new(client)`       | Enregistreur avec capacité de chronologie par défaut                |
+| `::with_capacity(client, usize)`   | Capacité explicite                                      |
+| `.record_from_client()` / `.stop_recording()` | Souscrit et collecte / arrête                |
+| `.is_recording() -> bool`          | État de l'enregistreur                                         |
+| `.cache_rows() -> Vec<CacheRow>`    | Une ligne par requête en cache                               |
+| `.timeline() -> Vec<TimelineEvent>` | Transitions horodatées (filtrées)                     |
+| `.timeline_len() -> usize` / `.clear_timeline()` | Taille / réinitialisation                              |
+| `.set_filter(TimelineFilter)` / `.filter()` | Restreint par catégorie, préfixe de clé, recherche textuelle        |
+| `.refetch(cache_key)` / `.invalidate(cache_key)` / `.remove(cache_key)` | Actions de cache    |
+| `CacheRow`                         | Clé, statut, statut de fetch, horodatages, péremption       |
+| `TimelineEvent` / `TimelineKind`    | Une transition ; sa catégorie                           |
+| `TimelineFilter`                    | `.kind(...)`, `.key_prefix(...)`, `.search(...)`       |
+| `row_fetch_status(in_flight)`       | Dérive un `FetchStatus` depuis le drapeau en vol         |
+
+## Exemple : écriture valeur-ou-fonction
+
+<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey, Updater};
+
+client.set_query_data::<i64>(
+    &QueryKey::new("counter"),
+    Updater::Function(|current| current + 1),
+    QueryOptions::default(),
+);`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : requêtes streamées" href="/guides/streamed-queries/" description="Motifs de streaming." />
+<LinkCard title="Guide : devtools sans tête" href="/guides/devtools/" description="Câblez l'enregistreur dans votre application." />

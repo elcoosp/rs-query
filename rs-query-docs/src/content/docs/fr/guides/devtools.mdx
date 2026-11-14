@@ -1,0 +1,69 @@
+---
+title: Devtools sans tête
+description: "Inspectez les lignes de cache et une chronologie de transitions filtrée avec le module devtools conditionné par fonctionnalité."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+La fonctionnalité `devtools` construit un inspecteur sans tête : lignes de cache, chronologie horodatée des transitions d'état avec filtres, et actions de cache. Elle ne rend rien — n'importe quel framework peut la dessiner, ou vous pouvez brancher l'état dans l'`EventLog` de quoin-devtools. Ce guide câble un enregistreur et le relit.
+
+<Aside type="note">
+Activez d'abord la fonctionnalité : `rs-query = { path = "../rs-query", features = ["devtools"] }`. Le module est `rs_query::devtools` et n'ajoute aucune dépendance.
+</Aside>
+
+## Démarrer un enregistreur
+
+`DevtoolsState` enveloppe un clone du client et enregistre les transitions depuis lui :
+
+<Code lang="rust" code={`use rs_query::devtools::DevtoolsState;
+
+let devtools = DevtoolsState::with_capacity(client.clone(), 512);
+devtools.record_from_client(); // souscrit + commence à collecter`} />
+
+`record_from_client` souscrit au flux de mises à jour du client et ajoute chaque transition d'état à la chronologie jusqu'à `stop_recording()`. `is_recording()` rapporte l'état courant.
+
+## Lire les lignes de cache
+
+`cache_rows` renvoie un `CacheRow` par requête en cache — clé, statut, statut de fetch, horodatage de données, péremption :
+
+<Code lang="rust" code={`for row in devtools.cache_rows() {
+    println!("{:?} {:?} {:?} in_flight={}",
+                    row.key, row.status, row.fetch_status, row.in_flight);
+}`} />
+
+`row_fetch_status(in_flight)` est l'aide qu'utilisent les lignes pour dériver un `FetchStatus` depuis le drapeau en vol.
+
+## Filtrer la chronologie
+
+La chronologie stocke des `TimelineEvent` horodatés. `TimelineFilter` restreint par catégorie, clé de cache et recherche textuelle :
+
+<Code lang="rust" code={`use rs_query::devtools::{TimelineFilter, TimelineKind};
+
+devtools.set_filter(TimelineFilter::new()
+    .kind(TimelineKind::Status)
+    .key_prefix("users")
+    .search("error"));
+
+for event in devtools.timeline() {
+    println!("{} {:?} {}", event.at_ms, event.kind, event.key);
+}`} />
+
+`timeline_len()` compte les événements stockés ; `clear_timeline()` la vide sans toucher au cache.
+
+## Piloter les actions de cache
+
+Le panneau sert aussi de surface de contrôle — les actions passent par le pipeline normal du client, donc filtres et déduplication s'appliquent :
+
+<Code lang="rust" code={`devtools.refetch("users/id=42");
+devtools.invalidate("users");
+devtools.remove("users/id=42");`} />
+
+## Le rendre dans votre framework
+
+L'état est de la donnée brute avec des accesseurs compatibles signaux. Dans une application quoin, lisez `cache_rows()` et `timeline()` dans votre propre pompe de signal et dessinez l'UI voulue — lignes à gauche, chronologie à droite est la disposition courante. Chaque accesseur est basé sur un instantané, donc un renderer lent ne peut pas corrompre l'enregistreur.
+
+## Étapes suivantes
+
+<LinkCard title="Référence : utilitaires" href="/reference/utilities/" description="Les signatures de type de devtools." />
+<LinkCard title="Explication : le modèle de cache" href="/explanation/caching-model/" description="Ce que signifient réellement les transitions de la chronologie." />

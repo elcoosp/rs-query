@@ -1,0 +1,74 @@
+---
+title: Hydratation et déshydratation
+description: "Déplacez l'état de requête entre un serveur et un client avec dehydrate_state et hydrate_with_options, y compris la rédaction d'erreur."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+L'hydratation déplace l'état de cache d'un processus à un autre — un serveur vers un navigateur, un job d'arrière-plan vers un démarrage d'application. rs-query porte la paire `dehydrate`/`hydrate` de TanStack comme `dehydrate_state` et `hydrate_with_options`, avec prédicats, rédaction d'erreur et garde de données plus récentes. Ce guide déroule un aller-retour complet.
+
+## Déshydrater du côté producteur
+
+`dehydrate_state` photographie chaque requête et mutation éligible dans un `DehydratedState` :
+
+<Code lang="rust" code={`use rs_query::{DehydrateOptions, dehydrate_state};
+
+let dehydrated = dehydrate_state(&client, DehydrateOptions::default());
+// dehydrated.dehydrated_at_ms, dehydrated.queries, dehydrated.mutations`} />
+
+Chaque `DehydratedQuery` porte `query_key` (segments), `query_hash`, `data_json`, `error_json`, `fetched_at_ms`, la comptabilité de fraîcheur (`is_stale`, `stale_time_ms`, `gc_time_ms`), `meta`, et un tag `query_type` — `QUERY_TYPE_QUERY` ou `QUERY_TYPE_INFINITE` — pour que les requêtes infinies fassent l'aller-retour avec leurs pages.
+
+## Filtrer ce qui se déshydrate
+
+Deux prédicats décident de l'inclusion ; `should_redact_errors` vaut `true` par défaut :
+
+<Code lang="rust" code={`use rs_query::DehydrateOptions;
+
+let opts = DehydrateOptions::new()
+    .should_dehydrate_query(Arc::new(|q| !q.is_stale))
+    .should_dehydrate_mutation(Arc::new(|_m| false))
+    .should_redact_errors(true)
+    .serialize_data(Arc::new(|data| my_json(data)));`} />
+
+<Aside type="caution">
+Avec `should_redact_errors(true)` — le défaut — les erreurs déshydratées deviennent `QueryError::Redacted`, dont le texte est `redacted`, reflétant `Error('redacted')` de TanStack. Fuiter les détails d'erreur côté serveur vers le client est une décision de sécurité que vous prenez explicitement, pas un accident.
+</Aside>
+
+## Hydrater du côté consommateur
+
+`hydrate_with_options` écrit l'instantané dans un client frais. Le garde de données plus récentes conserve les entrées de cache dont les données locales sont plus récentes que l'enregistrement entrant — une hydratation tardive n'écrase jamais des données fraîches :
+
+<Code lang="rust" code={`use rs_query::{HydrateOptions, hydrate_with_options};
+
+let opts = HydrateOptions::new().should_overwrite(false);
+hydrate_with_options(&client, &dehydrated, opts);`} />
+
+Pendant l'hydratation, le `fetchStatus` de chaque requête restaurée est remis à idle — les données restaurées ne paraissent jamais en cours de fetch. Les options par défaut du client receveur s'appliquent aux entrées restaurées.
+
+## Verrouiller les observateurs pendant la restauration
+
+Pendant que vous restaurez (ou chargez un persister), réglez le verrou de restauration. Observateurs et bindings retiennent les fetches et rapportent `is_restoring` au lieu de courir contre la restauration :
+
+<Code lang="rust" code={`client.set_is_restoring(true);
+hydrate_with_options(&client, &dehydrated, opts);
+client.set_is_restoring(false);`} />
+
+Le [persister de client](/guides/persistence/) utilise exactement ce verrou dans son étape de restauration.
+
+## Un aller-retour complet
+
+<Code lang="rust" code={`// Producteur (serveur) :
+let dehydrated = dehydrate_state(&server_client, DehydrateOptions::default());
+send_to_client(serialize(&dehydrated));
+
+// Consommateur (navigateur) :
+client.set_is_restoring(true);
+hydrate_with_options(&client, &deserialized, HydrateOptions::new());
+client.set_is_restoring(false);
+// Les premiers observateurs se montent sur les données restaurées ; les périmées refetch au montage.`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : persister le cache" href="/guides/persistence/" description="Automatisez l'aller-retour avec les persisters." />
+<LinkCard title="Référence : API de persistance et d'hydratation" href="/reference/persistence-and-hydration/" description="Chaque type et option d'hydratation." />

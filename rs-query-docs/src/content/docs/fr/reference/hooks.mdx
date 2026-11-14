@@ -1,0 +1,75 @@
+---
+title: Hooks de framework
+description: "Les dix bindings quoin — use_query, use_mutation, use_infinite_query, use_queries et les hooks d'activité."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+Le module `hooks` est générique sur tout `quoin_core::ReactiveContext`. Chaque binding renvoie le type `Signal` natif du framework hôte et reste en phase via des pompes de cache tolérantes au retard. Abandonner un binding annule sa pompe et abandonne son fetch.
+
+## Bindings de requête
+
+| Binding                                        | Renvoie                                                              |
+| ---------------------------------------------- | -------------------------------------------------------------------- |
+| `use_query(&cx, &client, &query)`               | Binding : signal `state` (`QueryState<T>`), `refetch()`, `abort_fetch()` |
+| `use_infinite_query(&cx, &client, &query)`      | Binding : signal `state` (`QueryState<InfiniteData<T, P>>`) + contrôles de pagination |
+| `use_mutation(&cx, &client, &mutation)`         | Binding : `mutate(params, MutateOptions)`, `reset()`                   |
+| `use_queries(&cx, &client, &queries)`           | Signal de résultats combinés via `QueriesObserver`                         |
+
+### Le binding de requête
+
+<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
+todo.state.get();     // QueryState<Todo>
+todo.refetch();       // réexécute maintenant
+todo.abort_fetch();   // annule en vol`} />
+
+### Le binding infini
+
+<Code lang="rust" code={`let feed = use_infinite_query(&cx, &client, &query);
+feed.fetch_next_page();
+feed.fetch_previous_page();
+feed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
+feed.has_next_page();          feed.has_previous_page();
+feed.is_fetching_next_page();  feed.is_fetching_previous_page();
+feed.observer();               // Arc<InfiniteQueryObserver<T, P>>`} />
+
+### Le binding de mutation
+
+<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
+save.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));
+save.reset();`} />
+
+## Bindings d'activité
+
+| Binding                                       | Renvoie              | Description                                        |
+| --------------------------------------------- | -------------------- | -------------------------------------------------- |
+| `use_is_fetching(&cx, &client)`                | `Signal<bool>`        | Une requête fait un fetch                                 |
+| `use_is_mutating(&cx, &client)`                | `Signal<bool>`        | Une mutation tourne                               |
+| `use_fetching_count(&cx, &client)`             | `Signal<usize>`       | Nombre de fetches en vol                        |
+| `use_mutating_count(&cx, &client)`             | `Signal<usize>`       | Nombre de mutations en cours                        |
+| `use_any_fetching(&cx, &[clients])`            | `Signal<bool>`        | Activité sur plusieurs clients                    |
+| `use_activity_feed(&cx, rx: Receiver<E>)`      | `Signal<Vec<E>>`      | Tampon d'événements borné — câblez `client.subscribe_activity()` |
+
+## Aides utilitaires
+
+Exportées pour les auteurs d'adaptateurs construisant des bindings personnalisés :
+
+| Aide                                      | Description                                        |
+| ------------------------------------------- | -------------------------------------------------- |
+| `read_query_state::<T>(...)`                 | Lit l'état courant derrière une clé de cache          |
+| `push_capped(buffer, item, capacity)`        | Push en anneau utilisé par le flux d'activité         |
+| `drain_ready::<E>(rx)`                       | Vide les événements prêts d'un récepteur bus             |
+
+## Règles maison
+
+1. Construisez le client avec `QueryClient::with_context(&cx)` pour que minuteurs et fetches roulent sur l'exécuteur du framework.
+2. Un binding par composant — les bindings possèdent une pompe ; partager un binding entre vues réintroduit la synchro manuelle.
+3. Gardez `set_is_restoring` étroitement délimité autour de l'hydratation ; les bindings retiennent les fetches tant que le verrou est posé.
+
+Les pompes sont tolérantes au retard par conception : un thread de vue lent rate les écritures intermédiaires et converge sur le dernier état, donc aucune file ne peut croître sans borne derrière une frame occupée.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : bindings de framework" href="/guides/framework-bindings/" description="Motifs orientés tâche pour les dix bindings." />
+<LinkCard title="Référence : observateurs" href="/reference/observers/" description="Les drapeaux derrière le signal de chaque binding." />

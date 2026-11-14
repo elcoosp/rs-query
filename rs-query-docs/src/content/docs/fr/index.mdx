@@ -1,0 +1,65 @@
+---
+title: rs-query — parité TanStack Query v5 pour Rust
+template: splash
+description: "Gestion d'état asynchrone déclarative et consciente du cache pour Rust, portable sur chaque framework UI supporté par quoin."
+type: overview
+hero:
+  title: "rs-query — parité TanStack Query v5 pour Rust"
+  tagline: "Gestion d'état asynchrone déclarative et consciente du cache pour Rust, portable sur chaque framework UI supporté par quoin."
+  image:
+    file: ../../../assets/logo.png
+    alt: "rs-query — parité TanStack Query v5 pour Rust"
+  actions:
+    - text: Commencer le tutoriel
+      link: /tutorials/first-query/
+      icon: right-arrow
+---
+
+import { Card, CardGrid, LinkButton, LinkCard } from '@astrojs/starlight/components';
+
+**rs-query** est un port Rust de la pile [TanStack Query](https://tanstack.com/query). Vous décrivez *quel* type de données votre application a besoin avec un `Query` et un `QueryKey` ; la crate gère cache, déduplication, réessais, annulation, invalidation, pause/reprise hors ligne, persistance et hydratation. La couche réactive est générique sur le `ReactiveContext` de [quoin](https://github.com/elcoosp/quoin), donc le même code tourne sans tête — ou dans une application quoin sur **gpui, leptos, dioxus, xilem ou floem**.
+
+Aucun runtime n'est codé en dur : rs-query ne dépend que de `quoin-core` et lance le travail sur un pool de workers partagé avec des minuteurs portables. La version 0.2 cible la **parité TanStack Query v5** — le contrat de portage est la sémantique amont auditée, pas une inspiration vague.
+
+<CardGrid stagger>
+  <Card title="Apprendre">
+    Suivez le [tutoriel de la première requête](/tutorials/first-query/) pour passer d'une crate vide à un fetch en cours d'exécution, mis en cache et annulable en une dizaine de minutes.
+  </Card>
+  <Card title="Faire">
+    Sautez dans les [guides](/guides/install/) quand vous avez une tâche : invalider avec des filtres, ajouter des mutations optimistes, persister le cache, ou survivre hors ligne.
+  </Card>
+  <Card title="Consulter">
+    La [référence](/reference/client/) documente chaque type public avec signatures, défauts et exemples. Rien ici n'est inventé — chaque entrée correspond au source.
+  </Card>
+  <Card title="Comprendre">
+    Lisez les [explications](/explanation/architecture/) pour la jointure d'exécution, le modèle de cache, et ce que signifie la parité TanStack v5 en pratique.
+  </Card>
+</CardGrid>
+
+<LinkButton href="/tutorials/first-query/" icon="right-arrow">Commencer le tutoriel</LinkButton>
+
+## Ce que vous obtenez
+
+- **Un moteur de requête** — builders `Query<T>` avec `stale_time`, `gc_time`, `initial_data`, `placeholder_data` et transformations `select` ; cache stale-while-revalidate avec partage structurel.
+- **Math de réessai exactement TanStack** — backoff `min(1000 · 2ⁿ, 30 s)`, quatre modes de décision de réessai, `failure_count` et `failure_reason` exposés sur les observateurs.
+- **Mutations avec hooks de cycle de vie** — `on_mutate` avec fermetures de rollback, sérialisation à portée, câblage d'invalidation et callbacks de niveau cache.
+- **Filtres partout** — préfixes de clé, correspondances exactes, active/inactive, périmé, statut et prédicats pilotent `invalidate_queries_filtered`, `refetch_queries`, `cancel_queries`, `reset_queries` et `remove_queries`.
+- **Hors ligne d'abord** — sémantique `NetworkMode`, un `OnlineManager` avec connectivité basée sur watch, et reprise des fetches en pause à la reconnexion.
+- **Persistance et hydratation** — persisters par requête avec `max_age` et `buster`, boucles de sauvegarde/restauration de tout le client, `dehydrate`/`hydrate` avec rédaction d'erreur, et synchronisation de diffusion entre instances.
+
+## Le chemin doré
+
+Chaque nouvel utilisateur complète le même flux de travail, sans tête ou dans une application framework :
+
+1. Tenez un `QueryClient` dans l'état de votre application.
+2. Décrivez un `Query` avec un `QueryKey` et une fermeture de fetch asynchrone.
+3. Lancez-le avec `spawn_query` (sans tête) ou observez-le avec `use_query` (application quoin).
+4. Invalidez la clé après une mutation ; le cache refetch ce qui est actif.
+
+Commencez par le tutoriel ci-dessous — tout le reste s'appuie dessus.
+
+## Étapes suivantes
+
+<LinkCard title="Tutoriel : votre première requête" href="/tutorials/first-query/" description="Créez un client, lancez une requête, et inspectez la machine à états." />
+<LinkCard title="Installation" href="/guides/install/" description="Câblez rs-query dans votre projet avec un checkout quoin voisin." />
+<LinkCard title="Dépôt GitHub" href="https://github.com/elcoosp/rs-query" description="Source, CI et le verrou de qualité à 713 tests." />

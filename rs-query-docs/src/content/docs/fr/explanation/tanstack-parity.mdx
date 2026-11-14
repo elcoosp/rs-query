@@ -1,0 +1,64 @@
+---
+title: Parité TanStack Query v5
+description: "Ce que la parité signifie dans rs-query — le contrat audité, la table de correspondance, et les divergences délibérées."
+type: explanation
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+« Parité TanStack Query v5 » est un contrat dans ce dépôt, pas un slogan. rs-query cible `@tanstack/query-core` **v5.105.0**, audité fichier par fichier, avec les preuves et le contrat d'implémentation consignés dans `docs/`. Cette page explique ce que cela signifie, ce qui correspond à quoi, et où Rust diffère légitimement.
+
+## Le contrat audité
+
+Trois documents portent le contrat :
+
+- `docs/port-plan.md` — le contrat d'implémentation : tout ce qui doit exister dans rs-query, module par module, avec la couverture de tests.
+- `docs/research/01-query-core.md` — l'inventaire de l'API publique de query-core, lu depuis le source.
+- `docs/research/02-framework-and-persistence.md` et `03-behavioral-spec.md` — les adaptateurs de framework, les paquets de persistance, et les sémantiques comportementales exactes (math du backoff, matrices de refetch, drapeaux d'annulation).
+
+L'audit consigne aussi ce qui n'existe **pas** en amont, pour que la parité n'invente pas de fantômes : pas de `Logger`/`setLogger` (retiré en v5), pas de `HydrateObserver` (l'hydratation est de simples fonctions), pas de `notifyManager.scheduleMicrotask` (API v4), et `queryClient.isRestoring` n'existe en amont que comme drapeau interne à l'observateur — rs-query le fait surface comme verrou de client explicite.
+
+## La correspondance
+
+| TanStack (JS)             | rs-query (Rust)                                        |
+| ------------------------- | ------------------------------------------------------ |
+| `QueryClient`              | `QueryClient` (Clone, handle partagé)                  |
+| `QueryCache`               | À l'intérieur de `QueryClient` (store d'événements)    |
+| `MutationCache`            | `MutationCache` (conscient du scope)                   |
+| `Query` / `Mutation`       | `Query<T>` / `Mutation<T, P>`                          |
+| `QueryObserver`            | `QueryObserver<T>` + `QueryResultFlags`                |
+| `InfiniteQueryObserver`    | `InfiniteQuery<T, P>` + `InfiniteQueryObserver`        |
+| `QueriesObserver`          | `QueriesObserver<T>` + `combine`                       |
+| `useQuery`                 | `use_query` / `spawn_query`                            |
+| `useInfiniteQuery`         | `use_infinite_query`                                   |
+| `useMutation`              | `use_mutation` / `spawn_mutation`                      |
+| `useQueries`               | `use_queries`                                          |
+| `useIsFetching` / `useIsMutating` | `use_is_fetching` / `use_is_mutating`           |
+| `focusManager` / `onlineManager` / `notifyManager` | `FocusManager` / `OnlineManager` / `NotifyManager` |
+| `dehydrate` / `hydrate`    | `dehydrate_state` / `hydrate_with_options`             |
+| `experimental_createQueryPersister` | `QueryPersister`                              |
+| `query-async-storage-persister`     | `ClientPersister` + `persist_query_client`    |
+| `query-broadcast-client-experiment` | `broadcast_query_client`                      |
+| `streamedQuery`            | `streamed_query`                                       |
+
+Les sémantiques comportementales sont portées exactement, avec des tests qui asservissent la math : backoff de réessai `min(1000 ms · 2ⁿ, 30 s)` sans jitter, la matrice `refetchType` d'invalidation, l'ordre des effets de bord des mutations (cache `on_mutate` → options `on_mutate` → pending → fonction de mutation → hooks settle cache/options → `MutateOptions` par appel en dernier), les drapeaux d'annulation `CancelledError { revert, silent }`, la rédaction d'erreur vers `Error('redacted')`, le garde de données plus récentes à l'hydratation, et la remise à zéro de `fetchStatus` à la restauration.
+
+## Les divergences délibérées
+
+Rust n'est pas JavaScript, et le port est honnête à ce sujet :
+
+- **`Result` au lieu d'exceptions.** Les fermetures de fetch renvoient `Result<T, E>` ; il n'y a ni throw ni `undefined` — l'échec le plus proche est `QueryError::UndefinedData`.
+- **Un seul type d'erreur.** Les erreurs JS ad-hoc deviennent des variantes `QueryError`, donc annulation, mise en pause et rédaction sont matchables par motif.
+- **Connectivité explicite.** `OnlineManager::set_online(bool)` prend la vérité de votre adaptateur de plateforme au lieu de renifler `navigator.onLine` ; la crate reste sans runtime.
+- **Devtools sans tête.** Le panneau devtools JS devient un état + collecteur sans tête (fonctionnalité `devtools`) que n'importe quel framework rend.
+- **Des signaux, pas des hooks à fermetures.** Les bindings renvoient directement le `Signal` du framework ; il n'y a pas de réconciliation React à imiter, et abandonner un binding est cancel-on-unmount.
+- **Partage structurel par `Arc` au lieu de l'égalité référentielle.** L'optimiseur compare avec `PartialEq` et réutilise les `Arc` ; `Arc::ptr_eq` détecte les écritures sans effet.
+
+## Comment la parité reste honnête
+
+La CI garde le contrat : `cargo test --all-features` (713 tests, sans framework), clippy pedantic avec avertissements en erreurs et zéro allow, `cargo doc` avec `missing_docs = "warn"`, et la couverture sur Codecov. Quand l'amont change, les documents de recherche sont la ligne de base du diff — on audite le nouveau tag contre l'inventaire et on met à jour le contrat avant de porter un comportement.
+
+## Étapes suivantes
+
+<LinkCard title="Explication : le modèle de cache" href="/explanation/caching-model/" description="Les sémantiques qui ont été auditées, expliquées." />
+<LinkCard title="Explication : architecture" href="/explanation/architecture/" description="Comment le port reste sans framework." />

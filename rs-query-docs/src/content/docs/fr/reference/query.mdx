@@ -1,0 +1,85 @@
+---
+title: Query et QueryState
+description: "Le builder Query et la machine à états QueryState avec chaque énumération de statut."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+`Query<T>` décrit un fetch cachable : un `QueryKey`, une fermeture de fetch asynchrone et des options. L'exécuter produit un `QueryState<T>` — une énumération exhaustive des situations de cache. Cette page documente le builder, la machine à états, et les trois énumérations de statut qu'utilisent chaque observateur et instantané.
+
+## Builder `Query<T>`
+
+| Builder                            | Défaut            | Description                                                  |
+| ---------------------------------- | ------------------ | ------------------------------------------------------------ |
+| `Query::new(key, fetch_fn)`         | —                  | Clé plus fermeture asynchrone renvoyant `Result<T, E>`               |
+| `.stale_time(Duration)`             | `0` (immédiatement périmé) | Fenêtre de fraîcheur après un fetch réussi               |
+| `.stale_time_static()`              | —                  | Les données ne deviennent jamais périmées (`staleTime: 'static'`)                 |
+| `.gc_time(Duration)`                | `DEFAULT_GC_TIME`  | Fenêtre d'éviction inactive                                          |
+| `.retry(RetryConfig)`               | `RetryConfig::default()` | Nombre de tentatives et backoff                               |
+| `.initial_data(data)`               | aucun               | Amorce le cache comme si fetcher — marqué d'un horodatage zéro |
+| `.placeholder_data(PlaceholderData)` | aucun              | Affiche des données pendant le chargement ; jamais persistées dans le cache         |
+| `.select(f)`                        | identité           | Transforme les données pour les observateurs sans changer le cache    |
+| `.enabled(bool)` / `.enabled_fn(f)` | activé            | Portail des fetches automatiques                                         |
+| `.network_mode(mode)`               | `NetworkMode::Online` | Sémantique de démarrage/réessai hors ligne                               |
+| `.structural_sharing(bool)`         | activé            | Réutilisation d'`Arc` quand les nouvelles données comparent égales aux anciennes                |
+
+`initial_data` et `placeholder_data` diffèrent en une phrase : les données initiales **sont** des données de cache (avec un vieil horodatage, donc périmées), les données de remplacement sont **pour l'affichage seul** pendant le chargement et n'entrent jamais dans le cache. `PlaceholderData` se construit avec `.value(data)`, `.function(f)` (dérive des données de la requête précédente), ou `.keep_previous()`.
+
+## `QueryState<T>`
+
+| Variante                       | Signification                                                        |
+| ----------------------------- | -------------------------------------------------------------- |
+| `Idle`                         | Jamais exécuté, ou réinitialisé                                            |
+| `Loading`                      | Premier fetch en vol, rien à montrer                         |
+| `LoadingWithPlaceholder(T)`    | Premier fetch en vol sur des données de remplacement                    |
+| `Refetching(T)`                | Refetch en arrière-plan en vol sur des données existantes                |
+| `Success(T)`                   | Données fraîches disponibles                                           |
+| `Stale(T)`                     | Données plus anciennes que `stale_time`                                   |
+| `Error { error, stale_data }`  | Le dernier fetch a échoué ; des données précédemment en cache peuvent encore se rendre     |
+
+Méthodes clés : `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `unwrap()`, `has_data()`, `status()`, `fetch_status()`, plus les prédicats `is_idle()`, `is_loading()`, `is_refetching()`, `is_success()`, `is_stale()`, `is_error()`, et `error() -> Option<&QueryError>`.
+
+## Énumérations de statut
+
+### `QueryStatus` — y a-t-il des données ?
+
+| Variante   | `as_str()`   | Signification                                        |
+| --------- | ------------ | ---------------------------------------------- |
+| `Pending`  | `"pending"`  | Pas encore de données (idle, premier chargement, attente en pause)    |
+| `Error`    | `"error"`    | Le dernier fetch a échoué et aucune donnée n'est disponible      |
+| `Success`  | `"success"`  | Des données sont disponibles                               |
+
+### `FetchStatus` — est-ce que quelque chose tourne ?
+
+| Variante    | `as_str()`    | Signification                                  |
+| ---------- | ------------- | ---------------------------------------- |
+| `Idle`      | `"idle"`      | Pas en cours de fetch                             |
+| `Fetching`  | `"fetching"`  | Un fetch est en vol                     |
+| `Paused`    | `"paused"`    | Un fetch veut tourner mais est en pause hors ligne |
+
+### `MutationStatus`
+
+`Idle` (`"idle"`), `Pending` (`"pending"`), `Success` (`"success"`), `Error` (`"error"`) — documenté complètement sur la [référence des mutations](/reference/mutations/).
+
+### `FetchDirection`
+
+`Forward` (pages s'ajoutent) et `Backward` (pages se préfixent) — la direction de pagination des requêtes infinies.
+
+## Exemple : rendu exhaustif
+
+<Code lang="rust" code={`use rs_query::{QueryState, QueryStatus, FetchStatus};
+
+fn label(state: &QueryState<Vec<String>>) -> String {
+    match (state.status(), state.fetch_status()) {
+                    (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
+                    (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
+                    (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
+                    (status, fetch) => format!("{:?}/{:?}", status, fetch),
+    }
+}`} />
+
+## Étapes suivantes
+
+<LinkCard title="Référence : QueryOptions" href="/reference/query-options/" description="La surface complète d'options avec défauts." />
+<LinkCard title="Explication : le modèle de cache" href="/explanation/caching-model/" description="Pourquoi la machine à états ressemble à ceci." />

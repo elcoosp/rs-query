@@ -1,0 +1,86 @@
+---
+title: API de persistance et d'hydratation
+description: "Dehydrate/hydrate, le persister par requête, le persister de client, et la synchronisation de diffusion — chaque type et option."
+type: reference
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+Trois couches déplacent l'état de cache à travers le temps et les frontières de processus : `dehydrate`/`hydrate` produisent et consomment des instantanés, le persister de requête stocke des résultats individuels, et le persister de client fait l'aller-retour de clients entiers. La synchronisation de diffusion garde les clients vivants en phase. Cette page est la référence des signatures.
+
+## Types d'hydratation
+
+| Type / fonction                              | Description                                            |
+| -------------------------------------------- | ------------------------------------------------------ |
+| `dehydrate_state(&client, DehydrateOptions) -> DehydratedState` | Instantané des requêtes et mutations éligibles |
+| `hydrate_with_options(&client, &state, HydrateOptions)`         | Écrit un instantané dans un client            |
+| `DehydratedState`                             | `dehydrated_at_ms`, `queries: Vec<DehydratedQuery>`, `mutations: Vec<DehydratedMutation>` |
+| `DehydratedQuery`                             | `query_hash`, `query_key: Vec<String>`, `data_json`, `error_json`, `fetched_at_ms`, `is_stale`, `stale_time_ms`, `gc_time_ms`, `meta`, `query_type` |
+| `DehydratedMutation`                          | `mutation_key`, `data_updated_at_ms`, `is_paused`      |
+| `QUERY_TYPE_QUERY` / `QUERY_TYPE_INFINITE`     | Tags `query_type` — les requêtes infinies font l'aller-retour de leurs pages |
+
+### `DehydrateOptions`
+
+| Option                      | Défaut   | Description                                        |
+| --------------------------- | --------- | -------------------------------------------------- |
+| `should_dehydrate_query(f)`  | tout | `Arc<dyn Fn(&DehydratedQuery) -> bool>`            |
+| `should_dehydrate_mutation(f)` | tout | `Arc<dyn Fn(&DehydratedMutation) -> bool>`        |
+| `should_redact_errors`       | `true`     | Remplace les erreurs par `QueryError::Redacted` (`"redacted"`) |
+| `serialize_data(f)`          | JSON par défaut | Sérialiseur `Arc` personnalisé pour `data_json`          |
+
+### `HydrateOptions`
+
+| Option              | Défaut | Description                                              |
+| ------------------- | ------- | -------------------------------------------------------- |
+| `should_overwrite`   | `false` | Écrase des données locales *plus récentes* en cache (le garde de données plus récentes) |
+
+L'hydratation remet le `fetchStatus` de chaque requête restaurée à idle et applique les options par défaut du client.
+
+## Persister par requête
+
+| Élément                                        | Description                                            |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `QueryPersister::new(QueryPersisterOptions)` | Le port de `experimental_createQueryPersister`           |
+| `QueryPersisterOptions::new(storage)`        | Backend de stockage plus les réglages ci-dessous                   |
+| `.with_max_age(Duration)`                    | Les entrées plus anciennes se lisent comme absentes                 |
+| `.with_buster(String)`                       | Tampon de version ; un mismatch se lit comme absent                |
+| `.with_prefix(String)`                       | Espace de noms des clés dans le stockage                            |
+| `QueryStorage`                                | Trait : asynchrone clé/valeur sur des enregistrements `PersistedQuery`   |
+| `InMemoryQueryStorage`                        | Backend intégré                                       |
+| `PersistedQuery` / `PersistedQueryState`      | Enregistrement stocké et son état                            |
+| `serialize_persisted_query` / `deserialize_persisted_query` | Helpers JSON derrière la fonctionnalité `serde`  |
+
+La restauration est sélective (seulement les requêtes touchées par observateur) et une passe GC évince les enregistrements expirés.
+
+## Persister de client
+
+| Élément                                            | Description                                        |
+| ----------------------------------------------- | -------------------------------------------------- |
+| `persist_query_client(&client, &options) -> PersistQueryClientHandle` | Restauration + boucle de sauvegarde throttlée |
+| `persist_query_client_restore(&client, ...)`     | Étape de restauration seule                                 |
+| `persist_query_client_save(&client, ...)`        | Étape de sauvegarde seule                                    |
+| `PersistQueryClientOptions::new(persister)`       | `.with_max_age(...)` (défaut 24 h), `.with_buster(...)` |
+| `ClientPersister`                                 | Trait pour le stockage de tout le client                   |
+| `InMemoryClientPersister`                         | Backend intégré                                   |
+| `PersistedClient`                                 | `timestamp_ms`, `buster`, `client_state: DehydratedState` |
+| `PersistQueryClientHandle`                        | `unsubscribe`, handle de tâche de sauvegarde                    |
+| `persist_with_retry(&client, ..., strategy)`      | Réessaie les restaurations qui échouent                             |
+| `remove_oldest_query`                             | Stratégie : évince la plus ancienne requête à chaque tour        |
+| `MAX_RESTORE_RETRIES`                             | Plafond de réessais pour `persist_with_retry`             |
+
+## Synchronisation de diffusion
+
+| Élément                                        | Description                                            |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `broadcast_query_client(&client, channel) -> BroadcastHandle` | Synchronisation en direct entre instances de client    |
+| `broadcast_query_client_with_options(&client, channel, opts)` | Forme objet-options                   |
+| `BroadcastQueryClientOptions::new().with_channel(s)` | Configuration du canal                          |
+| `BroadcastHandle`                             | `unsubscribe()`, `into_task()`, `is_applying_remote()` |
+| `publish_state(&client, channel)`             | Push d'instantané ponctuel                                 |
+
+Un garde de ré-entrance garantit que les mises à jour distantes s'appliquent mais ne se re-diffusent jamais — pas de boucles d'écho entre onglets.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : persister le cache" href="/guides/persistence/" description="Visite guidée orientée tâche de ces couches." />
+<LinkCard title="Guide : hydratation et déshydratation" href="/guides/hydration/" description="Allers-retours serveur-vers-client." />

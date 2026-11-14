@@ -1,0 +1,90 @@
+---
+title: QueryKey et filtres
+description: "Construction et hachage de QueryKey, les quatre structs de filtre, les instantanés et les fonctions de correspondance."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+Les clés identifient ; les filtres sélectionnent. `QueryKey` construit l'identité hiérarchique d'une requête, et les structs de filtre décrivent *quelles* requêtes une opération en masse touche. Les deux sont de la donnée brute avec des méthodes de builder.
+
+## `QueryKey`
+
+| Membre                                        | Description                                            |
+| --------------------------------------------- | ------------------------------------------------------ |
+| `QueryKey::new(segment)`                       | Démarre une clé avec un segment racine                         |
+| `.with(label, value) -> Self`                  | Ajoute un segment étiqueté — `with("id", 42)`            |
+| `.segment(name) -> Self`                       | Ajoute un segment simple                                  |
+| `QueryKey::from_segments(iter)`                | Construit depuis un itérateur de chaînes                       |
+| `.cache_key() -> &str`                          | Identité hachée stable utilisée par le cache et les devtools   |
+| `.segments() -> &[String]`                      | Les segments bruts                                        |
+| `.starts_with(&prefix) -> bool`                 | Correspondance par préfixe — la règle derrière les filtres de clé              |
+
+## `QueryFilters`
+
+| Builder                        | Défaut | Description                                          |
+| ------------------------------ | ------- | ---------------------------------------------------- |
+| `QueryFilters::all()`           | —       | Matche tout                                     |
+| `QueryFilters::with_key(key)`   | —       | Matche les clés avec ce préfixe                          |
+| `.exact()`                      | préfixe  | Correspondance exacte seulement                                 |
+| `.active()` / `.inactive()`      | les deux    | Au moins un observateur actif / aucun                  |
+| `.stale()`                      | quelconque     | Périmé par drapeau ou par `stale_time`                     |
+| `.status(status)`               | quelconque     | `QueryStatus::Pending/Error/Success`                 |
+| `.fetch_status(f)`              | quelconque     | `FetchStatus::Idle/Fetching/Paused`                  |
+| `.predicate(p)`                 | —       | `Arc<dyn Fn(&QuerySnapshot) -> bool>`                |
+| `.is_stale_only() -> bool`      | —       | Si ce filtre se réduit à « périmé »               |
+
+## `InvalidateQueryFilters` et `RefetchQueryFilters`
+
+<Code lang="rust" code={`InvalidateQueryFilters::new()
+    .filters(QueryFilters::with_key(QueryKey::new("users")))
+    .refetch_type(RefetchType::Active)`} />
+
+| Struct                  | Builders                                       | Utilisé par                    |
+| ----------------------- | ---------------------------------------------- | -------------------------- |
+| `InvalidateQueryFilters` | `.filters(f)`, `.refetch_type(t)`              | `invalidate_queries_filtered` |
+| `RefetchQueryFilters`    | `.filters(f)`, `.cancel_refetch(bool)`, `.throw_on_error(bool)` | `refetch_queries` |
+
+`RefetchType` : `All` (refetch chaque correspondance), `Active` (refetch actives, marque inactives périmées — le défaut d'invalidation TanStack), `Inactive` (l'inverse), `None` (marque périmé, ne refetch rien).
+
+## Instantanés
+
+Les filtres et prédicats voient des instantanés immuables, pas les requêtes vivantes :
+
+| Champ (`QuerySnapshot`) | Type          | Signification                                  |
+| ----------------------- | ------------- | ---------------------------------------- |
+| `key`                    | `QueryKey`    | La clé de la requête                          |
+| `is_active`              | `bool`        | Un observateur souscrit existe et est activé |
+| `is_stale`               | `bool`        | Périmé par drapeau ou `stale_time`            |
+| `fetch_status`           | `FetchStatus` | Statut de fetch agrégé                   |
+| `status`                 | `QueryStatus` | Statut agrégé                         |
+| `has_data`               | `bool`        | Des données en cache existent                       |
+
+`QuerySnapshot::new(key, is_active, is_stale, fetch_status, status, has_data)` en construit un pour les tests. `QueryType::All/Active/Inactive` étiquette les catégories de filtres.
+
+## Miroirs côté mutation
+
+| Élément                        | Champs / builders                                                     |
+| --------------------------- | --------------------------------------------------------------------- |
+| `MutationSnapshot`           | `mutation_key: Option<QueryKey>`, `status: MutationStatus`, `is_paused: bool` |
+| `MutationFilters`            | `all()`, `with_key(k)`, `.exact()`, `.status(s)`, `.paused()`, `.predicate(p)` |
+| `match_query(snapshot, filters)`      | Le matcher qu'utilise le client pour les requêtes     |
+| `match_mutation(snapshot, filters)`   | Le matcher pour les mutations                   |
+
+## Exemple : prévisualiser puis agir
+
+<Code lang="rust" code={`use std::sync::Arc;
+use rs_query::{QueryFilters, QueryKey};
+
+let stale_users = QueryFilters::with_key(QueryKey::new("users"))
+    .stale()
+    .predicate(Arc::new(|snap| snap.fetch_status == rs_query::FetchStatus::Idle));
+
+let matched = client.query_snapshots(&stale_users);
+println!("would reset {} queries", matched.len());
+let _ = client.reset_queries(&stale_users);`} />
+
+## Étapes suivantes
+
+<LinkCard title="Guide : travailler avec clés et filtres" href="/guides/keys-and-filters/" description="Motifs orientés tâche pour la même API." />
+<LinkCard title="Référence : QueryClient" href="/reference/client/" description="Les opérations en masse que ces filtres pilotent." />

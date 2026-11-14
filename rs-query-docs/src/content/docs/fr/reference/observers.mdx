@@ -1,0 +1,78 @@
+---
+title: Observateurs et drapeaux de résultat
+description: "QueryObserver, QueriesObserver avec combine, et la surface QueryResultFlags."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+Les observateurs transforment l'état de cache en résultats prêts à rendre. `QueryObserver<T>` observe une requête et dérive le bloc complet de drapeaux booléens/horodatés de TanStack ; `QueriesObserver<T>` en observe plusieurs et supporte `combine`. Les bindings de framework se construisent sur les deux.
+
+## `QueryObserver<T>`
+
+Construit sur un client, une clé et des options ; il souscrit au cache et re-dérive son résultat à chaque mise à jour pertinente.
+
+<Code lang="rust" code={`use std::sync::Arc;
+use rs_query::{QueryObserver, QueryOptions};
+
+let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());`} />
+
+L'observateur expose le `QueryState<T>` courant, le bloc `QueryResultFlags`, et les notifications `QueryStateUpdate` sur son récepteur bus.
+
+## `QueryResultFlags`
+
+Parité avec `QueryObserverResult` de TanStack — chaque champ, son type et sa signification :
+
+| Champ                 | Type              | Signification                                                |
+| --------------------- | ----------------- | ------------------------------------------------------ |
+| `data_updated_at`      | `Option<Instant>` | Dernière écriture de données réussie (locale à l'observateur)            |
+| `error_updated_at`     | `Option<Instant>` | Dernière erreur                                             |
+| `error_update_count`   | `u32`             | Erreurs que cet observateur a observées                      |
+| `failure_count`        | `u32`             | Tentatives échouées pour le fetch courant (remis à zéro au fetch/succès) |
+| `failure_reason`       | `Option<QueryError>` | Dernière raison d'échec                                 |
+| `is_fetched`           | `bool`            | Un fetch s'est terminé (succès ou erreur)                 |
+| `is_fetched_after_mount` | `bool`          | Un fetch s'est terminé après la construction de cet observateur  |
+| `is_loading_error`     | `bool`            | Le dernier fetch a échoué sans données disponibles               |
+| `is_refetch_error`     | `bool`            | Le dernier fetch a échoué mais des données sont disponibles                |
+| `is_placeholder_data`  | `bool`            | Un remplaçant est actuellement affiché                         |
+| `is_paused`            | `bool`            | Le mode réseau interdit de démarrer un fetch maintenant              |
+| `is_enabled`           | `bool`            | Les options se résolvent à activé                             |
+
+## `QueryStateUpdate` et `QueryStateVariant`
+
+Les souscriptions livrent `QueryStateUpdate { key: String, state_variant: QueryStateVariant }` — la clé de cache plus le type de transition. `QueryStateVariant` couvre les classes de transition (succès, erreur, et la famille loading) pour que les consommateurs puissent filtrer sans désérialiser les états complets.
+
+## `QueriesObserver<T>`
+
+Coordonne une liste de spécifications de requête, avec le `combine` de TanStack :
+
+| Méthode                                  | Description                                            |
+| --------------------------------------- | ------------------------------------------------------ |
+| `QueriesObserver::new(&client, specs: Vec<Query<T>>)` | Construit sur des specs                          |
+| `.set_specs(specs) -> Vec<SpawnedTask<QueryState<T>>>` | Échange les specs ; renvoie les nouvelles tâches         |
+| `.run_all() -> Vec<SpawnedTask<...>>`    | Fetch chaque spec                                       |
+| `.refresh(idx) -> Option<SpawnedTask<...>>` | Refetch un index                                   |
+| `.sync()`                                | Réconcilie l'état de l'observateur avec les specs                |
+| `.results() -> &[QueryState<T>]`         | États courants                                         |
+| `.combine(f) -> R`                       | Replie tous les états en une valeur dérivée                 |
+| `.len()` / `.is_empty()` / `.specs()`    | Taille et accès aux specs                                   |
+
+`combine` est ce qui alimente `use_queries` : dérivez un `bool` comme « tout chargé », un tuple de lignes, ou n'importe quelle réduction — le signal se met à jour quand une entrée change.
+
+## `MutationObserver<T, P>`
+
+L'observateur côté mutation : souscrit aux transitions `MutationState<T>` d'une mutation pour `use_mutation`. Associez-le à `MutationFilters` via le cache quand vous avez besoin de comptes agrégés à la place.
+
+## Exemple : combine pour une vue composite
+
+<Code lang="rust" code={`use rs_query::QueriesObserver;
+
+let combined = observer.combine(|states| {
+    let loaded = states.iter().filter(|s| s.is_success()).count();
+    (loaded, states.len())
+});`} />
+
+## Étapes suivantes
+
+<LinkCard title="Référence : hooks de framework" href="/reference/hooks/" description="Les bindings qui consomment ces observateurs." />
+<LinkCard title="Référence : Query et QueryState" href="/reference/query/" description="Les états dont les drapeaux sont dérivés." />

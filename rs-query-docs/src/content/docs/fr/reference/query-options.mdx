@@ -1,0 +1,91 @@
+---
+title: QueryOptions
+description: "La surface complète de QueryOptions — péremption, GC, réessais, déclencheurs, mode réseau et constantes."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+`QueryOptions` est la surface plate d'options qui reflète les options par requête de TanStack v5, champ par champ. Chaque méthode de builder consomme et renvoie `Self`. Les options s'attachent à un `Query` via les méthodes de builder, traversent `QueryClient::set_default_options`, et voyagent sur les appels `set_query_data`.
+
+## Champs et builders
+
+| Option (builder)                                        | Type             | Défaut                | Description                                              |
+| ------------------------------------------------------- | ---------------- | ---------------------- | -------------------------------------------------------- |
+| `stale_time` (`.stale_time(Duration)`)                   | `Duration`        | `0`                    | Les données plus anciennes que ceci sont périmées                             |
+| `stale_time_static` (`.stale_time_static()`)             | `bool`            | `false`                | Jamais périmées — `staleTime: 'static'`                       |
+| `gc_time` (`.gc_time(Duration)`)                         | `Duration`        | `DEFAULT_GC_TIME` (5 min) | Fenêtre d'éviction inactive                                   |
+| `retry` (`.retry(RetryConfig)`)                          | `RetryConfig`     | voir ci-dessous              | Nombre de tentatives et backoff                                 |
+| `enabled` (`.enabled(bool)`)                             | `bool`            | `true`                 | Portail maître des fetches automatiques                         |
+| `enabled_fn` (`.enabled_fn(f)`)                          | `Option<Arc<dyn Fn() -> bool>>` | aucun     | Portail dynamique évalué au moment de la décision de fetch             |
+| `refetch_on_window_focus` (`.refetch_on_window_focus(t)`) | `RefetchTrigger` | `Enabled`             | Politique de refetch au focus                                      |
+| `refetch_on_reconnect` (`.refetch_on_reconnect(t)`)      | `RefetchTrigger`  | `Enabled`              | Politique de refetch à la reconnexion                                      |
+| `refetch_on_mount` (`.refetch_on_mount(t)`)              | `RefetchTrigger`  | `Enabled`              | Politique de refetch au montage                                      |
+| `refetch_interval` (`.refetch_interval(d)`)              | `Duration`        | aucun                   | Sondage tant que des observateurs existent                                |
+| `refetch_interval_in_background` (`.refetch_interval_in_background(b)`) | `bool` | `false`      | Continue le sondage sans observateur actif                      |
+| `structural_sharing` (`.structural_sharing(bool)`)       | `bool`            | `true`                 | Réutilisation d'`Arc` quand les nouvelles données sont `PartialEq`-égales       |
+| `network_mode` (`.network_mode(mode)`)                   | `NetworkMode`     | `Online`               | Sémantique de démarrage/réessai hors ligne                             |
+| `retry_on_mount` (`.retry_on_mount(bool)`)               | `bool`            | `true`                 | Réessaie une requête échouée au prochain montage                     |
+| `throw_on_error` (`.throw_on_error(bool)`)               | `bool`            | `false`                | Expose les erreurs à l'appelant au lieu de l'état d'erreur    |
+| `notify_on_change_props` (`.notify_on_change_props(v)`)  | `Option<Vec<String>>` | aucun              | Restreint les notifications de changement aux propriétés nommées      |
+| `meta` (`.meta(key, value)`)                             | `BTreeMap<String, String>` | vide        | Métadonnées libres ; voyagent avec la déshydratation               |
+
+`is_enabled()` résout le portail effectif : `enabled && (enabled_fn.is_none() || enabled_fn())`.
+
+## `RetryConfig`
+
+| Builder                              | Défaut              | Description                                    |
+| ------------------------------------ | -------------------- | ---------------------------------------------- |
+| `RetryConfig::new(max_retries)`       | —                    | Budget de tentatives                                 |
+| `.base_delay(Duration)`               | `BASE_RETRY_DELAY` (1 s) | Délai avant le premier réessai               |
+| `.max_delay(Duration)`                | `MAX_RETRY_DELAY` (30 s) | Plafond de backoff                            |
+| `.exponential_backoff(bool)`          | `true`               | Double chaque tentative quand activé               |
+| `.delay_for_attempt(n) -> Duration`   | —                    | `min(1000 ms · 2ⁿ, 30 s)` quand le backoff est activé   |
+| `.should_retry(n) -> bool`            | —                    | Si la tentative `n` est dans le budget           |
+
+Le module retryer ajoute la couche de décision : `RetryDecision::Never`, `RetryDecision::Count(n)`, `RetryDecision::Always`, et une décision par fermeture, appliquée par `Retryer` avec `retry_delay` comme math. Les comptes et raisons d'échec apparaissent sur les résultats d'observateur comme `failure_count`/`failure_reason`.
+
+## `PlaceholderData<T>`
+
+| Constructeur          | Comportement                                            |
+| -------------------- | --------------------------------------------------- |
+| `PlaceholderData::value(data)` | Affiche toujours ces données pendant le chargement        |
+| `PlaceholderData::function(f)` | Dérive des données de la requête précédente       |
+| `.keep_previous()`            | Réutilise les données de la clé précédente (`keepPreviousData`) |
+| `.resolve(previous) -> T`      | Évalue contre `Option<&T>` au moment de la lecture   |
+
+## `RefetchTrigger`
+
+| Variante    | Refetch…                        |
+| ---------- | --------------------------------- |
+| `Enabled`   | Seulement quand les données sont périmées (défaut) |
+| `Always`    | Indépendamment de la péremption           |
+| `Disabled`  | Jamais, depuis ce déclencheur          |
+
+`.allows_refetch(is_stale)` encode la règle ; `.is_enabled()` distingue `Disabled` du reste.
+
+## Constantes
+
+| Constante            | Valeur     | Rôle                       |
+| ------------------- | --------- | -------------------------- |
+| `BASE_RETRY_DELAY`   | `1 s`     | Délai du premier réessai          |
+| `MAX_RETRY_DELAY`    | `30 s`    | Plafond de backoff            |
+| `DEFAULT_GC_TIME`    | `5 min`   | Fenêtre d'éviction de cache par défaut |
+
+## Exemple
+
+<Code lang="rust" code={`use std::time::Duration;
+use rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};
+
+let options = QueryOptions::default()
+    .stale_time(Duration::from_secs(60))
+    .gc_time(Duration::from_secs(600))
+    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))
+    .refetch_on_reconnect(RefetchTrigger::Always)
+    .network_mode(NetworkMode::OfflineFirst)
+    .meta("source", "api");`} />
+
+## Étapes suivantes
+
+<LinkCard title="Référence : QueryClient" href="/reference/client/" description="Où les défauts et options rencontrent le cache." />
+<LinkCard title="Référence : erreurs et annulation" href="/reference/errors-and-cancellation/" description="Ce qui se passe quand tous les réessais échouent." />

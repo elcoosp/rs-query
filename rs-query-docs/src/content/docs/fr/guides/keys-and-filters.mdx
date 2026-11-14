@@ -1,0 +1,117 @@
+---
+title: Travailler avec les clés et les filtres
+description: "Construisez des clés de requête hiérarchiques et pilotez les opérations de cache en masse avec filtres, prédicats et types de refetch."
+type: how-to
+---
+
+import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
+
+Chaque opération de cache dans rs-query — invalidation, refetch, annulation, suppression — sélectionne ses cibles avec les deux mêmes primitives : des `QueryKey` hiérarchiques et des structs de filtre. Ce guide montre comment structurer les clés pour que les filtres fassent ce que vous voulez, et comment les types de filtre se composent.
+
+## Concevoir d'abord la hiérarchie de clés
+
+`QueryKey::new` démarre un segment racine ; `.with(label, value)` ajoute des segments étiquetés ; `.segment(name)` ajoute un segment simple. Les clés matchent par préfixe, donc une clé racine adresse chaque requête en dessous :
+
+<Code lang="rust" code={`use rs_query::QueryKey;
+
+let users      = QueryKey::new("users");               // matche tout ce qui est en dessous
+let one_user   = users.clone().with("id", 42);          // users/id=42
+let friends    = one_user.clone().segment("friends");   // users/id=42/friends`} />
+
+Chaque clé hache vers une chaîne stable `cache_key()` — l'identité que le cache, les devtools et la table de déduplication utilisent tous.
+
+<Aside type="tip">
+Placez les données variables dans des étiquettes (`with("id", 42)`), pas dans des noms de segments. Les filtres matchent les préfixes segment par segment, donc `users` attrape `users/id=42` et `users/id=42/friends` en une seule opération.
+</Aside>
+
+## Matcher avec `QueryFilters`
+
+`QueryFilters` combine six dimensions de sélection. Partez de `all()` ou `with_key()`, puis rétrécissez :
+
+<Code lang="rust" code={`use rs_query::{FetchStatus, QueryFilters, QueryStatus};
+
+let filters = QueryFilters::with_key(QueryKey::new("users"))
+    .active()                                  // seulement les requêtes observées
+    .stale()                                   // et périmées
+    .status(QueryStatus::Success)              // avec des données
+    .fetch_status(FetchStatus::Idle);          // pas en cours de fetch`} />
+
+| Builder          | Sélectionne                                              |
+| ---------------- | -------------------------------------------------------- |
+| `all()`          | Chaque requête en cache                                  |
+| `with_key(k)`    | Les requêtes dont la clé commence par `k`                |
+| `.exact()`       | Seulement la clé exacte, sans correspondance par préfixe |
+| `.active()`      | Au moins un observateur souscrit et activé               |
+| `.inactive()`    | Aucun observateur actif                                  |
+| `.stale()`       | Données périmées par drapeau ou par `stale_time`         |
+| `.status(s)`     | Le statut agrégé égale `s` (`Pending`/`Error`/`Success`) |
+| `.fetch_status(f)` | Le statut de fetch égale `f` (`Idle`/`Fetching`/`Paused`) |
+| `.predicate(p)`  | Fermeture sur un `QuerySnapshot` pour tout le reste       |
+
+Les prédicats reçoivent un `QuerySnapshot` avec `key`, `is_active`, `is_stale`, `fetch_status`, `status` et `has_data` :
+
+<Code lang="rust" code={`use rs_query::QueryFilters;
+
+let big = QueryFilters::all().predicate(Arc::new(|snap| {
+    snap.has_data // sélectionne seulement les requêtes qui détiennent des données
+}));`} />
+
+## Invalider avec une matrice de refetch
+
+`invalidate_queries_filtered` associe un filtre à un `RefetchType`, reproduisant exactement la matrice `refetchType` de TanStack :
+
+<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
+
+// Marquer périmé seulement — le refetch se produit au prochain montage/focus :
+client.invalidate_queries_filtered(
+    InvalidateQueryFilters::new()
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::None),
+);
+
+// Défaut TanStack : refetch actives, marquer inactives périmées :
+client.invalidate_queries_filtered(
+    InvalidateQueryFilters::new()
+                    .filters(QueryFilters::with_key(QueryKey::new("users")))
+                    .refetch_type(RefetchType::Active),
+);`} />
+
+| `RefetchType` | Effet                                    |
+| ------------- | ----------------------------------------- |
+| `All`         | Refetch chaque requête correspondante     |
+| `Active`      | Refetch actives ; inactives marquées périmées seulement |
+| `Inactive`    | Refetch inactives ; actives marquées périmées seulement |
+| `None`        | Marquer périmé sans refetch               |
+
+## Refetch, annuler, réinitialiser, supprimer
+
+Les opérations en masse restantes partagent la même entrée de filtre et renvoient le nombre de requêtes affectées :
+
+<Code lang="rust" code={`use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
+
+let users = QueryFilters::with_key(QueryKey::new("users"));
+
+let n = client.refetch_queries(
+    users.clone(),
+    RefetchQueryFilters::new().cancel_refetch(true), // supplante les fetches en vol
+);
+let cancelled = client.cancel_queries(&users);
+let reset     = client.reset_queries(&users);      // retour à Idle, abandonne les données
+let removed   = client.remove_queries(&users);     // évince du cache`} />
+
+`refetch_all_stale()` est le raccourci zéro-filtre pour « rafraîchis tout ce qui est périmé maintenant ».
+
+## Inspecter ce qui a matché
+
+`query_snapshots(&filters)` renvoie les `QuerySnapshot`s correspondants, pour que vous puissiez prévisualiser une opération avant de la lancer :
+
+<Code lang="rust" code={`for snap in client.query_snapshots(&users) {
+    println!("{} {:?} {:?}", snap.key.cache_key(), snap.status, snap.fetch_status);
+}`} />
+
+Les mutations sélectionnent avec `MutationFilters` de la même façon — clé, exact, statut, paused, prédicat — sur des `MutationSnapshot`s. Voir le [guide des mutations](/guides/mutations/) pour les motifs.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : mutations et mises à jour optimistes" href="/guides/mutations/" description="Invalidez depuis les mutations avec sécurité de rollback." />
+<LinkCard title="Référence : QueryKey et filtres" href="/reference/keys-and-filters/" description="Tableaux d'API complets pour clés, filtres et instantanés." />

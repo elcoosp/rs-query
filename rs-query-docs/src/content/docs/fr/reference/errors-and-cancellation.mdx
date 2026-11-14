@@ -1,0 +1,68 @@
+---
+title: Erreurs et annulation
+description: "Chaque variante de QueryError, son équivalent TanStack, et la boîte à outils d'annulation."
+type: reference
+---
+
+import { Code, LinkCard } from '@astrojs/starlight/components';
+
+`QueryError` est le type d'erreur unique à travers requêtes, mutations et persistance. Neuf variantes couvrent les modes d'échec ; deux d'entre elles encodent la sémantique d'annulation. La boîte à outils d'annulation — `CancellationToken` et `cancellable_fetch` — arrête coopérativement le travail.
+
+## `QueryError`
+
+| Variante                    | Charge utile                  | `Display`                       | Signification                                                     |
+| -------------------------- | ------------------------ | ------------------------------- | ----------------------------------------------------------- |
+| `Network`                   | `String`                 | `Network error: …`               | Échec au niveau connexion (hors ligne, refusé, I/O)            |
+| `Serialization`             | `String`                 | `Serialization error: …`         | (Dé)sérialisation échouée pendant persist/restore             |
+| `Cancelled { revert, silent }` | `bool, bool`          | `Query was cancelled`            | Reflète `CancelledError { revert, silent }` — voir ci-dessous     |
+| `Timeout`                   | `String`                 | `Timeout error: …`               | L'opération a dépassé son budget temps                          |
+| `MissingQueryFn`            | —                        | `Missing queryFn`                | Aucune fermeture de fetch enregistrée pour la requête                   |
+| `Paused`                    | —                        | `Fetch paused (offline)`         | Le fetch est en pause parce que l'app est hors ligne              |
+| `UndefinedData`             | —                        | `Query data cannot be undefined` | Le fetch n'a produit aucune donnée                                  |
+| `Redacted`                  | —                        | `redacted`                       | Déshydraté sous `should_redact_errors` — reflète `Error('redacted')` |
+| `Custom`                    | `String`                 | le message                      | Erreur d'appelant libre — aussi le point d'atterrissage des paniques de fetch |
+
+Constructeurs : `QueryError::network(msg)`, `::serialization(msg)`, `::timeout(msg)`, `::custom(msg)`. Le type dérive `Error`, `Debug`, `Clone` et `PartialEq` via `thiserror`.
+
+## Sémantique d'annulation
+
+`Cancelled { revert, silent }` porte deux drapeaux :
+
+- **`revert: true`** — l'appelant doit restaurer l'état d'avant-fetch ; sémantique type `cancel_queries` où le travail partiel se défait.
+- **`silent: true`** — l'erreur ne doit pas faire surface comme état d'erreur de requête. Le cancel-on-unmount et le démontage au montage utilisent ce chemin ; l'UI ne voit jamais un flash d'erreur.
+
+Sources typiques : `client.cancel_query(&key)`, `client.cancel_queries(&filters)`, abandonner un `SpawnedTask`, démonter un binding, et un `refetch` supplantant avec `cancel_refetch: true`.
+
+## `CancellationToken`
+
+Ré-exporté depuis quoin à la racine de la crate :
+
+<Code lang="rust" code={`use rs_query::CancellationToken;
+
+let token = CancellationToken::new();
+let token2 = token.clone();
+
+// Dans le worker : sondez ou sélectionnez sur le jeton.
+// Depuis le propriétaire : token.cancel();`} />
+
+Chaque tâche lancée et chaque binding en tient un ; c'est pourquoi l'annulation est coopérative — la fermeture de fetch observe le jeton entre les awaits au lieu d'être tuée au milieu d'une écriture.
+
+## `cancellable_fetch`
+
+`cancellable_fetch` enveloppe un future simple avec un jeton pour que les fetchers écrits à la main participent au même protocole :
+
+<Code lang="rust" code={`use rs_query::cancellable_fetch;
+
+let result = cancellable_fetch(token.clone(), async {
+    raw_http_get(url).await
+}).await;
+// Ok(value) ou Err(QueryError::Cancelled { .. }) quand annulé en premier.`} />
+
+## Correspondance vers les états d'erreur
+
+Quand un fetch épuise ses réessais, la dernière erreur atterrit dans `QueryState::Error { error, stale_data }` et les observateurs l'exposent via `failure_reason`. Les mutations atterrissent dans `MutationState::Error(error)`. Avec `throw_on_error(true)`, l'erreur se propage à l'appelant au lieu de se régler dans le cache.
+
+## Étapes suivantes
+
+<LinkCard title="Guide : exécuter des requêtes" href="/guides/queries/" description="Motifs d'annulation en contexte." />
+<LinkCard title="Référence : QueryOptions" href="/reference/query-options/" description="Budgets de réessai et throw_on_error." />
