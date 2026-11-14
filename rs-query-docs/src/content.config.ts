@@ -7,7 +7,7 @@ import { docsSchema, i18nSchema } from '@astrojs/starlight/schema';
 
 
 const docsMetadataCollection = defineCollection({
-  loader: glob({ base: './src/content/docs', pattern: '**/_meta.{yml,yaml}' }),
+  loader: glob({ base: './src/content/docs', pattern: '**/*.{md,mdx}' }),
   schema: z.object({
     label: z.string().optional(),
     order: z.array(z.string()).optional(),
