@@ -1,0 +1,54 @@
+---
+title: Porting TanStack Query v5 semantics to Rust without runtime lock-in
+date: 2026-11-15
+cover:
+  alt: Rs-query Architecture
+  image: ./welcome-cover.jpg
+image: ./welcome-cover.jpg
+---
+
+import { Card, CardGrid, Aside } from '@astrojs/starlight/components';
+
+Async server state in desktop and WASM Rust apps is usually handled with ad-hoc `Arc<Mutex<HashMap<...>>>` caches and manual background tasks. Before long, every view is duplicating deduplication flags, retry timers, and stale-data invalidation logic.
+
+We built `rs-query` (`0.2`) to bring TanStack Query v5 semantics to Rust without locking your application to Tokio or a single UI toolkit.
+
+## The Goal
+
+We wanted declarative query keys, request deduplication, stale-while-revalidate caching, optimistic mutations, offline pause/resume, and cache persistence—all generic over `quoin-core`'s `ReactiveContext` so the exact same query hooks run headless or inside GPUI, Leptos, Dioxus, Xilem, and Floem.
+
+## The Architecture
+
+`rs-query` depends only on `quoin-core` and schedules background fetches on a shared worker pool with portable timers rather than assuming a specific async executor. Version `0.2` tracks upstream TanStack Query v5 behavior against an explicit semantic parity checklist.
+
+<CardGrid stagger>
+  <Card title="Cache & Deduplication" icon="rocket">
+    Multiple observers subscribing to the same `QueryKey` share one in-flight request, reading cached data immediately while revalidating in the background.
+  </Card>
+  <Card title="Mutations & Rollbacks" icon="puzzle">
+    Supports optimistic cache updates via `set_query_data`, targeted `invalidate_queries` filters, and explicit snapshot rollback paths on failure.
+  </Card>
+  <Card title="Offline & Persistence" icon="setting">
+    Pauses retries automatically when offline, resumes on reconnect, and supports serializing or hydrating cache state across sessions.
+  </Card>
+  <Card title="Runtime & UI Portability" icon="approve-check">
+    Generic over `ReactiveContext` with no hardcoded executor, running identically across five UI frameworks and headless tests.
+  </Card>
+</CardGrid>
+
+## What it cost
+
+Porting TanStack Query's state machine to Rust meant translating dynamic JavaScript observer lifecycles into strictly typed, thread-safe Rust ownership without forcing `Clone` bounds everywhere. Keeping exact parity with v5 edge cases—such as garbage collection timers after the last observer unmounts and structural key matching—required auditing every transition against upstream semantics.
+
+<Aside type="caution" title="Where this does not apply">
+`rs-query` manages asynchronous server state (fetching, caching, and synchronizing external resources). For synchronous local UI state like open modals, active tabs, or form input buffers, use `quoin` signals directly instead of routing them through a query cache.
+</Aside>
+
+## Getting started
+
+```toml
+[dependencies]
+rs-query = "0.2"
+```
+
+Follow the [first-query tutorial](/tutorials/first-query/) to set up a `QueryClient` and run your first cached, cancelable fetch.
