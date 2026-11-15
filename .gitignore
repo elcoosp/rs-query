@@ -1,3 +1,7 @@
 target
 .vercel
 .env*
+
+# Build-time backups
+*.bak
+*.orig
