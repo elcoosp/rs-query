@@ -1,5 +1,4 @@
 import { defineDocsConfig } from '@elcoosp/docs-toolkit/config';
-import imageZoom from 'starlight-image-zoom';
 import headingBadges from 'starlight-heading-badges';
 
 export default await defineDocsConfig({
