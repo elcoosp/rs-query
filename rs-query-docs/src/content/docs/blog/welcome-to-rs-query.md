@@ -4,6 +4,7 @@ date: 2026-11-12T00:00:00Z
 cover:
   alt: Rs-query Logo
   image: ./logo.png
+image: ./welcome-cover.jpg
 ---
 
 Welcome to the official blog for **Rs-query**!
