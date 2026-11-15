@@ -27,3 +27,15 @@
 	--sl-color-accent: hsl(240 30% 60%);
 	--sl-color-accent-high: hsl(240 30% 75%);
 }
+
+/*
+ * WCAG AA: --sl-color-accent (hsl(30 68% 44%)) fails 4.5:1 for body text and
+ * white-on-accent buttons in light mode (measured 3.83:1 by Lighthouse).
+ * --sl-color-accent-high (hsl(24 72% 30%)) passes AAA at 7.64:1 on #fff.
+ * Only the *text* and *bg-accent* tokens change; --sl-color-accent stays for
+ * borders and focus rings where 3.83:1 is acceptable per WCAG 1.4.11 (UI).
+ */
+[data-theme='light'] {
+  --sl-color-text-accent: var(--sl-color-accent-high);
+  --sl-color-bg-accent: var(--sl-color-accent-high);
+}
