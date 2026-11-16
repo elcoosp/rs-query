@@ -23,9 +23,9 @@
 }
 
 [data-theme='dark'] {
-	--sl-color-accent-low: hsl(240 30% 16%);
-	--sl-color-accent: hsl(240 30% 60%);
-	--sl-color-accent-high: hsl(240 30% 75%);
+	--sl-color-accent-low: hsl(30 65% 16%);
+	--sl-color-accent: hsl(30 75% 60%);
+	--sl-color-accent-high: hsl(30 85% 75%);
 }
 
 /*
