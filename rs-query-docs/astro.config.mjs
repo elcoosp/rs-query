@@ -1,6 +1,7 @@
 import { defineDocsConfig } from '@elcoosp/docs-toolkit/config';
 
 export default await defineDocsConfig({
+  topics: true,
   llmsTxt: {},
   accentOverride: '#3e3e74',
   site: 'https://rs-query.vercel.app',
