@@ -7,15 +7,10 @@ export default await defineDocsConfig({
   domain: 'rs-query.vercel.app',
   title: "rs-query",
   description: "TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.",
-  sidebar: [],
   extraStarlight: {
-                        expressiveCode: {
-                        	themes: ['github-light', 'github-dark']
-                        },
                         title: 'rs-query',
                         description:
                                 'TanStack Query v5 parity for Rust — declarative, cache-aware async state management portable to every quoin-supported UI framework.',
-                        favicon: '/favicon.png',
                         social: [
                                 {
                                         icon: 'github',
@@ -30,8 +25,6 @@ export default await defineDocsConfig({
                         // The 404 page is a normal docs entry (src/content/docs/404.mdx) rendered
                         // through [...slug]; disabling Starlight's injected /404 route avoids the
                         // route-conflict warning between the two handlers.
-                        disable404Route: true,
-
                         sidebar: [
                                 {
                                         label: 'Tutorials',

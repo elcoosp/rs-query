@@ -17,6 +17,17 @@ A query engine needs exactly two platform services: *somewhere to run futures* (
 
 Everything else — caching, retries, deduplication, invalidation, persistence — is plain Rust with no platform dependency at all.
 
+```mermaid
+flowchart LR
+    UI["UI Hooks<br/><i>GPUI · Leptos · Dioxus · Xilem · Floem</i>"]
+    QC["QueryClient & Cache<br/><i>QueryKey · Retryer · Persistence</i>"]
+    RT["QueryRuntime<br/><i>PoolRuntime · ExecutorRuntime · Testkit</i>"]
+    RC["quoin_core::ReactiveContext<br/><i>framework-native Signals</i>"]
+    UI --> QC
+    QC --> RT
+    UI --> RC
+```
+
 ## The module map
 
 <FileTree>

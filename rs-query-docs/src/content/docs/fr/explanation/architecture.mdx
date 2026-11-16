@@ -17,6 +17,17 @@ Un moteur de requête a besoin d'exactement deux services de plateforme : *un en
 
 Tout le reste — cache, réessais, déduplication, invalidation, persistance — est du Rust pur sans dépendance de plateforme.
 
+```mermaid
+flowchart LR
+    UI["Hooks UI<br/><i>GPUI · Leptos · Dioxus · Xilem · Floem</i>"]
+    QC["QueryClient & Cache<br/><i>QueryKey · Retryer · Persistance</i>"]
+    RT["QueryRuntime<br/><i>PoolRuntime · ExecutorRuntime · Testkit</i>"]
+    RC["quoin_core::ReactiveContext<br/><i>Signaux natifs du framework</i>"]
+    UI --> QC
+    QC --> RT
+    UI --> RC
+```
+
 ## La carte des modules
 
 <FileTree>
