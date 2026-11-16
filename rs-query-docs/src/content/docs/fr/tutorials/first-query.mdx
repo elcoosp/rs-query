@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
 
 Le client possède le cache, la table de déduplication et le runtime. Il est bon marché à cloner, et chaque clone partage le même cache.
 
-<Code lang="rust" code={`use rs_query::QueryClient;
+<Code lang="rust" title="src/main.rs" code={`use rs_query::QueryClient;
 
 fn main() {
     let client = QueryClient::new();
