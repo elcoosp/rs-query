@@ -12,7 +12,7 @@ rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. U
 
 Clone the two repositories into the same parent directory:
 
-<Code lang="bash" code={`git clone https://github.com/elcoosp/quoin
+<Code lang="bash" title="Terminal" code={`git clone https://github.com/elcoosp/quoin
 git clone https://github.com/elcoosp/rs-query`} />
 
 The resulting layout must look like this, because rs-query resolves its quoin dependency as `../quoin/quoin-core`:
@@ -40,7 +40,7 @@ The resulting layout must look like this, because rs-query resolves its quoin de
 
 Verify the toolchain resolves:
 
-<Code lang="bash" code={`cargo check`} />
+<Code lang="bash" title="Terminal" code={`cargo check`} />
 
 ## Choose feature gates
 

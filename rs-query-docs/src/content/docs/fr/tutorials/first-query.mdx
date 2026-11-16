@@ -16,12 +16,12 @@ Vous avez besoin d'une chaîne d'outils Rust fonctionnelle (stable, édition 202
 
 Créez une crate binaire à côté de vos checkouts `rs-query` et `quoin` :
 
-<Code lang="bash" code={`cargo new query-demo
+<Code lang="bash" title="Terminal" code={`cargo new query-demo
 cd query-demo`} />
 
 Pointez `Cargo.toml` vers les checkouts locaux. La disposition des chemins compte : `quoin` se résout comme `../quoin/quoin-core` depuis un répertoire voisin.
 
-<Code lang="toml" code={`[dependencies]
+<Code lang="toml" title="Cargo.toml" code={`[dependencies]
 rs-query = { path = "../rs-query" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
 
@@ -71,7 +71,7 @@ println!("data: {:?}", state.data());`} />
 
 Exécutez la démo :
 
-<Code lang="bash" code={`cargo run`} />
+<Code lang="bash" title="Terminal" code={`cargo run`} />
 
 Vous devriez voir les noms fetchés imprimés depuis le cache.
 

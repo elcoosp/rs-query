@@ -16,12 +16,12 @@ You need a working Rust toolchain (stable, edition 2024) and the [quoin](https:/
 
 Create a binary crate next to your `rs-query` and `quoin` checkouts:
 
-<Code lang="bash" code={`cargo new query-demo
+<Code lang="bash" title="Terminal" code={`cargo new query-demo
 cd query-demo`} />
 
 Point `Cargo.toml` at the local checkouts. The path layout matters: `quoin` resolves as `../quoin/quoin-core` from a sibling directory.
 
-<Code lang="toml" code={`[dependencies]
+<Code lang="toml" title="Cargo.toml" code={`[dependencies]
 rs-query = { path = "../rs-query" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
 
@@ -71,7 +71,7 @@ println!("data: {:?}", state.data());`} />
 
 Run the demo:
 
-<Code lang="bash" code={`cargo run`} />
+<Code lang="bash" title="Terminal" code={`cargo run`} />
 
 You should see the fetched names printed from cache.
 
