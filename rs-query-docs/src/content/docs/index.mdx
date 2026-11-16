@@ -16,6 +16,7 @@ hero:
 ---
 
 import { Card, CardGrid, LinkButton, LinkCard } from '@astrojs/starlight/components';
+import { DiataxisGrid } from '@elcoosp/docs-toolkit/components';
 
 **rs-query** is a Rust port of the [TanStack Query](https://tanstack.com/query) stack. You describe *what* data your application needs with a `Query` and a `QueryKey`; the crate handles caching, deduplication, retries, cancellation, invalidation, offline pause/resume, persistence, and hydration. The reactive layer is generic over [quoin](https://github.com/elcoosp/quoin)'s `ReactiveContext`, so the same code runs headless — or inside a quoin application on **gpui, leptos, dioxus, xilem, or floem**.
 
