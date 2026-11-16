@@ -12,11 +12,7 @@ Chaque opération de cache dans rs-query — invalidation, refetch, annulation, 
 
 `QueryKey::new` démarre un segment racine ; `.with(label, value)` ajoute des segments étiquetés ; `.segment(name)` ajoute un segment simple. Les clés matchent par préfixe, donc une clé racine adresse chaque requête en dessous :
 
-<Code lang="rust" code={`use rs_query::QueryKey;
-
-let users      = QueryKey::new("users");               // matche tout ce qui est en dessous
-let one_user   = users.clone().with("id", 42);          // users/id=42
-let friends    = one_user.clone().segment("friends");   // users/id=42/friends`} />
+<Code lang="rust" code={"use rs_query::QueryKey;\n\nlet users      = QueryKey::new(\"users\");               // matche tout ce qui est en dessous\nlet one_user   = users.clone().with(\"id\", 42);          // users/id=42\nlet friends    = one_user.clone().segment(\"friends\");   // users/id=42/friends"} />
 
 Chaque clé hache vers une chaîne stable `cache_key()` — l'identité que le cache, les devtools et la table de déduplication utilisent tous.
 
@@ -28,13 +24,7 @@ Placez les données variables dans des étiquettes (`with("id", 42)`), pas dans 
 
 `QueryFilters` combine six dimensions de sélection. Partez de `all()` ou `with_key()`, puis rétrécissez :
 
-<Code lang="rust" code={`use rs_query::{FetchStatus, QueryFilters, QueryStatus};
-
-let filters = QueryFilters::with_key(QueryKey::new("users"))
-    .active()                                  // seulement les requêtes observées
-    .stale()                                   // et périmées
-    .status(QueryStatus::Success)              // avec des données
-    .fetch_status(FetchStatus::Idle);          // pas en cours de fetch`} />
+<Code lang="rust" code={"use rs_query::{FetchStatus, QueryFilters, QueryStatus};\n\nlet filters = QueryFilters::with_key(QueryKey::new(\"users\"))\n    .active()                                  // seulement les requ\u00eates observ\u00e9es\n    .stale()                                   // et p\u00e9rim\u00e9es\n    .status(QueryStatus::Success)              // avec des donn\u00e9es\n    .fetch_status(FetchStatus::Idle);          // pas en cours de fetch"} />
 
 | Builder          | Sélectionne                                              |
 | ---------------- | -------------------------------------------------------- |
@@ -50,31 +40,13 @@ let filters = QueryFilters::with_key(QueryKey::new("users"))
 
 Les prédicats reçoivent un `QuerySnapshot` avec `key`, `is_active`, `is_stale`, `fetch_status`, `status` et `has_data` :
 
-<Code lang="rust" code={`use rs_query::QueryFilters;
-
-let big = QueryFilters::all().predicate(Arc::new(|snap| {
-    snap.has_data // sélectionne seulement les requêtes qui détiennent des données
-}));`} />
+<Code lang="rust" code={"use rs_query::QueryFilters;\n\nlet big = QueryFilters::all().predicate(Arc::new(|snap| {\n    snap.has_data // s\u00e9lectionne seulement les requ\u00eates qui d\u00e9tiennent des donn\u00e9es\n}));"} />
 
 ## Invalider avec une matrice de refetch
 
 `invalidate_queries_filtered` associe un filtre à un `RefetchType`, reproduisant exactement la matrice `refetchType` de TanStack :
 
-<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};
-
-// Marquer périmé seulement — le refetch se produit au prochain montage/focus :
-client.invalidate_queries_filtered(
-    InvalidateQueryFilters::new()
-                    .filters(QueryFilters::with_key(QueryKey::new("users")))
-                    .refetch_type(RefetchType::None),
-);
-
-// Défaut TanStack : refetch actives, marquer inactives périmées :
-client.invalidate_queries_filtered(
-    InvalidateQueryFilters::new()
-                    .filters(QueryFilters::with_key(QueryKey::new("users")))
-                    .refetch_type(RefetchType::Active),
-);`} />
+<Code lang="rust" code={"use rs_query::{InvalidateQueryFilters, QueryFilters, QueryKey, RefetchType};\n\n// Marquer p\u00e9rim\u00e9 seulement \u2014 le refetch se produit au prochain montage/focus :\nclient.invalidate_queries_filtered(\n    InvalidateQueryFilters::new()\n                    .filters(QueryFilters::with_key(QueryKey::new(\"users\")))\n                    .refetch_type(RefetchType::None),\n);\n\n// D\u00e9faut TanStack : refetch actives, marquer inactives p\u00e9rim\u00e9es :\nclient.invalidate_queries_filtered(\n    InvalidateQueryFilters::new()\n                    .filters(QueryFilters::with_key(QueryKey::new(\"users\")))\n                    .refetch_type(RefetchType::Active),\n);"} />
 
 | `RefetchType` | Effet                                    |
 | ------------- | ----------------------------------------- |
@@ -87,17 +59,7 @@ client.invalidate_queries_filtered(
 
 Les opérations en masse restantes partagent la même entrée de filtre et renvoient le nombre de requêtes affectées :
 
-<Code lang="rust" code={`use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};
-
-let users = QueryFilters::with_key(QueryKey::new("users"));
-
-let n = client.refetch_queries(
-    users.clone(),
-    RefetchQueryFilters::new().cancel_refetch(true), // supplante les fetches en vol
-);
-let cancelled = client.cancel_queries(&users);
-let reset     = client.reset_queries(&users);      // retour à Idle, abandonne les données
-let removed   = client.remove_queries(&users);     // évince du cache`} />
+<Code lang="rust" code={"use rs_query::{QueryFilters, QueryKey, RefetchQueryFilters};\n\nlet users = QueryFilters::with_key(QueryKey::new(\"users\"));\n\nlet n = client.refetch_queries(\n    users.clone(),\n    RefetchQueryFilters::new().cancel_refetch(true), // supplante les fetches en vol\n);\nlet cancelled = client.cancel_queries(&users);\nlet reset     = client.reset_queries(&users);      // retour \u00e0 Idle, abandonne les donn\u00e9es\nlet removed   = client.remove_queries(&users);     // \u00e9vince du cache"} />
 
 `refetch_all_stale()` est le raccourci zéro-filtre pour « rafraîchis tout ce qui est périmé maintenant ».
 
@@ -105,9 +67,7 @@ let removed   = client.remove_queries(&users);     // évince du cache`} />
 
 `query_snapshots(&filters)` renvoie les `QuerySnapshot`s correspondants, pour que vous puissiez prévisualiser une opération avant de la lancer :
 
-<Code lang="rust" code={`for snap in client.query_snapshots(&users) {
-    println!("{} {:?} {:?}", snap.key.cache_key(), snap.status, snap.fetch_status);
-}`} />
+<Code lang="rust" code={"for snap in client.query_snapshots(&users) {\n    println!(\"{} {:?} {:?}\", snap.key.cache_key(), snap.status, snap.fetch_status);\n}"} />
 
 Les mutations sélectionnent avec `MutationFilters` de la même façon — clé, exact, statut, paused, prédicat — sur des `MutationSnapshot`s. Voir le [guide des mutations](/guides/mutations/) pour les motifs.
 

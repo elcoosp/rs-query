@@ -71,12 +71,7 @@ Tracks application focus events that drive `refetch_on_window_focus`. Like `Onli
 
 ## Example: a deterministic test client
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{ExecutorRuntime, QueryClient};
-
-let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
-quoin_testkit::LocalExecutor::global(),
-)));`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{ExecutorRuntime, QueryClient};\n\nlet client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(\nquoin_testkit::LocalExecutor::global(),\n)));"} />
 
 Inside a `#[tokio::test]` with `start_paused = true`, every internal sleep is virtual-time controlled.
 

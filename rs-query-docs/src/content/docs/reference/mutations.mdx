@@ -84,13 +84,7 @@ Side-effect order, TanStack-exact: cache `on_mutate` → options `on_mutate` →
 
 ## Example: scoped saves with cache callbacks
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{MutationCache, MutationCacheConfig, MutationScope};
-
-let cache = MutationCache::with_config(MutationCacheConfig {
-    on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),
-    ..MutationCacheConfig::default()
-});`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{MutationCache, MutationCacheConfig, MutationScope};\n\nlet cache = MutationCache::with_config(MutationCacheConfig {\n    on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),\n    ..MutationCacheConfig::default()\n});"} />
 
 ## Next steps
 

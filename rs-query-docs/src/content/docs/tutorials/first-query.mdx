@@ -16,14 +16,11 @@ You need a working Rust toolchain (stable, edition 2024) and the [quoin](https:/
 
 Create a binary crate next to your `rs-query` and `quoin` checkouts:
 
-<Code lang="bash" title="Terminal" code={`cargo new query-demo
-cd query-demo`} />
+<Code lang="bash" title="Terminal" code={"cargo new query-demo\ncd query-demo"} />
 
 Point `Cargo.toml` at the local checkouts. The path layout matters: `quoin` resolves as `../quoin/quoin-core` from a sibling directory.
 
-<Code lang="toml" title="Cargo.toml" code={`[dependencies]
-rs-query = { path = "../rs-query" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
+<Code lang="toml" title="Cargo.toml" code={"[dependencies]\nrs-query = { path = \"../rs-query\" }\ntokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\"] }"} />
 
 `rs-query` itself does not need tokio — it runs on quoin's shared worker pool by default. The demo uses tokio only for its own `main`.
 
@@ -31,12 +28,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }`} />
 
 The client owns the cache, the deduplication table, and the runtime. It is cheap to clone, and every clone shares the same cache.
 
-<Code lang="rust" title="src/main.rs" code={`use rs_query::QueryClient;
-
-fn main() {
-    let client = QueryClient::new();
-    println!("client ready");
-}`} />
+<Code lang="rust" title="src/main.rs" code={"use rs_query::QueryClient;\n\nfn main() {\n    let client = QueryClient::new();\n    println!(\"client ready\");\n}"} />
 
 Hold the client in your application state for the lifetime of the program.
 
@@ -44,16 +36,7 @@ Hold the client in your application state for the lifetime of the program.
 
 A `Query` pairs a `QueryKey` with an async fetch closure that returns `Result<T, E>`. Keys are hierarchical: `QueryKey::new("users")` creates the `"users"` segment, and `.with("id", 42)` appends a labelled segment.
 
-<Code lang="rust" code={`use std::time::Duration;
-use rs_query::{Query, QueryClient, QueryKey};
-
-let client = QueryClient::new();
-let key = QueryKey::new("users").with("id", 42);
-
-let query = Query::new(key.clone(), || async {
-    Ok(vec!["Ada", "Alan"])
-})
-.stale_time(Duration::from_secs(30));`} />
+<Code lang="rust" code={"use std::time::Duration;\nuse rs_query::{Query, QueryClient, QueryKey};\n\nlet client = QueryClient::new();\nlet key = QueryKey::new(\"users\").with(\"id\", 42);\n\nlet query = Query::new(key.clone(), || async {\n    Ok(vec![\"Ada\", \"Alan\"])\n})\n.stale_time(Duration::from_secs(30));"} />
 
 The `stale_time(30 s)` line tells the cache that the data stays fresh for thirty seconds after a successful fetch.
 
@@ -61,17 +44,11 @@ The `stale_time(30 s)` line tells the cache that the data stays fresh for thirty
 
 `spawn_query` submits the fetch to the client's runtime and returns a `SpawnedTask` — an awaitable handle you can also abort by dropping it.
 
-<Code lang="rust" code={`use rs_query::spawn_query;
-
-let handle = spawn_query(&client, &query);
-let state = handle.await;
-
-assert!(state.is_success());
-println!("data: {:?}", state.data());`} />
+<Code lang="rust" code={"use rs_query::spawn_query;\n\nlet handle = spawn_query(&client, &query);\nlet state = handle.await;\n\nassert!(state.is_success());\nprintln!(\"data: {:?}\", state.data());"} />
 
 Run the demo:
 
-<Code lang="bash" title="Terminal" code={`cargo run`} />
+<Code lang="bash" title="Terminal" code={"cargo run"} />
 
 You should see the fetched names printed from cache.
 
@@ -83,9 +60,7 @@ Dropping a `SpawnedTask` aborts the fetch cooperatively through a `CancellationT
 
 `state` is a `QueryState<Vec<&str>>` — an enum with one variant per cache situation:
 
-<Code lang="text" code={`Idle → Loading → Success(T)
-           → Error { error, stale_data }
-Success(T) → Stale(T) → Refetching(T) → Success(T)`} />
+<Code lang="text" code={"Idle \u2192 Loading \u2192 Success(T)\n           \u2192 Error { error, stale_data }\nSuccess(T) \u2192 Stale(T) \u2192 Refetching(T) \u2192 Success(T)"} />
 
 After the awaited call in step 4 you hold `Success`. Call `state.is_stale()` after `stale_time` has elapsed to see the transition to `Stale`.
 
@@ -93,13 +68,7 @@ After the awaited call in step 4 you hold `Success`. Call `state.is_stale()` aft
 
 Mark the `"users"` prefix stale, refetching only the queries that currently have an active observer — the TanStack default:
 
-<Code lang="rust" code={`use rs_query::{InvalidateQueryFilters, QueryFilters, RefetchType};
-
-client.invalidate_queries_filtered(
-    InvalidateQueryFilters::new()
-                    .filters(QueryFilters::with_key(QueryKey::new("users")))
-                    .refetch_type(RefetchType::Active),
-);`} />
+<Code lang="rust" code={"use rs_query::{InvalidateQueryFilters, QueryFilters, RefetchType};\n\nclient.invalidate_queries_filtered(\n    InvalidateQueryFilters::new()\n                    .filters(QueryFilters::with_key(QueryKey::new(\"users\")))\n                    .refetch_type(RefetchType::Active),\n);"} />
 
 Every query whose key starts with the `"users"` segment is now stale, and active ones refetch immediately.
 

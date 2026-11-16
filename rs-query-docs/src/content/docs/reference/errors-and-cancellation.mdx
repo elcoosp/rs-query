@@ -37,13 +37,7 @@ Typical sources: `client.cancel_query(&key)`, `client.cancel_queries(&filters)`,
 
 Re-exported from quoin at the crate root:
 
-<Code lang="rust" code={`use rs_query::CancellationToken;
-
-let token = CancellationToken::new();
-let token2 = token.clone();
-
-// In the worker: poll or select on the token.
-// From the owner: token.cancel();`} />
+<Code lang="rust" code={"use rs_query::CancellationToken;\n\nlet token = CancellationToken::new();\nlet token2 = token.clone();\n\n// In the worker: poll or select on the token.\n// From the owner: token.cancel();"} />
 
 Every spawned task and binding holds one; this is why aborting is cooperative â€” the fetch closure observes the token between awaits rather than being killed mid-write.
 
@@ -51,12 +45,7 @@ Every spawned task and binding holds one; this is why aborting is cooperative â€
 
 `cancellable_fetch` wraps a plain future with a token so hand-rolled fetchers participate in the same protocol:
 
-<Code lang="rust" code={`use rs_query::cancellable_fetch;
-
-let result = cancellable_fetch(token.clone(), async {
-    raw_http_get(url).await
-}).await;
-// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first.`} />
+<Code lang="rust" code={"use rs_query::cancellable_fetch;\n\nlet result = cancellable_fetch(token.clone(), async {\n    raw_http_get(url).await\n}).await;\n// Ok(value) or Err(QueryError::Cancelled { .. }) when cancelled first."} />
 
 ## Mapping to error states
 

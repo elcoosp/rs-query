@@ -68,16 +68,7 @@ Key methods: `data() -> Option<&T>`, `data_mut()`, `data_cloned()`, `map(f)`, `u
 
 ## Example: exhaustive rendering
 
-<Code lang="rust" code={`use rs_query::{QueryState, QueryStatus, FetchStatus};
-
-fn label(state: &QueryState<Vec<String>>) -> String {
-    match (state.status(), state.fetch_status()) {
-                    (QueryStatus::Success, FetchStatus::Fetching) => "refreshing".into(),
-                    (QueryStatus::Success, FetchStatus::Idle) => "fresh".into(),
-                    (QueryStatus::Pending, FetchStatus::Paused) => "waiting for network".into(),
-                    (status, fetch) => format!("{:?}/{:?}", status, fetch),
-    }
-}`} />
+<Code lang="rust" code={"use rs_query::{QueryState, QueryStatus, FetchStatus};\n\nfn label(state: &QueryState<Vec<String>>) -> String {\n    match (state.status(), state.fetch_status()) {\n                    (QueryStatus::Success, FetchStatus::Fetching) => \"refreshing\".into(),\n                    (QueryStatus::Success, FetchStatus::Idle) => \"fresh\".into(),\n                    (QueryStatus::Pending, FetchStatus::Paused) => \"waiting for network\".into(),\n                    (status, fetch) => format!(\"{:?}/{:?}\", status, fetch),\n    }\n}"} />
 
 ## Next steps
 

@@ -37,13 +37,7 @@ Sources typiques : `client.cancel_query(&key)`, `client.cancel_queries(&filters)
 
 Ré-exporté depuis quoin à la racine de la crate :
 
-<Code lang="rust" code={`use rs_query::CancellationToken;
-
-let token = CancellationToken::new();
-let token2 = token.clone();
-
-// Dans le worker : sondez ou sélectionnez sur le jeton.
-// Depuis le propriétaire : token.cancel();`} />
+<Code lang="rust" code={"use rs_query::CancellationToken;\n\nlet token = CancellationToken::new();\nlet token2 = token.clone();\n\n// Dans le worker : sondez ou s\u00e9lectionnez sur le jeton.\n// Depuis le propri\u00e9taire : token.cancel();"} />
 
 Chaque tâche lancée et chaque binding en tient un ; c'est pourquoi l'annulation est coopérative — la fermeture de fetch observe le jeton entre les awaits au lieu d'être tuée au milieu d'une écriture.
 
@@ -51,12 +45,7 @@ Chaque tâche lancée et chaque binding en tient un ; c'est pourquoi l'annulatio
 
 `cancellable_fetch` enveloppe un future simple avec un jeton pour que les fetchers écrits à la main participent au même protocole :
 
-<Code lang="rust" code={`use rs_query::cancellable_fetch;
-
-let result = cancellable_fetch(token.clone(), async {
-    raw_http_get(url).await
-}).await;
-// Ok(value) ou Err(QueryError::Cancelled { .. }) quand annulé en premier.`} />
+<Code lang="rust" code={"use rs_query::cancellable_fetch;\n\nlet result = cancellable_fetch(token.clone(), async {\n    raw_http_get(url).await\n}).await;\n// Ok(value) ou Err(QueryError::Cancelled { .. }) quand annul\u00e9 en premier."} />
 
 ## Correspondance vers les états d'erreur
 

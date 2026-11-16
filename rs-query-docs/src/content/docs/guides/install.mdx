@@ -12,8 +12,7 @@ rs-query depends on `quoin-core`, and quoin is not yet published to crates.io. U
 
 Clone the two repositories into the same parent directory:
 
-<Code lang="bash" title="Terminal" code={`git clone https://github.com/elcoosp/quoin
-git clone https://github.com/elcoosp/rs-query`} />
+<Code lang="bash" title="Terminal" code={"git clone https://github.com/elcoosp/quoin\ngit clone https://github.com/elcoosp/rs-query"} />
 
 The resulting layout must look like this, because rs-query resolves its quoin dependency as `../quoin/quoin-core`:
 
@@ -30,8 +29,7 @@ The resulting layout must look like this, because rs-query resolves its quoin de
   <TabItem label="Sibling checkout (recommended)">
     From your application crate, point at the local rs-query checkout:
 
-<Code lang="toml" code={`  [dependencies]
-  rs-query = { path = "../rs-query" }`} />
+<Code lang="toml" code={"  [dependencies]\n  rs-query = { path = \"../rs-query\" }"} />
   </TabItem>
   <TabItem label="Pinned git revision">
     For CI or teammates without the full checkout layout, vendor both repositories with a workspace or a script, then depend on the vendored path. A bare `git` dependency on rs-query alone fails to resolve, because `quoin-core` is a path dependency that Cargo cannot fetch from the rs-query repository.
@@ -40,7 +38,7 @@ The resulting layout must look like this, because rs-query resolves its quoin de
 
 Verify the toolchain resolves:
 
-<Code lang="bash" title="Terminal" code={`cargo check`} />
+<Code lang="bash" title="Terminal" code={"cargo check"} />
 
 ## Choose feature gates
 
@@ -54,8 +52,7 @@ rs-query ships with two optional features. Both are opt-in and add nothing to th
 
 Enable them as needed:
 
-<Code lang="toml" title="Cargo.toml" code={`[dependencies]
-rs-query = { path = "../rs-query", features = ["serde", "devtools"] }`} />
+<Code lang="toml" title="Cargo.toml" code={"[dependencies]\nrs-query = { path = \"../rs-query\", features = [\"serde\", \"devtools\"] }"} />
 
 ## Runtime requirements
 

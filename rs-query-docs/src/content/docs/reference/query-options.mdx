@@ -74,16 +74,7 @@ The retryer module adds the decision layer: `RetryDecision::Never`, `RetryDecisi
 
 ## Example
 
-<Code lang="rust" code={`use std::time::Duration;
-use rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};
-
-let options = QueryOptions::default()
-    .stale_time(Duration::from_secs(60))
-    .gc_time(Duration::from_secs(600))
-    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))
-    .refetch_on_reconnect(RefetchTrigger::Always)
-    .network_mode(NetworkMode::OfflineFirst)
-    .meta("source", "api");`} />
+<Code lang="rust" code={"use std::time::Duration;\nuse rs_query::{NetworkMode, QueryOptions, RefetchTrigger, RetryConfig};\n\nlet options = QueryOptions::default()\n    .stale_time(Duration::from_secs(60))\n    .gc_time(Duration::from_secs(600))\n    .retry(RetryConfig::new(3).max_delay(Duration::from_secs(10)))\n    .refetch_on_reconnect(RefetchTrigger::Always)\n    .network_mode(NetworkMode::OfflineFirst)\n    .meta(\"source\", \"api\");"} />
 
 ## Next steps
 

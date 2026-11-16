@@ -18,9 +18,7 @@ rs-query reproduces TanStack v5's offline story: a per-query `NetworkMode` decid
 | `Always`       | Yes                   | Yes                       | Local-first work, IPC, storage  |
 | `OfflineFirst` | Yes — the first attempt runs | No — retries pause   | Write-then-retry mutations      |
 
-<Code lang="rust" code={`use rs_query::{NetworkMode, QueryOptions};
-
-let options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);`} />
+<Code lang="rust" code={"use rs_query::{NetworkMode, QueryOptions};\n\nlet options = QueryOptions::default().network_mode(NetworkMode::OfflineFirst);"} />
 
 The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the matrix if you need the decision in your own code.
 
@@ -28,13 +26,7 @@ The helpers `can_fetch(mode, online)` and `can_retry(mode, online)` encode the m
 
 `OnlineManager` starts online and takes truth from your platform's connectivity callbacks — there is no OS listener baked in, which keeps the crate runtime-free:
 
-<Code lang="rust" code={`use rs_query::OnlineManager;
-
-let online = OnlineManager::new(); // starts online
-
-// Wire these to your platform:
-online.set_online(false); // in-flight retries pause; new fetches pause per mode
-online.set_online(true);  // paused work resumes`} />
+<Code lang="rust" code={"use rs_query::OnlineManager;\n\nlet online = OnlineManager::new(); // starts online\n\n// Wire these to your platform:\nonline.set_online(false); // in-flight retries pause; new fetches pause per mode\nonline.set_online(true);  // paused work resumes"} />
 
 The client owns one: `client.online_manager()` returns it, and `client.handle_reconnect()` runs the full reconnect sequence — refetch triggers for queries and `resume_paused_mutations`.
 
@@ -52,12 +44,7 @@ When connectivity returns, paused fetches resume from where they stopped — att
 
 Control whether stale data refreshes when the connection comes back, and how eagerly:
 
-<Code lang="rust" code={`use rs_query::{QueryOptions, RefetchTrigger};
-
-let options = QueryOptions::default()
-    .refetch_on_reconnect(RefetchTrigger::Always) // even fresh data refetches
-    .refetch_on_mount(RefetchTrigger::Enabled)    // default: refetch if stale
-    .refetch_on_window_focus(RefetchTrigger::Disabled);`} />
+<Code lang="rust" code={"use rs_query::{QueryOptions, RefetchTrigger};\n\nlet options = QueryOptions::default()\n    .refetch_on_reconnect(RefetchTrigger::Always) // even fresh data refetches\n    .refetch_on_mount(RefetchTrigger::Enabled)    // default: refetch if stale\n    .refetch_on_window_focus(RefetchTrigger::Disabled);"} />
 
 `RefetchTrigger` has three variants: `Enabled` (refetch when stale — the default), `Always`, and `Disabled`.
 

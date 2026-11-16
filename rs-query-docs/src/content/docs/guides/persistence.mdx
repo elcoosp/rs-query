@@ -16,16 +16,7 @@ Enable the `serde` feature for the JSON (de)serialization helpers used by real s
 
 `QueryPersister` caches each query's result under its key in a `QueryStorage`. Configure expiry with `max_age` and version-stamp entries with `buster`:
 
-<Code lang="rust" code={`use std::sync::Arc;
-use std::time::Duration;
-use rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};
-
-let persister = QueryPersister::new(
-    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))
-                    .with_buster("v1".into())
-                    .with_max_age(Duration::from_secs(60 * 60 * 24))
-                    .with_prefix("app".into()),
-);`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse std::time::Duration;\nuse rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};\n\nlet persister = QueryPersister::new(\n    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))\n                    .with_buster(\"v1\".into())\n                    .with_max_age(Duration::from_secs(60 * 60 * 24))\n                    .with_prefix(\"app\".into()),\n);"} />
 
 The persister restores selectively — only queries touched by observers — and expired entries (past `max_age`) or mismatched busters are treated as absent. A GC pass evicts stale records.
 
@@ -35,13 +26,7 @@ Implement `QueryStorage` to plug in a backend: it is an async key/value surface 
 
 `persist_query_client` restores the dehydrated client state, then runs a throttled save loop on every cache change:
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};
-
-let handle = persist_query_client(
-    &client,
-    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),
-).await;`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};\n\nlet handle = persist_query_client(\n    &client,\n    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),\n).await;"} />
 
 `PersistQueryClientOptions` also takes `.with_max_age(...)` and `.with_buster(...)` — defaults are 24 hours and an empty buster, matching TanStack. The returned `PersistQueryClientHandle` carries the save task and an `unsubscribe()` to stop the loop.
 
@@ -49,30 +34,19 @@ let handle = persist_query_client(
 
 For full control — server-rendered HTML hydration, custom storage lifecycles — run the pieces yourself:
 
-<Code lang="rust" code={`use rs_query::{persist_query_client_restore, persist_query_client_save};
-
-// Restore before creating observers:
-let restored = persist_query_client_restore(&client, &persister, &opts).await;
-
-// Save on demand:
-persist_query_client_save(&client, &persister, &opts).await;`} />
+<Code lang="rust" code={"use rs_query::{persist_query_client_restore, persist_query_client_save};\n\n// Restore before creating observers:\nlet restored = persist_query_client_restore(&client, &persister, &opts).await;\n\n// Save on demand:\npersist_query_client_save(&client, &persister, &opts).await;"} />
 
 ## Retry a failing restore
 
 Corrupt or oversized records can make restores fail. `persist_with_retry` retries the restore, evicting the oldest query each round — the `remove_oldest_query` strategy — up to `MAX_RESTORE_RETRIES`:
 
-<Code lang="rust" code={`use rs_query::{persist_with_retry, remove_oldest_query};
-
-persist_with_retry(&client, &persister, &opts, remove_oldest_query).await;`} />
+<Code lang="rust" code={"use rs_query::{persist_with_retry, remove_oldest_query};\n\npersist_with_retry(&client, &persister, &opts, remove_oldest_query).await;"} />
 
 ## Sync clients across tabs with broadcast
 
 `broadcast_query_client` keeps multiple `QueryClient` instances in sync through a channel. Remote updates apply with a re-entrancy guard, so an applied remote update is never re-broadcast:
 
-<Code lang="rust" code={`use rs_query::broadcast_query_client;
-
-let handle = broadcast_query_client(&client, "app-cache");
-// handle.unsubscribe() stops syncing; handle.into_task() hands it to the runtime.`} />
+<Code lang="rust" code={"use rs_query::broadcast_query_client;\n\nlet handle = broadcast_query_client(&client, \"app-cache\");\n// handle.unsubscribe() stops syncing; handle.into_task() hands it to the runtime."} />
 
 Pass `BroadcastQueryClientOptions::new().with_channel("app-cache")` to `broadcast_query_client_with_options` when you need the channel option object form. `publish_state(&client, "app-cache")` pushes a one-shot snapshot.
 

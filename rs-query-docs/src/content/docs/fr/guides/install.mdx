@@ -12,8 +12,7 @@ rs-query dépend de `quoin-core`, et quoin n'est pas encore publié sur crates.i
 
 Clonez les deux dépôts dans le même répertoire parent :
 
-<Code lang="bash" title="Terminal" code={`git clone https://github.com/elcoosp/quoin
-git clone https://github.com/elcoosp/rs-query`} />
+<Code lang="bash" title="Terminal" code={"git clone https://github.com/elcoosp/quoin\ngit clone https://github.com/elcoosp/rs-query"} />
 
 La disposition résultante doit ressembler à ceci, parce que rs-query résout sa dépendance quoin comme `../quoin/quoin-core` :
 
@@ -30,8 +29,7 @@ La disposition résultante doit ressembler à ceci, parce que rs-query résout s
   <TabItem label="Checkout voisin (recommandé)">
     Depuis votre crate d'application, pointez vers le checkout local rs-query :
 
-<Code lang="toml" code={`  [dependencies]
-  rs-query = { path = "../rs-query" }`} />
+<Code lang="toml" code={"  [dependencies]\n  rs-query = { path = \"../rs-query\" }"} />
   </TabItem>
   <TabItem label="Révision git épinglée">
     Pour la CI ou des coéquipiers sans la disposition de checkout complète, vendez les deux dépôts avec un workspace ou un script, puis dépendez du chemin vendu. Une dépendance `git` seule sur rs-query échoue à se résoudre, parce que `quoin-core` est une dépendance de chemin que Cargo ne peut pas aller chercher depuis le dépôt rs-query.
@@ -40,7 +38,7 @@ La disposition résultante doit ressembler à ceci, parce que rs-query résout s
 
 Vérifiez que la chaîne d'outils résout :
 
-<Code lang="bash" title="Terminal" code={`cargo check`} />
+<Code lang="bash" title="Terminal" code={"cargo check"} />
 
 ## Choisir les portails de fonctionnalité
 
@@ -54,8 +52,7 @@ rs-query est livré avec deux fonctionnalités optionnelles. Les deux sont opt-i
 
 Activez-les selon les besoins :
 
-<Code lang="toml" title="Cargo.toml" code={`[dependencies]
-rs-query = { path = "../rs-query", features = ["serde", "devtools"] }`} />
+<Code lang="toml" title="Cargo.toml" code={"[dependencies]\nrs-query = { path = \"../rs-query\", features = [\"serde\", \"devtools\"] }"} />
 
 ## Exigences de runtime
 

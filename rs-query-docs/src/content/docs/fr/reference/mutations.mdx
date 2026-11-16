@@ -84,13 +84,7 @@ Ordre des effets de bord, exactement TanStack : cache `on_mutate` → options `o
 
 ## Exemple : sauvegardes à portée avec callbacks de cache
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{MutationCache, MutationCacheConfig, MutationScope};
-
-let cache = MutationCache::with_config(MutationCacheConfig {
-    on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),
-    ..MutationCacheConfig::default()
-});`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{MutationCache, MutationCacheConfig, MutationScope};\n\nlet cache = MutationCache::with_config(MutationCacheConfig {\n    on_error: Some(Arc::new(|_client, error| log(&error.to_string()))),\n    ..MutationCacheConfig::default()\n});"} />
 
 ## Étapes suivantes
 

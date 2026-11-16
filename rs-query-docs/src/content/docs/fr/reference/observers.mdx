@@ -12,10 +12,7 @@ Les observateurs transforment l'état de cache en résultats prêts à rendre. `
 
 Construit sur un client, une clé et des options ; il souscrit au cache et re-dérive son résultat à chaque mise à jour pertinente.
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{QueryObserver, QueryOptions};
-
-let observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{QueryObserver, QueryOptions};\n\nlet observer = QueryObserver::new(client.clone(), key.clone(), QueryOptions::default());"} />
 
 L'observateur expose le `QueryState<T>` courant, le bloc `QueryResultFlags`, et les notifications `QueryStateUpdate` sur son récepteur bus.
 
@@ -65,12 +62,7 @@ L'observateur côté mutation : souscrit aux transitions `MutationState<T>` d'un
 
 ## Exemple : combine pour une vue composite
 
-<Code lang="rust" code={`use rs_query::QueriesObserver;
-
-let combined = observer.combine(|states| {
-    let loaded = states.iter().filter(|s| s.is_success()).count();
-    (loaded, states.len())
-});`} />
+<Code lang="rust" code={"use rs_query::QueriesObserver;\n\nlet combined = observer.combine(|states| {\n    let loaded = states.iter().filter(|s| s.is_success()).count();\n    (loaded, states.len())\n});"} />
 
 ## Étapes suivantes
 

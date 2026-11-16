@@ -19,26 +19,15 @@ The `hooks` module is generic over any `quoin_core::ReactiveContext`. Each bindi
 
 ### The query binding
 
-<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
-todo.state.get();     // QueryState<Todo>
-todo.refetch();       // re-run now
-todo.abort_fetch();   // cancel in-flight`} />
+<Code lang="rust" code={"let todo = use_query(&cx, &client, &query);\ntodo.state.get();     // QueryState<Todo>\ntodo.refetch();       // re-run now\ntodo.abort_fetch();   // cancel in-flight"} />
 
 ### The infinite binding
 
-<Code lang="rust" code={`let feed = use_infinite_query(&cx, &client, &query);
-feed.fetch_next_page();
-feed.fetch_previous_page();
-feed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);
-feed.has_next_page();          feed.has_previous_page();
-feed.is_fetching_next_page();  feed.is_fetching_previous_page();
-feed.observer();               // Arc<InfiniteQueryObserver<T, P>>`} />
+<Code lang="rust" code={"let feed = use_infinite_query(&cx, &client, &query);\nfeed.fetch_next_page();\nfeed.fetch_previous_page();\nfeed.fetch_next_page_with(/* cancel_refetch */ true, /* throw_on_error */ false);\nfeed.has_next_page();          feed.has_previous_page();\nfeed.is_fetching_next_page();  feed.is_fetching_previous_page();\nfeed.observer();               // Arc<InfiniteQueryObserver<T, P>>"} />
 
 ### The mutation binding
 
-<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
-save.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));
-save.reset();`} />
+<Code lang="rust" code={"let save = use_mutation(&cx, &client, &save_mutation);\nsave.mutate(patch, MutateOptions::new().on_error(|_c, e| log(e)));\nsave.reset();"} />
 
 ## Activity bindings
 

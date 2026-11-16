@@ -27,10 +27,7 @@ Le module `hooks` est générique sur `quoin_core::ReactiveContext`. Vous écriv
 
 `use_query` renvoie un binding avec trois capacités : le signal `state`, `refetch()`, et `abort_fetch()` :
 
-<Code lang="rust" code={`let todo = use_query(&cx, &client, &query);
-todo.state.get();    // QueryState<Todo>
-todo.refetch();
-todo.abort_fetch();`} />
+<Code lang="rust" code={"let todo = use_query(&cx, &client, &query);\ntodo.state.get();    // QueryState<Todo>\ntodo.refetch();\ntodo.abort_fetch();"} />
 
 Abandonner le binding annule sa pompe et abandonne le fetch en vol. Montez un binding par composant qui a besoin des données — le cache déduplique les fetches.
 
@@ -38,26 +35,19 @@ Abandonner le binding annule sa pompe et abandonne le fetch en vol. Montez un bi
 
 `use_mutation` expose `mutate` et `reset`. Les callbacks par appel vont dans `MutateOptions` et se déclenchent après les hooks propres à la mutation :
 
-<Code lang="rust" code={`let save = use_mutation(&cx, &client, &save_mutation);
-save.mutate(patch, MutateOptions::new()
-    .on_success(|_client, _data| toast("saved"))
-    .on_error(|_client, error| toast(&error.to_string())));
-save.reset();`} />
+<Code lang="rust" code={"let save = use_mutation(&cx, &client, &save_mutation);\nsave.mutate(patch, MutateOptions::new()\n    .on_success(|_client, _data| toast(\"saved\"))\n    .on_error(|_client, error| toast(&error.to_string())));\nsave.reset();"} />
 
 ## Composer avec `use_queries` et `combine`
 
 `use_queries` observe plusieurs requêtes à la fois. `QueriesObserver::combine` replie leurs états en une valeur dérivée — l'option `combine` de `useQueries` :
 
-<Code lang="rust" code={`let combined = observer.combine(|states| {
-    states.iter().filter(|s| s.is_success()).count()
-});`} />
+<Code lang="rust" code={"let combined = observer.combine(|states| {\n    states.iter().filter(|s| s.is_success()).count()\n});"} />
 
 ## Flux et compteurs pour tableaux de bord
 
 Les barres de statut et les UI de type devtool s'appuient sur les hooks d'activité au lieu de sonder :
 
-<Code lang="rust" code={`let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);
-let feed = use_activity_feed(&cx, client.subscribe_activity());`} />
+<Code lang="rust" code={"let busy = use_any_fetching(&cx, &[client_a.clone(), client_b.clone()]);\nlet feed = use_activity_feed(&cx, client.subscribe_activity());"} />
 
 `use_activity_feed` prend un `bus::Receiver<E>` — `client.subscribe_activity()` produit des `ActivityEvent` quand l'activité de fetch et de mutation change — et borne le tampon pour qu'un cache bavard ne fasse pas grossir le signal indéfiniment.
 

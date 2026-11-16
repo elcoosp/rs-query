@@ -16,10 +16,7 @@ Enable the feature first: `rs-query = { path = "../rs-query", features = ["devto
 
 `DevtoolsState` wraps a client clone and records transitions from it:
 
-<Code lang="rust" code={`use rs_query::devtools::DevtoolsState;
-
-let devtools = DevtoolsState::with_capacity(client.clone(), 512);
-devtools.record_from_client(); // subscribe + start collecting`} />
+<Code lang="rust" code={"use rs_query::devtools::DevtoolsState;\n\nlet devtools = DevtoolsState::with_capacity(client.clone(), 512);\ndevtools.record_from_client(); // subscribe + start collecting"} />
 
 `record_from_client` subscribes to the client's update stream and appends every state transition to the timeline until you call `stop_recording()`. `is_recording()` reports the current state.
 
@@ -27,10 +24,7 @@ devtools.record_from_client(); // subscribe + start collecting`} />
 
 `cache_rows` returns one `CacheRow` per cached query — key, status, fetch status, data timestamp, staleness:
 
-<Code lang="rust" code={`for row in devtools.cache_rows() {
-    println!("{:?} {:?} {:?} in_flight={}",
-                    row.key, row.status, row.fetch_status, row.in_flight);
-}`} />
+<Code lang="rust" code={"for row in devtools.cache_rows() {\n    println!(\"{:?} {:?} {:?} in_flight={}\",\n                    row.key, row.status, row.fetch_status, row.in_flight);\n}"} />
 
 `row_fetch_status(in_flight)` is the helper the rows use to derive a `FetchStatus` from the in-flight flag.
 
@@ -38,16 +32,7 @@ devtools.record_from_client(); // subscribe + start collecting`} />
 
 The timeline stores timestamped `TimelineEvent`s. `TimelineFilter` narrows by kind, cache key, and text search:
 
-<Code lang="rust" code={`use rs_query::devtools::{TimelineFilter, TimelineKind};
-
-devtools.set_filter(TimelineFilter::new()
-    .kind(TimelineKind::Status)
-    .key_prefix("users")
-    .search("error"));
-
-for event in devtools.timeline() {
-    println!("{} {:?} {}", event.at_ms, event.kind, event.key);
-}`} />
+<Code lang="rust" code={"use rs_query::devtools::{TimelineFilter, TimelineKind};\n\ndevtools.set_filter(TimelineFilter::new()\n    .kind(TimelineKind::Status)\n    .key_prefix(\"users\")\n    .search(\"error\"));\n\nfor event in devtools.timeline() {\n    println!(\"{} {:?} {}\", event.at_ms, event.kind, event.key);\n}"} />
 
 `timeline_len()` counts stored events; `clear_timeline()` empties it without touching the cache.
 
@@ -55,9 +40,7 @@ for event in devtools.timeline() {
 
 The panel doubles as a control surface — the actions go through the client's normal pipeline, so filters and deduplication apply:
 
-<Code lang="rust" code={`devtools.refetch("users/id=42");
-devtools.invalidate("users");
-devtools.remove("users/id=42");`} />
+<Code lang="rust" code={"devtools.refetch(\"users/id=42\");\ndevtools.invalidate(\"users\");\ndevtools.remove(\"users/id=42\");"} />
 
 ## Render it in your framework
 

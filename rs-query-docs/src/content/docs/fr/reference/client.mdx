@@ -86,15 +86,7 @@ Toutes les opérations basées sur filtre renvoient le compte de requêtes affec
 
 ## Exemple : un client avec des défauts
 
-<Code lang="rust" code={`use std::time::Duration;
-use rs_query::{QueryClient, QueryOptions};
-
-let client = QueryClient::new();
-client.set_default_options(
-    QueryOptions::default()
-                    .stale_time(Duration::from_secs(30))
-                    .gc_time(Duration::from_secs(300)),
-);`} />
+<Code lang="rust" code={"use std::time::Duration;\nuse rs_query::{QueryClient, QueryOptions};\n\nlet client = QueryClient::new();\nclient.set_default_options(\n    QueryOptions::default()\n                    .stale_time(Duration::from_secs(30))\n                    .gc_time(Duration::from_secs(300)),\n);"} />
 
 Chaque requête créée ensuite hérite de ces défauts sauf si elle les surcharge.
 

@@ -28,15 +28,7 @@ The utilities round out the API surface: `streamed_query` for stream-producing f
 
 `Updater<T>` accepts either a value or a function of the previous value — the port of TanStack's value-or-function update style:
 
-<Code lang="rust" code={`use rs_query::{Updater, functional_update};
-
-// Value form:
-let next = Updater::Value(42);
-// Functional form:
-let next = Updater::Function(|prev: i64| prev + 1);
-
-// Apply it against a current value:
-let applied = functional_update(next, 40); // 41`} />
+<Code lang="rust" code={"use rs_query::{Updater, functional_update};\n\n// Value form:\nlet next = Updater::Value(42);\n// Functional form:\nlet next = Updater::Function(|prev: i64| prev + 1);\n\n// Apply it against a current value:\nlet applied = functional_update(next, 40); // 41"} />
 
 `set_query_data` accepts an `Updater`, so optimistic patches can derive from the current cached data without reading it first.
 
@@ -60,13 +52,7 @@ let applied = functional_update(next, 40); // 41`} />
 
 ## Example: value-or-function write
 
-<Code lang="rust" code={`use rs_query::{QueryOptions, QueryKey, Updater};
-
-client.set_query_data::<i64>(
-    &QueryKey::new("counter"),
-    Updater::Function(|current| current + 1),
-    QueryOptions::default(),
-);`} />
+<Code lang="rust" code={"use rs_query::{QueryOptions, QueryKey, Updater};\n\nclient.set_query_data::<i64>(\n    &QueryKey::new(\"counter\"),\n    Updater::Function(|current| current + 1),\n    QueryOptions::default(),\n);"} />
 
 ## Next steps
 

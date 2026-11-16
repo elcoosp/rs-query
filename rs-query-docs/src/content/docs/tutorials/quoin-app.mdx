@@ -16,10 +16,7 @@ Prerequisites: a quoin application skeleton with a `ReactiveContext` available (
 
 Construct the client with `QueryClient::with_context(&cx)` so fetches and timers ride the framework's own executor instead of the default worker pool:
 
-<Code lang="rust" code={`use rs_query::QueryClient;
-
-// Inside your app setup:
-let client = QueryClient::with_context(&cx);`} />
+<Code lang="rust" code={"use rs_query::QueryClient;\n\n// Inside your app setup:\nlet client = QueryClient::with_context(&cx);"} />
 
 Store the client in your application state. Like `QueryClient::new()`, it is cheap to clone and shares one cache across clones.
 
@@ -27,13 +24,7 @@ Store the client in your application state. Like `QueryClient::new()`, it is che
 
 Inside a component, call `use_query` with the context, the client, and the query. The binding pumps cache updates into a framework signal and stays in sync through lag-tolerant cache pumps:
 
-<Code lang="rust" code={`use rs_query::use_query;
-
-// Inside a component, where cx is the framework's ReactiveContext:
-let todo = use_query(&cx, &client, &query);
-
-// todo.state is the framework's own signal: read it from your view.
-let state = todo.state.get(); // QueryState<Todo>`} />
+<Code lang="rust" code={"use rs_query::use_query;\n\n// Inside a component, where cx is the framework's ReactiveContext:\nlet todo = use_query(&cx, &client, &query);\n\n// todo.state is the framework's own signal: read it from your view.\nlet state = todo.state.get(); // QueryState<Todo>"} />
 
 Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-on-unmount is the default behavior, not an opt-in.
 
@@ -41,17 +32,7 @@ Dropping the binding cancels its pump and aborts the in-flight fetch — cancel-
 
 `QueryState<T>` has a variant for every cache situation, so `match` covers rendering exhaustively:
 
-<Code lang="rust" code={`match state {
-    rs_query::QueryState::Idle | rs_query::QueryState::Loading => render_spinner(),
-    rs_query::QueryState::LoadingWithPlaceholder(data)
-    | rs_query::QueryState::Success(data)
-    | rs_query::QueryState::Stale(data)
-    | rs_query::QueryState::Refetching(data) => render_todo(data),
-    rs_query::QueryState::Error { error, stale_data } => match stale_data {
-                    Some(data) => render_todo_with_banner(data, error),
-                    None => render_error(error),
-    },
-}`} />
+<Code lang="rust" code={"match state {\n    rs_query::QueryState::Idle | rs_query::QueryState::Loading => render_spinner(),\n    rs_query::QueryState::LoadingWithPlaceholder(data)\n    | rs_query::QueryState::Success(data)\n    | rs_query::QueryState::Stale(data)\n    | rs_query::QueryState::Refetching(data) => render_todo(data),\n    rs_query::QueryState::Error { error, stale_data } => match stale_data {\n                    Some(data) => render_todo_with_banner(data, error),\n                    None => render_error(error),\n    },\n}"} />
 
 <Aside type="tip">
 You rarely write this match by hand. The [QueryObserver](/reference/observers/) result flags — `is_placeholder_data`, `is_refetch_error`, `is_paused` — exist to turn these branches into compact boolean logic.
@@ -61,21 +42,13 @@ You rarely write this match by hand. The [QueryObserver](/reference/observers/) 
 
 The binding exposes `refetch` and `abort_fetch` for user-driven actions:
 
-<Code lang="rust" code={`todo.refetch();     // re-run the query now
-todo.abort_fetch(); // cancel the in-flight fetch`} />
+<Code lang="rust" code={"todo.refetch();     // re-run the query now\ntodo.abort_fetch(); // cancel the in-flight fetch"} />
 
 ## 5. Mutate and invalidate
 
 Wire a save button to a mutation with `use_mutation`, and invalidate the list key on success. The mutation lifecycle runs cache-level and options-level hooks in TanStack order (see [Mutations and optimistic updates](/guides/mutations/)):
 
-<Code lang="rust" code={`use rs_query::{Mutation, MutateOptions};
-
-let save = use_mutation(&cx, &client, &save_mutation);
-
-// On button click:
-save.mutate(patch, MutateOptions::new().on_success(|_client, _data| {
-    // the mutation's own invalidates_key already refetched active queries
-}));`} />
+<Code lang="rust" code={"use rs_query::{Mutation, MutateOptions};\n\nlet save = use_mutation(&cx, &client, &save_mutation);\n\n// On button click:\nsave.mutate(patch, MutateOptions::new().on_success(|_client, _data| {\n    // the mutation's own invalidates_key already refetched active queries\n}));"} />
 
 The signal updates again when the invalidated query refetches — no manual wiring between mutation and view.
 
@@ -83,9 +56,7 @@ The signal updates again when the invalidated query refetches — no manual wiri
 
 If the client restores persisted state at startup, hold the `is_restoring` flag until the restore finishes. Bindings respect the gate and hold `fetchStatus` at `idle` while it is set:
 
-<Code lang="rust" code={`client.set_is_restoring(true);
-// ... restore ...
-client.set_is_restoring(false);`} />
+<Code lang="rust" code={"client.set_is_restoring(true);\n// ... restore ...\nclient.set_is_restoring(false);"} />
 
 ## What you built
 

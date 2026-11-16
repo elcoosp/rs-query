@@ -12,14 +12,7 @@ import { Aside, Code, LinkCard } from '@astrojs/starlight/components';
 
 Enveloppez une fermeture qui renvoie un flux avec `streamed_query`, puis utilisez la valeur résultante là où va une fermeture de fetch `Query` :
 
-<Code lang="rust" code={`use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};
-
-let fetch = streamed_query(|_signal| async_stream {
-    for chunk in chunks {
-                    yield chunk;
-    }
-})
-.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));`} />
+<Code lang="rust" code={"use rs_query::{Query, QueryKey, StreamedQueryConfig, streamed_query};\n\nlet fetch = streamed_query(|_signal| async_stream {\n    for chunk in chunks {\n                    yield chunk;\n    }\n})\n.refetch_mode(StreamedQueryConfig::<Vec<LogLine>>::new().refetch_mode(rs_query::RefetchMode::Append));"} />
 
 <Aside type="note">
 Le combinateur de flux exact dépend de votre producteur — n'importe quel `Stream<Item = Result<T, E>>` fonctionne. Le paramètre de type de la configuration est le type de valeur accumulée.
@@ -35,12 +28,7 @@ Quand un refetch démarre, les données en cache existantes peuvent perturber l'
 | `Append`  | Garde les anciennes données ; ajoute les éléments du nouveau flux après |
 | `Reset`   | Réinitialise à la `initial_value` configurée au démarrage du refetch |
 
-<Code lang="rust" code={`use rs_query::RefetchMode;
-
-let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
-    .refetch_mode(RefetchMode::Reset)
-    .initial_value(Vec::new())
-    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));`} />
+<Code lang="rust" code={"use rs_query::RefetchMode;\n\nlet cfg = StreamedQueryConfig::<Vec<LogLine>>::new()\n    .refetch_mode(RefetchMode::Reset)\n    .initial_value(Vec::new())\n    .reducer(|acc: &mut Vec<LogLine>, item: LogLine| acc.push(item));"} />
 
 `.reducer(f)` personnalise comment chaque élément streamé se replie dans l'accumulateur ; le défaut ajoute. `.initial_value(v)` amorce l'accumulateur pour le mode `Reset`.
 
@@ -48,9 +36,7 @@ let cfg = StreamedQueryConfig::<Vec<LogLine>>::new()
 
 La valeur enveloppée passe par `spawn_query`, `execute_query`, `ensure_query_data` et les observateurs sans changement — la machine à états, les réessais et la mise en pause hors ligne s'appliquent tous :
 
-<Code lang="rust" code={`let query = Query::new(QueryKey::new("logs"), move || cfg_stream());
-let handle = rs_query::spawn_query(&client, &query);
-let state = handle.await;`} />
+<Code lang="rust" code={"let query = Query::new(QueryKey::new(\"logs\"), move || cfg_stream());\nlet handle = rs_query::spawn_query(&client, &query);\nlet state = handle.await;"} />
 
 Les observateurs voient les états intermédiaires à mesure que l'accumulateur grandit, donc les vues rendent la progression sans code supplémentaire.
 

@@ -16,16 +16,7 @@ Activez la fonctionnalité `serde` pour les helpers de (dé)sérialisation JSON 
 
 `QueryPersister` met en cache le résultat de chaque requête sous sa clé dans un `QueryStorage`. Configurez l'expiration avec `max_age` et versionnez les entrées avec `buster` :
 
-<Code lang="rust" code={`use std::sync::Arc;
-use std::time::Duration;
-use rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};
-
-let persister = QueryPersister::new(
-    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))
-                    .with_buster("v1".into())
-                    .with_max_age(Duration::from_secs(60 * 60 * 24))
-                    .with_prefix("app".into()),
-);`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse std::time::Duration;\nuse rs_query::{InMemoryQueryStorage, QueryPersister, QueryPersisterOptions};\n\nlet persister = QueryPersister::new(\n    QueryPersisterOptions::new(Arc::new(InMemoryQueryStorage::new()))\n                    .with_buster(\"v1\".into())\n                    .with_max_age(Duration::from_secs(60 * 60 * 24))\n                    .with_prefix(\"app\".into()),\n);"} />
 
 Le persister restaure sélectivement — seulement les requêtes touchées par des observateurs — et les entrées expirées (au-delà de `max_age`) ou aux busters discordants sont traitées comme absentes. Une passe GC évince les enregistrements périmés.
 
@@ -35,13 +26,7 @@ Implémentez `QueryStorage` pour brancher un backend : c'est une surface asynchr
 
 `persist_query_client` restaure l'état déshydraté du client, puis lance une boucle de sauvegarde throttlée à chaque changement de cache :
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};
-
-let handle = persist_query_client(
-    &client,
-    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),
-).await;`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{InMemoryClientPersister, PersistQueryClientOptions, persist_query_client};\n\nlet handle = persist_query_client(\n    &client,\n    &PersistQueryClientOptions::new(Arc::new(InMemoryClientPersister::new())),\n).await;"} />
 
 `PersistQueryClientOptions` prend aussi `.with_max_age(...)` et `.with_buster(...)` — défauts 24 heures et un buster vide, comme TanStack. Le `PersistQueryClientHandle` renvoyé porte la tâche de sauvegarde et un `unsubscribe()` pour arrêter la boucle.
 
@@ -49,30 +34,19 @@ let handle = persist_query_client(
 
 Pour un contrôle total — hydratation HTML rendue côté serveur, cycles de vie de stockage personnalisés — exécutez vous-même les pièces :
 
-<Code lang="rust" code={`use rs_query::{persist_query_client_restore, persist_query_client_save};
-
-// Restaurez avant de créer les observateurs :
-let restored = persist_query_client_restore(&client, &persister, &opts).await;
-
-// Sauvegardez à la demande :
-persist_query_client_save(&client, &persister, &opts).await;`} />
+<Code lang="rust" code={"use rs_query::{persist_query_client_restore, persist_query_client_save};\n\n// Restaurez avant de cr\u00e9er les observateurs :\nlet restored = persist_query_client_restore(&client, &persister, &opts).await;\n\n// Sauvegardez \u00e0 la demande :\npersist_query_client_save(&client, &persister, &opts).await;"} />
 
 ## Réessayer une restauration qui échoue
 
 Des enregistrements corrompus ou surdimensionnés peuvent faire échouer les restaurations. `persist_with_retry` réessaie la restauration, en évinçant la plus ancienne requête à chaque tour — la stratégie `remove_oldest_query` — jusqu'à `MAX_RESTORE_RETRIES` :
 
-<Code lang="rust" code={`use rs_query::{persist_with_retry, remove_oldest_query};
-
-persist_with_retry(&client, &persister, &opts, remove_oldest_query).await;`} />
+<Code lang="rust" code={"use rs_query::{persist_with_retry, remove_oldest_query};\n\npersist_with_retry(&client, &persister, &opts, remove_oldest_query).await;"} />
 
 ## Synchroniser les clients entre onglets avec broadcast
 
 `broadcast_query_client` garde plusieurs instances de `QueryClient` en phase via un canal. Les mises à jour distantes s'appliquent avec un garde de ré-entrance, donc une mise à jour distante appliquée n'est jamais re-diffusée :
 
-<Code lang="rust" code={`use rs_query::broadcast_query_client;
-
-let handle = broadcast_query_client(&client, "app-cache");
-// handle.unsubscribe() arrête la synchro ; handle.into_task() le confie au runtime.`} />
+<Code lang="rust" code={"use rs_query::broadcast_query_client;\n\nlet handle = broadcast_query_client(&client, \"app-cache\");\n// handle.unsubscribe() arr\u00eate la synchro ; handle.into_task() le confie au runtime."} />
 
 Passez `BroadcastQueryClientOptions::new().with_channel("app-cache")` à `broadcast_query_client_with_options` quand vous avez besoin de la forme objet-options du canal. `publish_state(&client, "app-cache")` pousse un instantané ponctuel.
 

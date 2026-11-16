@@ -36,9 +36,7 @@ Keys identify; filters select. `QueryKey` builds the hierarchical identity of a 
 
 ## `InvalidateQueryFilters` and `RefetchQueryFilters`
 
-<Code lang="rust" code={`InvalidateQueryFilters::new()
-    .filters(QueryFilters::with_key(QueryKey::new("users")))
-    .refetch_type(RefetchType::Active)`} />
+<Code lang="rust" code={"InvalidateQueryFilters::new()\n    .filters(QueryFilters::with_key(QueryKey::new(\"users\")))\n    .refetch_type(RefetchType::Active)"} />
 
 | Struct                  | Builders                                       | Used by                    |
 | ----------------------- | ---------------------------------------------- | -------------------------- |
@@ -73,16 +71,7 @@ Filters and predicates see immutable snapshots, not live queries:
 
 ## Example: preview then act
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{QueryFilters, QueryKey};
-
-let stale_users = QueryFilters::with_key(QueryKey::new("users"))
-    .stale()
-    .predicate(Arc::new(|snap| snap.fetch_status == rs_query::FetchStatus::Idle));
-
-let matched = client.query_snapshots(&stale_users);
-println!("would reset {} queries", matched.len());
-let _ = client.reset_queries(&stale_users);`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{QueryFilters, QueryKey};\n\nlet stale_users = QueryFilters::with_key(QueryKey::new(\"users\"))\n    .stale()\n    .predicate(Arc::new(|snap| snap.fetch_status == rs_query::FetchStatus::Idle));\n\nlet matched = client.query_snapshots(&stale_users);\nprintln!(\"would reset {} queries\", matched.len());\nlet _ = client.reset_queries(&stale_users);"} />
 
 ## Next steps
 

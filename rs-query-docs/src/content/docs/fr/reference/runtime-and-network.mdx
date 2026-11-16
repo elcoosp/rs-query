@@ -70,12 +70,7 @@ Suit les événements de focus de l'application qui pilotent `refetch_on_window_
 
 ## Exemple : un client de test déterministe
 
-<Code lang="rust" code={`use std::sync::Arc;
-use rs_query::{ExecutorRuntime, QueryClient};
-
-let client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(
-quoin_testkit::LocalExecutor::global(),
-)));`} />
+<Code lang="rust" code={"use std::sync::Arc;\nuse rs_query::{ExecutorRuntime, QueryClient};\n\nlet client = QueryClient::with_runtime(Arc::new(ExecutorRuntime::new(\nquoin_testkit::LocalExecutor::global(),\n)));"} />
 
 Dans un `#[tokio::test]` avec `start_paused = true`, chaque sommeil interne est contrôlé par le temps virtuel.
 
