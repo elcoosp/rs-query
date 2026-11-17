@@ -1,7 +1,7 @@
 :root {
-	--sl-color-accent-low: hsl(240 30% 93%);
-	--sl-color-accent: hsl(240 30% 35%);
-	--sl-color-accent-high: hsl(240 30% 28%);
+  --sl-color-accent-low: hsl(240 30% 93%);
+  --sl-color-accent: hsl(240 30% 35%);
+  --sl-color-accent-high: hsl(240 30% 28%);
 }
 
 /*
@@ -17,15 +17,15 @@
  */
 :root,
 [data-theme='light'] {
-	--sl-color-accent-low: hsl(30 65% 93%);
-	--sl-color-accent: hsl(30 68% 44%);
-	--sl-color-accent-high: hsl(24 72% 30%);
+  --sl-color-accent-low: hsl(30 65% 93%);
+  --sl-color-accent: hsl(30 68% 44%);
+  --sl-color-accent-high: hsl(24 72% 30%);
 }
 
 [data-theme='dark'] {
-	--sl-color-accent-low: hsl(30 65% 16%);
-	--sl-color-accent: hsl(30 75% 60%);
-	--sl-color-accent-high: hsl(30 85% 75%);
+  --sl-color-accent-low: hsl(30 65% 16%);
+  --sl-color-accent: hsl(30 75% 60%);
+  --sl-color-accent-high: hsl(30 85% 75%);
 }
 
 /*
