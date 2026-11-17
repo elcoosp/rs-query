@@ -1,0 +1,33 @@
+# Curated domain glossary for @elcoosp/docs-toolkit (starlight-term-glossary)
+- term: "structural sharing"
+  locale: en
+  href: "/explanation/caching-model/#structural-sharing"
+  definition: "Diffing strategy preserving unchanged subtrees between refetches so observers only re-render when observed data actually changes."
+- term: "stale-while-revalidate"
+  locale: en
+  href: "/explanation/caching-model/"
+  definition: "Cache policy serving cached data immediately while triggering a background refetch once stale_time has elapsed."
+- term: "optimistic update"
+  locale: en
+  href: "/guides/mutations/"
+  definition: "Pattern writing expected mutation results into the cache immediately with an automatic rollback snapshot if the request fails."
+- term: "dehydration"
+  locale: en
+  href: "/guides/hydration/"
+  definition: "Serializing settled cache entries on the server or producer side so another client can restore them without refetching."
+- term: "network mode"
+  locale: en
+  href: "/guides/offline-and-network-modes/"
+  definition: "Policy controlling how queries behave when offline (Online, Always, or OfflineFirst) before pausing or executing."
+- term: "partage structurel"
+  locale: fr
+  href: "/fr/explanation/caching-model/"
+  definition: "Stratégie préservant les sous-arbres inchangés entre deux requêtes pour éviter les re-rendus inutiles."
+- term: "mise à jour optimiste"
+  locale: fr
+  href: "/fr/guides/mutations/"
+  definition: "Écriture immédiate du résultat attendu dans le cache avec restauration automatique en cas d’échec de la mutation."
+- term: "déshydratation"
+  locale: fr
+  href: "/fr/guides/hydration/"
+  definition: "Sérialisation de l’état du cache côté serveur afin de le restaurer côté client sans recharger les données."
