@@ -213,11 +213,11 @@ impl<T: Clone> Future for Changed<'_, T> {
             .shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.version != rx.last_seen {
+        if guard.version == rx.last_seen {
+            Poll::Pending
+        } else {
             rx.last_seen = guard.version;
             Poll::Ready(Ok(()))
-        } else {
-            Poll::Pending
         }
     }
 }
