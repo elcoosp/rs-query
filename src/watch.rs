@@ -197,15 +197,28 @@ impl<T: Clone> Future for Changed<'_, T> {
             .shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !guard.alive {
+            return Poll::Ready(Err(ChangeError));
+        }
         if guard.version != rx.last_seen {
             rx.last_seen = guard.version;
             return Poll::Ready(Ok(()));
         }
-        if !guard.alive {
-            return Poll::Ready(Err(ChangeError));
-        }
         guard.waiters.insert(rx.id, cx.waker().clone());
-        Poll::Pending
+        // Re-check after registering: a send() may have bumped the version
+        // between the check above and this insert, clearing waiters and
+        // waking nobody. Without this, the parked future would never resolve.
+        drop(guard);
+        let guard = rx
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.version != rx.last_seen {
+            rx.last_seen = guard.version;
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -243,8 +256,8 @@ mod tests {
         let done2 = done.clone();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
-            watch.send(7);
             done2.store(true, Ordering::SeqCst);
+            watch.send(7);
         });
         let result = futures::executor::block_on(rx.changed());
         assert_eq!(result, Ok(()));
